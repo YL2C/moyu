@@ -2,12 +2,11 @@
 
 import { db, exportStory } from '../db.js';
 import { el, uid, toast, menu, promptText, sheet, saveFile, autoGrow, insertAtCursor, approxTokens } from '../util.js';
-import { resolveConnection, getConnections, connLabel, getPrefs, go } from '../state.js';
+import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules } from '../state.js';
 import { streamWithRetry, ApiError } from '../api.js';
-import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock } from '../prompt.js';
+import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames } from '../prompt.js';
 import { parseReply, paragraphs } from '../parse.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, addSpend, checkBudget, getMonthSpend, getBudget, hasPrice, CUR } from '../cost.js';
-import { openStoryEditor } from './story-edit.js';
 
 export async function render(root, { id }) {
   const story = await db.get('stories', id);
@@ -27,7 +26,10 @@ export async function render(root, { id }) {
     streaming: null, director: '', ooc: false, conn: await resolveConnection(story), lastCtx: null, pendingFrame: 0,
     pick: null,      // 正在“选一段往后重写”的回复 id
     undoHead: null,  // 回退前的位置，用来撤销
+    modules: await getModules(),
   };
+  story.manualOn = story.manualOn || {};
+  const manualMods = () => st.modules.filter((m) => m.mode === 'manual' && story.modules?.[m.id]);
   const prefs = getPrefs();
 
   // ───── 树结构工具 ─────
@@ -104,6 +106,9 @@ export async function render(root, { id }) {
       st.director.trim() ? el('div', { class: 'status' },
         el('span', { class: 'lbl', onclick: () => editDirector(), text: '导演：' + st.director.trim() }),
         el('button', { 'aria-label': '清除导演指令', onclick: () => { st.director = ''; updateComposer(); } }, '✕')) : null,
+      ...manualMods().filter((m) => story.manualOn[m.id]).map((m) => el('div', { class: 'status' },
+        el('span', { class: 'lbl', text: `情境：${m.name}（每轮都会带上，直到关掉）` }),
+        el('button', { 'aria-label': '关掉情境', onclick: () => { story.manualOn[m.id] = false; saveStory(); updateComposer(); } }, '✕'))),
     ].filter(Boolean));
     ta.classList.toggle('ooc', st.ooc);
     ta.placeholder = !started
@@ -346,7 +351,7 @@ export async function render(root, { id }) {
     try { await db.put('nodes', a); } catch {}
     await saveStory();
 
-    const ctx = buildContext(story, pathTo(a.parentId));
+    const ctx = buildContext(story, pathTo(a.parentId), { modules: st.modules, extra: extraDirector || '' });
     if (extraDirector?.trim()) {
       const last = ctx.messages[ctx.messages.length - 1];
       if (last && last.role === 'user') last.content += directorBlock(extraDirector);
@@ -472,10 +477,12 @@ export async function render(root, { id }) {
       { key: 'edit', label: '修改这一章', hint: '改完直接算数，之后模型看到的就是改过的版本' },
       { key: 'cut', label: '从某一段往后重写', hint: '前面的段落保留，选一段从那里重新写' + branchHint },
       { key: 'redo', label: '按要求重写这一章', hint: '写一句要求，整章重写；原版本保留，可以左右切换' + branchHint },
+      { key: 'fix', label: '这不像他（纠正人设）', hint: '写进角色卡的禁止清单，以后每轮都会提醒；可以顺手重写这一章' },
       isLast ? null : { key: 'back', label: '回到这里', hint: `从这一章重新往后玩${later > 0 ? `，后面的 ${later} 章放进分支` : ''}` },
       { key: 'copy', label: '复制正文' },
     ]);
-    if (k === 'edit') editReply(n);
+    if (k === 'fix') correctChar(n);
+    else if (k === 'edit') editReply(n);
     else if (k === 'cut') { st.pick = n.id; renderFeed({ focusId: n.id }); }
     else if (k === 'redo') {
       const note = await promptText({ title: '按要求重写这一章', placeholder: '例：他别这么快服软；多写一点环境；对话再短一些', hint: '只对这次重写生效。', okText: '重写' });
@@ -710,18 +717,24 @@ export async function render(root, { id }) {
     const k = await menu(story.title || '故事', [
       started ? { key: 'ooc', label: st.ooc ? '退出出戏' : '出戏', hint: '下一句是场外话：问设定、商量走向，不推进剧情' } : null,
       { key: 'dir', label: st.director.trim() ? '修改导演指令' : '导演指令', hint: '只对下一轮生效的要求，不写进规则' },
-      { key: 'edit', label: '编辑设定', hint: '世界、角色、规则、弹幕和选项开关' },
+      ...manualMods().map((m) => ({ key: 'mod:' + m.id, label: `情境：${m.name}${story.manualOn[m.id] ? '  ✓ 开着' : '（关着）'}`, hint: story.manualOn[m.id] ? '点一下关掉' : '点一下打开，之后每轮都带上这个模块' })),
+      { key: 'edit', label: '角色与设定', hint: '世界设定、角色卡、规则和模块' },
       { key: 'branch', label: `分支${leaves > 1 ? `（${leaves} 条）` : ''}`, hint: '重写或回退后留下的其他走向' },
       { key: 'cost', label: '花费', hint: '这个故事和本月花了多少' },
       { key: 'ctx', label: '查看发给模型的内容', hint: '排查“为什么他又不像他了”' },
       { key: 'export', label: '导出这个故事', hint: '不含密钥' },
     ]);
-    if (k === 'ooc') { st.ooc = !st.ooc; updateComposer(); if (st.ooc) ta.focus(); }
+    if (!k) return;
+    if (k.startsWith('mod:')) {
+      const mid = k.slice(4);
+      story.manualOn[mid] = !story.manualOn[mid];
+      await saveStory();
+      updateComposer();
+      toast(story.manualOn[mid] ? '已打开，下一轮起带上' : '已关掉');
+    } else if (k === 'ooc') { st.ooc = !st.ooc; updateComposer(); if (st.ooc) ta.focus(); }
     else if (k === 'dir') editDirector();
-    else if (k === 'edit') {
-      const s = await openStoryEditor(story);
-      if (s) { Object.assign(story, s); st.conn = await resolveConnection(story); renderFeed(); }
-    } else if (k === 'branch') showBranches();
+    else if (k === 'edit') go(`story/${encodeURIComponent(story.id)}`);
+    else if (k === 'branch') showBranches();
     else if (k === 'cost') showCost();
     else if (k === 'ctx') showContext();
     else if (k === 'export') {
@@ -762,19 +775,67 @@ export async function render(root, { id }) {
     s.foot.append(el('button', { class: 'btn ghost', onclick: () => { s.close(); go('settings'); } }, '设置提醒线'), el('button', { class: 'btn primary', onclick: () => s.close() }, '关闭'));
   }
 
+  async function correctChar(n) {
+    const cards = (story.cards || []).filter((c) => c.name?.trim());
+    if (!cards.length) {
+      if (confirm('这个故事还没有角色卡。现在去建？')) go(`story/${encodeURIComponent(story.id)}/cards`);
+      return;
+    }
+    const chapterNo = chapterCount(pathTo(n.id));
+    const s = sheet({ title: '这不像他' });
+    const sel = el('select');
+    cards.forEach((c) => sel.append(el('option', { value: c.id }, c.name)));
+    const hit = cards.find((c) => splitNames(c).some((x) => x.length >= 2 && (n.text || '').includes(x)));
+    if (hit) sel.value = hit.id;
+    const area = el('textarea', { placeholder: '他不会……（写成具体动作）\n例：不会当众道歉；不会一被拒绝就退回去' });
+    const regen = el('input', { type: 'checkbox' }); regen.checked = true;
+    s.body.append(
+      el('div', { class: 'field' }, el('label', { text: '是谁' }), sel),
+      el('div', { class: 'field' }, el('label', { text: '哪里不像' }), area,
+        el('div', { class: 'hint', text: `会写进他的禁止清单，标上“第 ${chapterNo} 章纠正”。以后他在场时，每轮都会提醒模型。` })),
+      el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '记下后重写这一章', el('small', { text: '原版本保留，可以左右切换' })), el('label', { class: 'switch' }, regen, el('span'))),
+    );
+    s.foot.append(
+      el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'),
+      el('button', {
+        class: 'btn primary',
+        onclick: async () => {
+          const text = area.value.trim().replace(/\n+/g, '；');
+          if (!text) { toast('写一下哪里不像'); return; }
+          const card = story.cards.find((c) => c.id === sel.value);
+          if (!card) return;
+          card.forbid = (card.forbid?.trim() ? card.forbid.trim() + '\n' : '') + `${text}（第${chapterNo}章纠正）`;
+          card.updatedAt = Date.now();
+          await saveStory();
+          s.close();
+          toast(`已写进「${card.name}」的禁止清单`);
+          if (regen.checked) regenerate(n, `上一版里${card.name}不像他自己：${text}。按他的角色卡重写这一章。`);
+        },
+      }, '记下'));
+    setTimeout(() => area.focus(), 80);
+  }
+
   function showContext() {
-    const ctx = st.lastCtx || buildContext(story, headPath());
+    const ctx = st.lastCtx || buildContext(story, headPath(), { modules: st.modules });
     const s = sheet({ title: st.lastCtx ? '上一轮发给模型的内容' : '下一轮会发给模型的内容' });
     const i = ctx.info;
-    s.body.append(
-      el('div', { class: 'hint', style: { marginTop: 0 } },
-        `共约 ${i.totalChars.toLocaleString()} 字（粗估约 ${approxTokens(i.totalChars).toLocaleString()} token）：规则与设定 ${i.systemChars.toLocaleString()} 字，剧情 ${i.historyChars.toLocaleString()} 字，${i.count} 条消息。` +
-        (i.trimmed ? ` 最早的 ${i.trimmed} 条因为太长没有发送。` : '') + ' 较早轮次的弹幕和选项已去掉，只留正文。'),
-      el('div', { class: 'section-title', text: '系统提示' }),
-      el('pre', { class: 'raw', text: ctx.system }),
-      el('div', { class: 'section-title', text: '对话' }),
-      el('pre', { class: 'raw', style: { maxHeight: '50vh' }, text: ctx.messages.map((m) => `【${m.role === 'user' ? '玩家' : 'GM'}】\n${m.content}`).join('\n\n') })
-    );
+    const block = (label, text, open = false) => {
+      const d = el('details', { class: 'card', style: { padding: '10px 12px' } }, el('summary', { style: { cursor: 'pointer', fontSize: '14px' }, text: label }), el('pre', { class: 'raw', text }));
+      if (open) d.open = true;
+      return d;
+    };
+    s.body.append(...[
+      el('div', { class: 'hint', style: { marginTop: 0, marginBottom: '10px' } },
+        `共约 ${i.totalChars.toLocaleString()} 字（粗估约 ${approxTokens(i.totalChars).toLocaleString()} token），${i.count} 条消息。` +
+        (i.trimmed ? `最早的 ${i.trimmed} 条因为太长没有发送。` : '') + '较早轮次的弹幕和选项已去掉，只留正文。'),
+      el('div', { class: 'card', style: { fontSize: '14px', lineHeight: 1.7 } },
+        el('div', {}, '角色卡：', i.cards?.length ? i.cards.join('、') : '无'),
+        el('div', {}, '在场（会提醒禁止清单）：', i.present?.length ? i.present.join('、') : '无'),
+        el('div', {}, '规则模块：', i.modules?.length ? i.modules.join('、') : '无')),
+      ...(i.parts || []).map((p) => block(`${p.label} · ${p.chars.toLocaleString()} 字`, p.text)),
+      block(`剧情对话 · ${i.historyChars.toLocaleString()} 字`, ctx.messages.map((m) => `【${m.role === 'user' ? '玩家' : 'GM'}】\n${m.content}`).join('\n\n')),
+      i.tail ? block('末尾提醒（贴在最后一条玩家消息里）', i.tail.trim(), true) : null,
+    ].filter(Boolean));
     s.foot.append(el('button', {
       class: 'btn', onclick: () => navigator.clipboard?.writeText(`${ctx.system}\n\n${ctx.messages.map((m) => `【${m.role}】\n${m.content}`).join('\n\n')}`).then(() => toast('已复制'), () => toast('复制失败')),
     }, '复制全部'), el('button', { class: 'btn primary', onclick: () => s.close() }, '关闭'));

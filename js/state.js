@@ -56,3 +56,37 @@ export function go(path = '') {
   if (location.hash === h) window.dispatchEvent(new HashChangeEvent('hashchange'));
   else location.hash = h;
 }
+
+// ───── 规则模块库（全局，所有故事共用；每个故事自己选启用哪些） ─────
+export const MODULE_MODES = { always: '一直发送', manual: '手动开关（情境）', keyword: '出现关键词时发送' };
+
+export async function getModules() {
+  const list = (await db.kvGet('modules', null)) || [];
+  return Array.isArray(list) ? list : [];
+}
+export async function saveModules(list) { return db.kvSet('modules', list); }
+
+/** 把 markdown 按“## 标题”拆成模块；没有 ## 的话整份当一个模块 */
+export function modulesFromMarkdown(md, fallbackName = '导入的规则') {
+  const text = String(md || '').replace(/\r/g, '');
+  const parts = text.split(/^##\s+/m);
+  const out = [];
+  if (parts.length <= 1) {
+    const body = text.replace(/^---[\s\S]*?---\n/, '').trim();
+    if (body) out.push({ name: fallbackName, text: body });
+    return out;
+  }
+  const head = parts[0].replace(/^---[\s\S]*?---\n/, '').replace(/^#\s+.*$/m, '').trim();
+  if (head) out.push({ name: fallbackName + '（开头）', text: head });
+  for (const p of parts.slice(1)) {
+    const nl = p.indexOf('\n');
+    const name = (nl < 0 ? p : p.slice(0, nl)).trim();
+    const body = (nl < 0 ? '' : p.slice(nl + 1)).trim();
+    if (name && body) out.push({ name, text: body });
+  }
+  return out;
+}
+
+export function modulesToMarkdown(list) {
+  return list.map((m) => `## ${m.name}\n${m.text.trim()}\n`).join('\n');
+}

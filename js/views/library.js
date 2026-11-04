@@ -42,11 +42,11 @@ export async function render(root) {
       onclick: async (e) => {
         e.stopPropagation();
         const k = await menu(s.title, [
-          { key: 'edit', label: '编辑设定' },
+          { key: 'edit', label: '角色与设定' },
           { key: 'export', label: '导出这个故事', hint: '存成文件，可以传到别的设备或发给朋友（不含密钥）' },
           { key: 'del', label: '删除', danger: true },
         ]);
-        if (k === 'edit') { if (await openStoryEditor(s)) go(''); }
+        if (k === 'edit') go(`story/${encodeURIComponent(s.id)}`);
         else if (k === 'export') {
           const data = await exportStory(s.id);
           const d = new Date();

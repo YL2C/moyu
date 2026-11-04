@@ -5,6 +5,7 @@ import { loadPrefs } from './state.js';
 import * as library from './views/library.js';
 import * as play from './views/play.js';
 import * as settings from './views/settings.js';
+import * as storyPage from './views/story.js';
 
 const root = document.getElementById('app');
 let cleanup = null;
@@ -13,13 +14,14 @@ let routeToken = 0;
 async function route() {
   const token = ++routeToken;
   const h = location.hash.replace(/^#\/?/, '');
-  const [name, arg] = h.split('/');
+  const [name, arg, arg2] = h.split('/');
   if (typeof cleanup === 'function') { try { cleanup(); } catch {} }
   cleanup = null;
   let mod = library;
   const params = {};
   if (name === 'play' && arg) { mod = play; params.id = decodeURIComponent(arg); }
   else if (name === 'settings') { mod = settings; params.section = arg || ''; }
+  else if (name === 'story' && arg) { mod = storyPage; params.id = decodeURIComponent(arg); params.tab = arg2 || 'setting'; }
   const container = document.createElement('div');
   container.className = 'view-host';
   const c = await mod.render(container, params);

@@ -79,17 +79,83 @@ export function rewriteMsg(note) {
     '。不要重复已经写过的内容，不要加开场白；写完后照常附上格式要求里的其余部分。）';
 }
 
+// ───────────── 角色卡与规则模块 ─────────────
+
+export function splitNames(card) {
+  return [card.name, ...String(card.aliases || '').split(/[,，、;；\s]+/)].map((x) => (x || '').trim()).filter((x) => x.length >= 1);
+}
+
+const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
+const asList = (t) => lines(t).map((l) => (/^[-*•·]/.test(l) ? l.replace(/^[-*•·]\s*/, '- ') : '- ' + l)).join('\n');
+
+export function cardText(c) {
+  const parts = [`【角色卡·${c.name || '未命名'}】` + (c.aliases?.trim() ? `（也叫：${c.aliases.trim()}）` : '')];
+  if (c.initial?.trim()) parts.push('〔初始设定〕\n' + c.initial.trim());
+  if (c.base?.trim()) parts.push('〔底色：遇事怎么做、说话的样子、身份与配套〕\n' + c.base.trim());
+  if (c.voice?.trim()) parts.push('〔原话（只用来校准口气和节奏，不要照抄）〕\n' + asList(c.voice));
+  if (c.forbid?.trim()) parts.push('〔禁止：他不会这样做〕\n' + asList(c.forbid));
+  if (c.arc?.trim()) parts.push('〔变化轨迹〕\n' + c.arc.trim());
+  if (c.now?.trim()) parts.push('〔当前状态与称呼〕\n' + c.now.trim());
+  if (c.relation?.trim()) parts.push('〔和主角的关系档案〕\n' + c.relation.trim());
+  return parts.join('\n');
+}
+
+function mentioned(text, card) {
+  if (!text) return false;
+  return splitNames(card).some((n) => (n === card.name || n.length >= 2) && text.includes(n));
+}
+
+/** 用来判断“谁在场 / 哪个关键词出现了”的文字：本轮输入、导演指令、最近两条回复 */
+export function scanText(path, extra = '') {
+  const users = path.filter((n) => n.role === 'user');
+  const replies = path.filter((n) => n.role === 'assistant' && n.text);
+  const u = users[users.length - 1];
+  return [u?.text || '', u?.director || '', ...replies.slice(-2).map((n) => n.text), extra].join('\n');
+}
+
+/**
+ * 选出这一轮要发的角色卡和模块。
+ * modules：全局模块库；story.modules：这个故事启用的模块；story.manualOn：手动开着的情境模块
+ */
+export function selectExtras(story, path, modules = [], extra = '') {
+  const scan = scanText(path, extra);
+  const cards = (story.cards || []).filter((c) => c.name?.trim());
+  const sentCards = cards.filter((c) => c.core || mentioned(scan, c));
+  const present = sentCards.filter((c) => mentioned(scan, c));
+  const enabled = new Set(Object.keys(story.modules || {}).filter((k) => story.modules[k]));
+  const sentModules = modules.filter((m) => {
+    if (!enabled.has(m.id) || !m.text?.trim()) return false;
+    if (m.mode === 'manual') return !!story.manualOn?.[m.id];
+    if (m.mode === 'keyword') return String(m.keywords || '').split(/[,，、;；\s]+/).filter(Boolean).some((k) => scan.includes(k));
+    return true;
+  });
+  return { sentCards, present, sentModules };
+}
+
+/** 末尾提醒：在场角色的禁止清单，放在最后一条玩家消息里（离模型“下笔”最近） */
+export function tailReminder(present, { maxEach = 5 } = {}) {
+  const rows = present.filter((c) => c.forbid?.trim()).map((c) => `- ${c.name}：${lines(c.forbid).slice(-maxEach).map((l) => l.replace(/^[-*•·]\s*/, '')).join('；')}`);
+  if (!rows.length) return '';
+  return '\n\n【在场角色提醒·玩家场外设置，不要在正文里提到】\n' + rows.join('\n');
+}
+
 /**
  * path：从第一条到当前的节点（最后一条通常是刚发出的玩家输入）
- * 返回 { system, messages, info }
+ * opts.modules：全局规则模块库
+ * 返回 { system, messages, info }，info.parts 是各部分的明细（给查看器用）
  */
-export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2 } = {}) {
-  const system = [
-    '你正在主持一场文字互动小说。',
-    story.rules?.trim() ? '【规则】\n' + story.rules.trim() : '',
-    story.world?.trim() ? '【世界与角色设定】\n' + story.world.trim() : '',
-    '【输出格式】\n' + formatContract({ danmu: story.danmu !== false, options: story.options !== false }),
-  ].filter(Boolean).join('\n\n');
+export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2, modules = [], extra = '' } = {}) {
+  const { sentCards, present, sentModules } = selectExtras(story, path, modules, extra);
+  const parts = [];
+  const add = (label, text, kind) => { if (text?.trim()) parts.push({ label, text: text.trim(), kind }); };
+  add('开头', '你正在主持一场文字互动小说。', 'base');
+  add('规则（这个故事）', story.rules?.trim() ? '【规则】\n' + story.rules.trim() : '', 'rules');
+  for (const m of sentModules) add(`规则模块 · ${m.name}${m.mode === 'manual' ? '（情境）' : m.mode === 'keyword' ? '（关键词）' : ''}`, `【规则模块·${m.name}】\n${m.text.trim()}`, 'module');
+  add('世界与角色设定', story.world?.trim() ? '【世界与角色设定】\n' + story.world.trim() : '', 'world');
+  const coreFirst = [...sentCards].sort((a, b) => (b.core ? 1 : 0) - (a.core ? 1 : 0));
+  for (const c of coreFirst) add(`角色卡 · ${c.name}${c.core ? '（常驻）' : '（被提到）'}`, cardText(c), 'card');
+  add('输出格式', '【输出格式】\n' + formatContract({ danmu: story.danmu !== false, options: story.options !== false }), 'format');
+  const system = parts.map((p) => p.text).join('\n\n');
 
   // 出戏对话：之后已经回到正戏的，就不再发给模型
   let lastPlayUser = -1;
@@ -102,9 +168,13 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
 
   const lastUserIdx = kept.map((n) => n.role).lastIndexOf('user');
   let messages = [];
+  const tail = tailReminder(present);
   kept.forEach((n, i) => {
     if (n.role === 'user') {
-      messages.push({ role: 'user', content: userContent(n, { withDirector: i === lastUserIdx }) });
+      const isLastUser = i === lastUserIdx;
+      let c = userContent(n, { withDirector: isLastUser });
+      if (isLastUser && tail && n.kind !== 'ooc') c += tail;
+      messages.push({ role: 'user', content: c });
     } else if (n.text && n.text.trim()) {
       const content = n.kind === 'ooc' || rawSet.has(n.id) ? n.text.trim() : forContext(n.text);
       messages.push({ role: 'assistant', content });
@@ -122,6 +192,10 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
   return {
     system,
     messages,
-    info: { systemChars: system.length, historyChars, totalChars: system.length + historyChars, trimmed, count: messages.length },
+    info: {
+      systemChars: system.length, historyChars, totalChars: system.length + historyChars, trimmed, count: messages.length,
+      parts: parts.map((p) => ({ label: p.label, chars: p.text.length, text: p.text, kind: p.kind })),
+      tail, cards: sentCards.map((c) => c.name), present: present.map((c) => c.name), modules: sentModules.map((m) => m.name),
+    },
   };
 }
