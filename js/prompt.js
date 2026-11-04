@@ -62,13 +62,22 @@ export function userContent(node, { withDirector = false } = {}) {
   } else {
     c = node.text || '';
   }
-  if (withDirector && node.director?.trim()) {
-    c += '\n\n【导演指令·仅本轮有效，来自玩家的场外要求：照做，但不要在正文里提到】\n' + node.director.trim();
-  }
+  if (withDirector && node.director?.trim()) c += directorBlock(node.director);
   return c;
 }
 
-export const CONTINUE_MSG = '（系统：上一条回复中途断开了。请从断开的地方直接接着往下写完，不要重复已经写过的内容，不要加任何开场白。）';
+export function directorBlock(text) {
+  return text?.trim() ? '\n\n【导演指令·仅本轮有效，来自玩家的场外要求：照做，但不要在正文里提到】\n' + text.trim() : '';
+}
+
+export const CONTINUE_MSG = '（系统：上一条回复中途断开了。请从断开的地方直接接着往下写完，不要重复已经写过的内容，不要加任何开场白；写完后照常附上格式要求里的其余部分。）';
+
+/** 从某一段往后重写：前文保留，后面按要求重新写 */
+export function rewriteMsg(note) {
+  return '（系统：上一条回复只保留到这里，后面的内容作废。请从这里直接接着往下重新写' +
+    (note?.trim() ? '，这次的要求：' + note.trim() : '') +
+    '。不要重复已经写过的内容，不要加开场白；写完后照常附上格式要求里的其余部分。）';
+}
 
 /**
  * path：从第一条到当前的节点（最后一条通常是刚发出的玩家输入）

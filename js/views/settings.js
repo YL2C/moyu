@@ -5,6 +5,7 @@ import { el, uid, toast, sheet, saveFile, pickFile, APP_VERSION } from '../util.
 import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go } from '../state.js';
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
 import { DEFAULT_RULES } from '../prompt.js';
+import { getMonthSpend, getBudget, setBudget, fmtTokens, CUR } from '../cost.js';
 
 function sw(checked, onchange) {
   const input = el('input', { type: 'checkbox', onchange: () => onchange(input.checked) });
@@ -69,7 +70,7 @@ export async function render(root, { section }) {
       wrap.append(el('div', { class: 'card' },
         el('div', { style: { fontWeight: '600' } }, connLabel(c), isDef ? el('span', { class: 'badge', text: '默认' }) : null),
         el('div', { class: 'hint', style: { marginTop: '4px', wordBreak: 'break-all' } },
-          `${FORMAT_LABEL[c.format || 'auto']} · ${c.model || '未填模型'}`, el('br'), url),
+          `${FORMAT_LABEL[c.format || 'auto']} · ${c.model || '未填模型'}` + (c.priceIn !== '' && c.priceIn != null ? ` · ${CUR[c.currency || 'CNY']}${c.priceIn}/${c.priceOut ?? '?'} 每百万` : ''), el('br'), url),
         el('div', { class: 'row', style: { marginTop: '10px' } },
           el('button', { class: 'btn small', onclick: () => editConn(c) }, '编辑 / 测试'),
           isDef ? null : el('button', { class: 'btn small ghost', onclick: async () => { await setDefaultConnId(c.id); toast('已设为默认'); draw(); } }, '设为默认')
@@ -104,6 +105,21 @@ export async function render(root, { section }) {
         seg([['serif', '宋体'], ['sans', '黑体']], p.font, (v) => setPrefs({ font: v }))),
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '段首缩进'), sw(p.indent, (v) => setPrefs({ indent: v }))),
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '弹幕默认展开'), sw(p.danmuOpen, (v) => setPrefs({ danmuOpen: v })))
+    ));
+
+    // ── 花费 ──
+    const month = await getMonthSpend();
+    const budget = await getBudget();
+    const bAmt = el('input', { type: 'number', min: '0', step: '1', placeholder: '不提醒', style: { flex: 1 } }); bAmt.value = budget.amount ?? '';
+    const bCur = el('select', { style: { width: '110px', flex: 'none' } }); bCur.append(el('option', { value: 'CNY' }, '¥'), el('option', { value: 'USD' }, '$')); bCur.value = budget.currency || 'CNY';
+    const spent = ['CNY', 'USD'].filter((k) => month[k] > 0).map((k) => CUR[k] + month[k].toFixed(2)).join(' + ') || '—';
+    wrap.append(el('div', { class: 'section-title', text: '花费' }));
+    wrap.append(el('div', { class: 'card' },
+      el('div', { style: { fontWeight: '600' } }, `本月 ${spent}`),
+      el('div', { class: 'hint', style: { marginTop: '2px' } }, `共 ${month.count} 次生成 · 输入 ${fmtTokens(month.input)} · 输出 ${fmtTokens(month.output)} token。金额按各连接填的价格估算。`),
+      el('div', { class: 'field', style: { marginTop: '12px', marginBottom: '8px' } }, el('label', { text: '每月提醒线（超过后每天提醒一次）' }),
+        el('div', { class: 'row', style: { flexWrap: 'nowrap' } }, bAmt, bCur)),
+      el('button', { class: 'btn small primary', onclick: async () => { await setBudget({ amount: bAmt.value === '' ? '' : Number(bAmt.value), currency: bCur.value }); toast('提醒线已保存'); } }, '保存提醒线')
     ));
 
     // ── 备份 ──
@@ -177,12 +193,20 @@ export async function render(root, { section }) {
     const maxT = el('input', { type: 'number', min: '256', step: '256' }); maxT.value = c.maxTokens ?? 4000;
     const temp = el('input', { type: 'number', min: '0', max: '2', step: '0.05', placeholder: '留空' }); temp.value = c.temperature ?? '';
     const streamSw = el('input', { type: 'checkbox' }); streamSw.checked = c.stream !== false;
+    const priceIn = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '不填' }); priceIn.value = c.priceIn ?? '';
+    const priceOut = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '不填' }); priceOut.value = c.priceOut ?? '';
+    const priceCache = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '同输入价' }); priceCache.value = c.priceCache ?? '';
+    const currency = el('select'); currency.append(el('option', { value: 'CNY' }, '人民币 ¥'), el('option', { value: 'USD' }, '美元 $')); currency.value = c.currency || 'CNY';
     const log = el('div', { class: 'test-log' });
 
     const read = () => ({
       ...c, name: name.value.trim(), format: fmt.value, baseUrl: base.value.trim(), apiKey: key.value.trim(),
       model: model.value.trim(), maxTokens: Number(maxT.value) || 4000, temperature: temp.value === '' ? '' : Number(temp.value),
       stream: streamSw.checked,
+      priceIn: priceIn.value === '' ? '' : Number(priceIn.value),
+      priceOut: priceOut.value === '' ? '' : Number(priceOut.value),
+      priceCache: priceCache.value === '' ? '' : Number(priceCache.value),
+      currency: currency.value,
     });
     const refreshUrl = () => {
       const cur = read();
@@ -233,6 +257,7 @@ export async function render(root, { section }) {
           row.replaceChildren(...[el('span', { class: state, text: icon[state] + ' ' }), text,
             detail ? el('pre', { class: 'raw', text: detail }) : null].filter(Boolean));
         });
+        if (r.patch) Object.assign(c, r.patch);
         if (r.ok && r.format && fmt.value === 'auto') {
           fmt.value = r.format; refreshUrl();
           log.append(el('div', { class: 's ok', text: `已识别为「${FORMAT_LABEL[r.format]}」格式，保存后生效。` }));
@@ -257,6 +282,13 @@ export async function render(root, { section }) {
         el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '温度' }), temp,
           el('div', { class: 'hint', text: '留空 = 模型默认。部分新模型不接受自定义温度。' }))
       ),
+      el('div', { class: 'section-title', text: '价格（可选，用来算花费）' }),
+      el('div', { class: 'row', style: { alignItems: 'flex-start', flexWrap: 'nowrap' } },
+        el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '输入价' }), priceIn),
+        el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '输出价' }), priceOut),
+        el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '缓存命中价' }), priceCache)),
+      el('div', { class: 'field' }, el('label', { text: '货币' }), currency,
+        el('div', { class: 'hint', text: '单位都是“每百万 token”，照中转站或官方的价格表填。不填就只统计 token、不算钱。' })),
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '流式输出', el('small', { text: '边写边显示。测试提示流式有问题时再关掉。' })),
         el('label', { class: 'switch' }, streamSw, el('span'))),
       el('div', { style: { marginTop: '12px' } }, testBtn),

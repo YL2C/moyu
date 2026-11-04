@@ -112,7 +112,11 @@ function buildBody(format, conn, { system, messages, stream, maxTokens }) {
   const b = { model: conn.model, messages: system ? [{ role: 'system', content: system }, ...msgs] : msgs };
   b[usesCompletionTokens(conn.model) ? 'max_completion_tokens' : 'max_tokens'] = mt;
   if (temp != null) b.temperature = temp;
-  if (stream) b.stream = true;
+  if (stream) {
+    b.stream = true;
+    // 让流式也返回用量（算花费用）；个别接口不认这个参数，会自动退回
+    if (conn.usageOpt !== false) b.stream_options = { include_usage: true };
+  }
   return b;
 }
 
@@ -154,6 +158,7 @@ function httpError(status, raw, url) {
     return new ApiError('server', `接口那边出错了（${status}）`, { ...o, hint });
   }
   // 400 / 422 等：尽量猜出是哪个参数
+  if (/stream_options|include_usage/i.test(msg)) return new ApiError('no_stream_options', '这个接口不支持返回用量', { ...o, hint: '会自动改成不要用量再试一次，花费改按字数估算。' });
   if (/model/i.test(msg) && /(not ?found|not exist|does not exist|invalid|unknown|not supported|无可用渠道|不存在|不支持)/i.test(msg)) {
     return new ApiError('model', '模型名不对，或这个接口没有这个模型', { ...o, hint: '在连接设置里点“获取模型列表”核对一下。' });
   }
@@ -379,12 +384,17 @@ export async function streamChat(conn, { system, messages, maxTokens, signal, on
 }
 
 /** 自动重试：只对“还没收到任何正文”的网络/限流/服务端错误重试一次 */
-export async function streamWithRetry(conn, opts, { retries = 1, onRetry = () => {} } = {}) {
+export async function streamWithRetry(conn, opts, { retries = 1, onRetry = () => {}, onConnPatch = () => {} } = {}) {
   let attempt = 0;
   for (;;) {
     try {
       return await streamChat(conn, opts);
     } catch (e) {
+      if (e instanceof ApiError && e.kind === 'no_stream_options' && conn.usageOpt !== false) {
+        conn = { ...conn, usageOpt: false };
+        onConnPatch({ usageOpt: false });
+        continue;
+      }
       const retriable = e instanceof ApiError && ['network', 'ratelimit', 'server', 'overloaded'].includes(e.kind) && !e.partial;
       if (!retriable || attempt >= retries || opts.signal?.aborted) throw e;
       attempt++;
@@ -428,6 +438,7 @@ export async function testConnection(conn, onStep = () => {}) {
     : (guessFormat(conn) === 'anthropic' ? ['anthropic', 'openai'] : ['openai', 'anthropic']);
 
   let chosen = null;
+  let patch = {};
   for (const fmt of candidates) {
     let url;
     try { url = normalizeUrl(fmt, conn.baseUrl); } catch (e) { step('url', 'bad', e.message, e.hint); return { ok: false }; }
@@ -456,11 +467,13 @@ export async function testConnection(conn, onStep = () => {}) {
     let first = 0;
     let pieces = 0;
     try {
-      await streamChat({ ...conn, format: chosen, stream: true }, {
+      let gotUsage = false;
+      await streamWithRetry({ ...conn, format: chosen, stream: true }, {
         messages: PING, maxTokens: 400, firstByteMs: 60000,
         onText: () => { pieces++; if (!first) first = performance.now() - t0; },
-      });
+      }, { retries: 0, onConnPatch: (p) => { patch = { ...patch, ...p }; } }).then((r) => { gotUsage = !!r.usage; });
       step('stream', 'ok', `流式正常：收到 ${pieces} 段，首字 ${(first / 1000).toFixed(1)} 秒`);
+      step('usage', gotUsage ? 'ok' : 'info', gotUsage ? '接口会返回用量，花费按真实数字算' : '接口不返回用量，花费会按字数粗估');
     } catch (e) {
       step('stream', 'bad', `流式失败：${e.message}`, `普通请求是通的，说明是这个接口的流式输出有问题。可以在下面关掉“流式输出”再用。\n${e.detail || ''}`);
     }
@@ -477,5 +490,5 @@ export async function testConnection(conn, onStep = () => {}) {
   } catch (e) {
     step('models', 'info', `模型列表获取失败（不影响使用）：${e.message}`);
   }
-  return { ok: true, format: chosen, models };
+  return { ok: true, format: chosen, models, patch };
 }
