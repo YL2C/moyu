@@ -1,7 +1,7 @@
 // 墨游 · 离线缓存
 // 只缓存本站的页面文件；API 请求一律不经过缓存。
 // 策略：先联网取最新（4 秒超时），取不到再用缓存——部署新版后刷新一次就能用上。
-const CACHE = 'moyu-v0.2.0';
+const CACHE = 'moyu-v0.2.1';
 const ASSETS = [
   './',
   './index.html',
@@ -22,6 +22,7 @@ const ASSETS = [
   './icons/apple-touch-icon.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
+  './icons/icon-maskable-512.png',
 ];
 
 self.addEventListener('install', (e) => {

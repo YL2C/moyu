@@ -65,11 +65,12 @@ export async function render(root, { id }) {
   const ta = el('textarea', { rows: '1', enterkeyhint: 'enter' });
   const sendBtn = el('button', { class: 'send', onclick: () => onSend() });
   const chipQuote = el('button', { class: 'chip', onclick: () => insertAtCursor(ta, '“', '”') }, '“ ”');
-  const chipOoc = el('button', { class: 'chip', onclick: () => { st.ooc = !st.ooc; updateComposer(); ta.focus(); } }, '出戏');
-  const chipDir = el('button', { class: 'chip', onclick: () => editDirector() }, '导演');
   const chipCont = el('button', { class: 'chip', onclick: () => send('continue', '') }, '继续');
+  // 出戏、导演放在右上角菜单里（避免误触）；开着的时候在输入框上方显示一条状态，点 ✕ 关掉
+  const statusRow = el('div', { class: 'status-row' });
   const composer = el('div', { class: 'composer' },
-    el('div', { class: 'bar' }, chipQuote, chipOoc, chipDir, chipCont),
+    statusRow,
+    el('div', { class: 'bar' }, chipQuote, el('span', { class: 'spacer' }), chipCont),
     el('div', { class: 'inrow' }, ta, sendBtn)
   );
   const fit = autoGrow(ta);
@@ -96,14 +97,18 @@ export async function render(root, { id }) {
     const busy = !!st.streaming;
     sendBtn.textContent = busy ? '停止' : (started ? '发送' : '开始');
     sendBtn.classList.toggle('stop', busy);
-    chipOoc.classList.toggle('on', st.ooc);
-    chipDir.classList.toggle('on', !!st.director.trim());
-    chipDir.textContent = st.director.trim() ? '导演 ✓' : '导演';
+    statusRow.replaceChildren(...[
+      st.ooc ? el('div', { class: 'status ooc' },
+        el('span', { class: 'lbl', text: '出戏：这一句是场外话，不推进剧情' }),
+        el('button', { 'aria-label': '关掉出戏', onclick: () => { st.ooc = false; updateComposer(); } }, '✕')) : null,
+      st.director.trim() ? el('div', { class: 'status' },
+        el('span', { class: 'lbl', onclick: () => editDirector(), text: '导演：' + st.director.trim() }),
+        el('button', { 'aria-label': '清除导演指令', onclick: () => { st.director = ''; updateComposer(); } }, '✕')) : null,
+    ].filter(Boolean));
     ta.classList.toggle('ooc', st.ooc);
     ta.placeholder = !started
       ? '开场要求（可以不填）'
       : st.ooc ? '出戏：和 GM 场外说话，不推进剧情' : '台词放在“”里，动作和心里想的直接写';
-    chipOoc.style.display = started ? '' : 'none';
     chipCont.style.display = started ? '' : 'none';
     chipCont.disabled = busy;
     chipCont.style.opacity = busy ? .45 : 1;
@@ -701,14 +706,19 @@ export async function render(root, { id }) {
 
   async function storyMenu() {
     const leaves = branchList().length;
+    const started = headPath().length > 0;
     const k = await menu(story.title || '故事', [
+      started ? { key: 'ooc', label: st.ooc ? '退出出戏' : '出戏', hint: '下一句是场外话：问设定、商量走向，不推进剧情' } : null,
+      { key: 'dir', label: st.director.trim() ? '修改导演指令' : '导演指令', hint: '只对下一轮生效的要求，不写进规则' },
       { key: 'edit', label: '编辑设定', hint: '世界、角色、规则、弹幕和选项开关' },
       { key: 'branch', label: `分支${leaves > 1 ? `（${leaves} 条）` : ''}`, hint: '重写或回退后留下的其他走向' },
       { key: 'cost', label: '花费', hint: '这个故事和本月花了多少' },
       { key: 'ctx', label: '查看发给模型的内容', hint: '排查“为什么他又不像他了”' },
       { key: 'export', label: '导出这个故事', hint: '不含密钥' },
     ]);
-    if (k === 'edit') {
+    if (k === 'ooc') { st.ooc = !st.ooc; updateComposer(); if (st.ooc) ta.focus(); }
+    else if (k === 'dir') editDirector();
+    else if (k === 'edit') {
       const s = await openStoryEditor(story);
       if (s) { Object.assign(story, s); st.conn = await resolveConnection(story); renderFeed(); }
     } else if (k === 'branch') showBranches();

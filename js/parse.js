@@ -7,11 +7,16 @@ function clean(line) {
 
 // 标记行：【弹幕】/[弹幕]/弹幕：/弹幕（独占一行）；选项同理（允许“参考选项”“行动选项”）
 const MARKERS = {
-  danmu: [/^[【\[(（]\s*弹\s*幕\s*[】\])）]\s*[:：]?\s*(.*)$/, /^弹\s*幕\s*[:：]\s*(.*)$/, /^弹\s*幕\s*()$/],
+  danmu: [
+    /^[【\[(（]\s*(?:实时)?\s*弹\s*幕\s*(?:区|评论|实况)?\s*[】\])）]\s*[:：]?\s*(.*)$/,
+    /^(?:实时)?\s*弹\s*幕\s*(?:区|评论|实况)?\s*[:：]\s*(.*)$/,
+    /^(?:实时)?\s*弹\s*幕\s*(?:区|评论|实况)?\s*()$/,
+  ],
   options: [
-    /^[【\[(（]\s*(?:参考|行动|可选)?\s*选\s*项\s*[】\])）]\s*[:：]?\s*(.*)$/,
-    /^(?:参考|行动|可选)?\s*选\s*项\s*[:：]\s*(.*)$/,
-    /^(?:参考|行动|可选)?\s*选\s*项\s*()$/,
+    /^[【\[(（]\s*(?:参考|行动|可选|你的)?\s*(?:选\s*项|选\s*择|行\s*动|抉\s*择|下一步)\s*(?:选项)?\s*[】\])）]\s*[:：]?\s*(.*)$/,
+    /^(?:参考|行动|可选|你的)?\s*选\s*[项择]\s*[:：]\s*(.*)$/,
+    /^(?:参考|行动|可选|你的)?\s*选\s*[项择]\s*()$/,
+    /^(?:可选行动|你可以|接下来你可以)\s*[:：]\s*(.*)$/,
   ],
 };
 const SEP_RE = /^[-—=*_·~\s]{3,}$/;
@@ -75,7 +80,25 @@ export function parseReply(raw) {
   title = title.replace(/^\*+|\*+$/g, '').replace(/^第\s*[0-9一二三四五六七八九十百千]+\s*[章回节]\s*[：:·\s]*/, '').trim();
 
   // 去掉正文末尾的分隔线
-  while (body.length && (!body[body.length - 1].trim() || SEP_RE.test(clean(body[body.length - 1])))) body.pop();
+  const trimTail = () => { while (body.length && (!body[body.length - 1].trim() || SEP_RE.test(clean(body[body.length - 1])))) body.pop(); };
+  trimTail();
+
+  // 模型没写“选项”标记，但正文最后是连着的 A/B/C（或 1/2/3）几行：当成选项
+  if (!options.length) {
+    const OPT_LINE = /^\s*(?:[-*•·]\s*)?\**\s*(?:[A-Ea-e]|[1-5])\s*[.、．:：)）]\s*\S/;
+    const tail = [];
+    for (let i = body.length - 1; i >= 0; i--) {
+      const l = body[i];
+      if (!l.trim()) { if (tail.length) continue; else continue; }
+      if (OPT_LINE.test(clean(l)) || OPT_LINE.test(l)) tail.unshift(i);
+      else break;
+    }
+    if (tail.length >= 2) {
+      for (const i of tail) { const o = stripOptionPrefix(clean(body[i])); if (o) options.push(o); }
+      body.splice(tail[0]);
+      trimTail();
+    }
+  }
 
   const bodyText = body.join('\n').trim();
   return { title, body: bodyText, danmu: danmu.slice(0, 30), options: options.slice(0, 6) };

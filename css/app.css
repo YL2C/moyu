@@ -221,6 +221,15 @@ a { color: var(--accent); }
   padding: 5px 12px; font-size: 13px; color: var(--text2); cursor: pointer; white-space: nowrap;
 }
 .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.status-row { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 6px; }
+.status-row:not(:empty) { margin-bottom: 6px; }
+.status {
+  display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--accent);
+  background: var(--accent-soft); border-radius: 10px; padding: 4px 4px 4px 10px;
+}
+.status.ooc { color: var(--text2); background: var(--bg2); border: 1px dashed var(--text3); }
+.status .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.status button { flex: none; border: 0; background: transparent; color: inherit; font-size: 14px; padding: 4px 8px; cursor: pointer; }
 .composer .inrow { display: flex; gap: 8px; align-items: flex-end; max-width: 720px; margin: 0 auto; }
 .composer .bar { max-width: 720px; margin-left: auto; margin-right: auto; }
 .composer textarea {
