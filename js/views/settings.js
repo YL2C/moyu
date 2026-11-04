@@ -21,6 +21,29 @@ function seg(options, value, onpick) {
   return box;
 }
 
+/** 可搜索的模型选择框，返回选中的模型名（取消返回 null） */
+function pickModel(list, current = '') {
+  return new Promise((resolve) => {
+    let picked = null;
+    const s = sheet({ title: `选择模型（共 ${list.length} 个）`, onClose: () => resolve(picked) });
+    const q = el('input', { type: 'text', placeholder: '搜索，例如 claude、gemini、deepseek', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
+    const box = el('div', { class: 'menu-list' });
+    const draw = () => {
+      const k = q.value.trim().toLowerCase();
+      const hits = list.filter((m) => !k || m.toLowerCase().includes(k));
+      box.replaceChildren(...hits.slice(0, 400).map((m) => el('button', {
+        style: { wordBreak: 'break-all' },
+        onclick: () => { picked = m; s.close(); },
+      }, m + (m === current ? '  ✓' : ''))));
+      if (!hits.length) box.append(el('div', { class: 'hint', text: '没有匹配的模型' }));
+    };
+    q.addEventListener('input', draw);
+    s.body.append(el('div', { class: 'field', style: { marginBottom: '6px' } }, q), box);
+    s.foot.remove();
+    draw();
+  });
+}
+
 export async function render(root, { section }) {
   const wrap = el('div', { class: 'wrap' });
   root.append(el('div', { class: 'view' },
@@ -172,18 +195,30 @@ export async function render(root, { section }) {
     fmt.addEventListener('change', refreshUrl);
     refreshUrl();
 
+    // 模型列表：iPhone 上输入框自带的候选列表点不出来，所以拉到列表后弹一个可搜索的选择框
+    let fetched = [];
+    const setFetched = (list) => {
+      fetched = list || [];
+      dl.replaceChildren(...fetched.map((m) => el('option', { value: m })));
+      getModels.textContent = fetched.length ? `选择模型（${fetched.length}）` : '获取模型列表';
+    };
     const getModels = el('button', {
-      class: 'btn small ghost',
+      class: 'btn small',
       onclick: async () => {
-        getModels.disabled = true; getModels.textContent = '获取中…';
-        try {
-          const list = await listModels(read());
-          dl.replaceChildren(...list.map((m) => el('option', { value: m })));
-          toast(list.length ? `获取到 ${list.length} 个模型，点模型名输入框可以选` : '列表是空的');
-        } catch (e) { toast('获取失败：' + e.message, 3500); }
-        getModels.disabled = false; getModels.textContent = '获取模型列表';
+        if (!fetched.length) {
+          getModels.disabled = true; getModels.textContent = '获取中…';
+          try {
+            setFetched(await listModels(read()));
+            if (!fetched.length) toast('列表是空的，只能手动输入模型名');
+          } catch (e) { toast('获取失败：' + e.message, 3500); setFetched([]); }
+          getModels.disabled = false;
+          if (!fetched.length) return;
+        }
+        const m = await pickModel(fetched, model.value.trim());
+        if (m) { model.value = m; toast('已选择 ' + m); }
       },
     }, '获取模型列表');
+    const refetch = el('button', { class: 'btn small ghost', onclick: () => { setFetched([]); getModels.click(); } }, '重新获取');
 
     const testBtn = el('button', {
       class: 'btn primary block',
@@ -195,14 +230,14 @@ export async function render(root, { section }) {
         const r = await testConnection(read(), ({ id, state, text, detail }) => {
           let row = rows.get(id);
           if (!row) { row = el('div', { class: 's' }); rows.set(id, row); log.append(row); }
-          row.replaceChildren(el('span', { class: state, text: icon[state] + ' ' }), text,
-            detail ? el('pre', { class: 'raw', text: detail }) : null);
+          row.replaceChildren(...[el('span', { class: state, text: icon[state] + ' ' }), text,
+            detail ? el('pre', { class: 'raw', text: detail }) : null].filter(Boolean));
         });
         if (r.ok && r.format && fmt.value === 'auto') {
           fmt.value = r.format; refreshUrl();
           log.append(el('div', { class: 's ok', text: `已识别为「${FORMAT_LABEL[r.format]}」格式，保存后生效。` }));
         }
-        if (r.models?.length) dl.replaceChildren(...r.models.map((m) => el('option', { value: m })));
+        if (r.models?.length) setFetched(r.models);
         testBtn.disabled = false; testBtn.textContent = '再测一次';
       },
     }, '测试连接');
@@ -215,7 +250,7 @@ export async function render(root, { section }) {
         el('div', { class: 'hint', text: '不确定就选“自动识别”，测试时会自己判断。' })),
       el('div', { class: 'field' }, el('label', { text: 'API 密钥' }), el('div', { class: 'row', style: { flexWrap: 'nowrap' } }, key, showKey),
         el('div', { class: 'hint', text: '只存在这台设备上，导出备份时不会带出去。' })),
-      el('div', { class: 'field' }, el('label', { text: '模型名' }), model, dl, el('div', { class: 'row', style: { marginTop: '6px' } }, getModels)),
+      el('div', { class: 'field' }, el('label', { text: '模型名' }), model, dl, el('div', { class: 'row', style: { marginTop: '6px' } }, getModels, refetch)),
       el('div', { class: 'row', style: { alignItems: 'flex-start', flexWrap: 'nowrap' } },
         el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '输出上限' }), maxT,
           el('div', { class: 'hint', text: '每轮最多写多少（单位是 token）。开了思考的模型要调大，例如 8000。' })),
