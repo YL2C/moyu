@@ -4,7 +4,7 @@
 import { toast } from './util.js';
 
 const DB_NAME = 'moyu';
-const DB_VER = 1;
+const DB_VER = 2;
 export const SCHEMA = 1; // 存档格式版本，以后升级格式时据此迁移
 
 let dbPromise = null;
@@ -20,6 +20,10 @@ function open() {
       if (!db.objectStoreNames.contains('stories')) db.createObjectStore('stories', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('nodes')) {
         const s = db.createObjectStore('nodes', { keyPath: 'id' });
+        s.createIndex('storyId', 'storyId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('extras')) {
+        const s = db.createObjectStore('extras', { keyPath: 'id' }); // 番外，不进正史
         s.createIndex('storyId', 'storyId', { unique: false });
       }
     };
@@ -57,6 +61,7 @@ export const db = {
   get: (store, key) => run(store, 'readonly', (os) => os.get(key)),
   all: (store) => run(store, 'readonly', (os) => os.getAll()),
   byStory: (storyId) => run('nodes', 'readonly', (os) => os.index('storyId').getAll(storyId)),
+  extrasOf: (storyId) => run('extras', 'readonly', (os) => os.index('storyId').getAll(storyId)),
   async put(store, value, key) {
     try {
       return await run(store, 'readwrite', (os) => (key === undefined ? os.put(value) : os.put(value, key)));
@@ -74,6 +79,8 @@ export const db = {
   async delStory(storyId) {
     const nodes = await db.byStory(storyId);
     await run('nodes', 'readwrite', (os) => { for (const n of nodes) os.delete(n.id); });
+    const extras = await db.extrasOf(storyId);
+    if (extras.length) await run('extras', 'readwrite', (os) => { for (const x of extras) os.delete(x.id); });
     await db.del('stories', storyId);
   },
   async kvGet(key, fallback) {
@@ -106,13 +113,14 @@ export async function storageInfo() {
 
 /** 导出：默认不含 API 密钥 */
 export async function exportAll({ includeKeys = false } = {}) {
-  const [stories, nodes, connections, defaultRules, prefs] = await Promise.all([
-    db.all('stories'), db.all('nodes'), db.all('connections'),
+  const [stories, nodes, extras, connections, defaultRules, prefs, modules, fwTemplates, fwBase] = await Promise.all([
+    db.all('stories'), db.all('nodes'), db.all('extras'), db.all('connections'),
     db.kvGet('defaultRules', null), db.kvGet('prefs', null),
+    db.kvGet('modules', null), db.kvGet('fwTemplates', null), db.kvGet('fwBase', null),
   ]);
   return {
     app: 'moyu', schema: SCHEMA, exportedAt: Date.now(),
-    stories, nodes,
+    stories, nodes, extras, modules, fwTemplates, fwBase,
     connections: connections.map((c) => (includeKeys ? c : { ...c, apiKey: '' })),
     defaultRules, prefs,
   };
@@ -121,7 +129,8 @@ export async function exportAll({ includeKeys = false } = {}) {
 export async function exportStory(storyId) {
   const story = await db.get('stories', storyId);
   const nodes = await db.byStory(storyId);
-  return { app: 'moyu', schema: SCHEMA, exportedAt: Date.now(), stories: [story], nodes, connections: [] };
+  const extras = await db.extrasOf(storyId);
+  return { app: 'moyu', schema: SCHEMA, exportedAt: Date.now(), stories: [story], nodes, extras, connections: [] };
 }
 
 /** 导入：同 id 的故事会被覆盖；连接只补充不存在的（不覆盖本机已有密钥） */
@@ -136,6 +145,12 @@ export async function importData(data) {
   }
   if (stories.length) await db.putMany('stories', stories);
   if (nodes.length) await db.putMany('nodes', nodes);
+  const extras = Array.isArray(data.extras) ? data.extras.filter(Boolean) : [];
+  if (extras.length) await db.putMany('extras', extras);
+  // 模块和番外模板：本机还没有的时候才用备份里的（不覆盖本机已经改过的）
+  if (Array.isArray(data.modules) && !(await db.kvGet('modules', null))) await db.kvSet('modules', data.modules);
+  if (Array.isArray(data.fwTemplates) && !(await db.kvGet('fwTemplates', null))) await db.kvSet('fwTemplates', data.fwTemplates);
+  if (data.fwBase && !(await db.kvGet('fwBase', null))) await db.kvSet('fwBase', data.fwBase);
   let addedConn = 0;
   if (Array.isArray(data.connections)) {
     const existing = new Set((await db.all('connections')).map((c) => c.id));
@@ -143,5 +158,5 @@ export async function importData(data) {
     if (fresh.length) { await db.putMany('connections', fresh); addedConn = fresh.length; }
   }
   if (data.defaultRules && !(await db.kvGet('defaultRules', null))) await db.kvSet('defaultRules', data.defaultRules);
-  return { stories: stories.length, nodes: nodes.length, connections: addedConn };
+  return { stories: stories.length, nodes: nodes.length, extras: extras.length, connections: addedConn };
 }

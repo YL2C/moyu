@@ -719,6 +719,7 @@ export async function render(root, { id }) {
       { key: 'dir', label: st.director.trim() ? '修改导演指令' : '导演指令', hint: '只对下一轮生效的要求，不写进规则' },
       ...manualMods().map((m) => ({ key: 'mod:' + m.id, label: `情境：${m.name}${story.manualOn[m.id] ? '  ✓ 开着' : '（关着）'}`, hint: story.manualOn[m.id] ? '点一下关掉' : '点一下打开，之后每轮都带上这个模块' })),
       { key: 'edit', label: '角色与设定', hint: '世界设定、角色卡、规则和模块' },
+      { key: 'extra', label: '番外册', hint: '论坛体、日记、采访，或者自己写个点子；不进正史' },
       { key: 'branch', label: `分支${leaves > 1 ? `（${leaves} 条）` : ''}`, hint: '重写或回退后留下的其他走向' },
       { key: 'cost', label: '花费', hint: '这个故事和本月花了多少' },
       { key: 'ctx', label: '查看发给模型的内容', hint: '排查“为什么他又不像他了”' },
@@ -734,6 +735,7 @@ export async function render(root, { id }) {
     } else if (k === 'ooc') { st.ooc = !st.ooc; updateComposer(); if (st.ooc) ta.focus(); }
     else if (k === 'dir') editDirector();
     else if (k === 'edit') go(`story/${encodeURIComponent(story.id)}`);
+    else if (k === 'extra') go(`extra/${encodeURIComponent(story.id)}`);
     else if (k === 'branch') showBranches();
     else if (k === 'cost') showCost();
     else if (k === 'ctx') showContext();

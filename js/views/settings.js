@@ -6,6 +6,7 @@ import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, ge
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
 import { DEFAULT_RULES } from '../prompt.js';
 import { getMonthSpend, getBudget, setBudget, fmtTokens, CUR } from '../cost.js';
+import { getTemplates, saveTemplates, getBase, saveBase, DEFAULT_BASE, builtinTemplates, newTemplate, SCOPES } from '../fanwai.js';
 
 function sw(checked, onchange) {
   const input = el('input', { type: 'checkbox', onchange: () => onchange(input.checked) });
@@ -125,6 +126,34 @@ export async function render(root, { section }) {
       }, '导入 markdown'),
       mods.length ? el('button', { class: 'btn small ghost', onclick: async () => { await saveFile('墨游_规则模块.md', modulesToMarkdown(await getModules()), 'text/markdown'); } }, '导出') : null));
     wrap.append(modCard);
+
+    // ── 番外 ──
+    const tpls = await getTemplates();
+    wrap.append(el('div', { class: 'section-title', id: 'sec-fanwai', text: '番外模板与通用要求' }));
+    const fwCard = el('div', { class: 'card' });
+    for (const t of tpls) {
+      fwCard.append(el('div', { class: 'switch-row', style: { cursor: 'pointer' }, onclick: () => editTemplate(t) },
+        el('div', { class: 'lbl' }, t.name, el('small', { text: `默认知情：${(SCOPES[t.scope] || '').split('：')[0]} · ${t.text.length} 字` })),
+        el('span', { class: 'muted', text: '›' })));
+    }
+    fwCard.append(el('div', { class: 'row', style: { marginTop: '10px' } },
+      el('button', { class: 'btn small primary', onclick: () => editTemplate(null) }, '＋ 新模板'),
+      el('button', { class: 'btn small', onclick: () => editBase() }, '番外通用要求'),
+      el('button', {
+        class: 'btn small',
+        onclick: async () => {
+          const f = await pickFile('.md,.txt,text/plain,text/markdown');
+          if (!f) return;
+          const found = modulesFromMarkdown(f.text, f.name.replace(/\.(md|txt)$/i, ''));
+          if (!found.length) { toast('文件里没有内容'); return; }
+          if (!confirm(`拆出 ${found.length} 个番外模板：\n${found.map((x) => '· ' + x.name).slice(0, 20).join('\n')}\n\n导入后可以逐个改知情范围。继续？`)) return;
+          const list = await getTemplates();
+          for (const x of found) list.push({ ...newTemplate(), name: x.name, text: x.text });
+          await saveTemplates(list); toast(`已导入 ${found.length} 个模板`); draw();
+        },
+      }, '导入 markdown'),
+      el('button', { class: 'btn small ghost', onclick: async () => { await saveFile('墨游_番外模板.md', modulesToMarkdown(await getTemplates()), 'text/markdown'); } }, '导出')));
+    wrap.append(fwCard);
 
     // ── 阅读 ──
     const p = getPrefs();
@@ -402,7 +431,57 @@ export async function render(root, { section }) {
     ].filter(Boolean));
   }
 
+  // ───── 番外模板编辑 ─────
+  async function editTemplate(existing) {
+    const isNew = !existing;
+    const t = existing ? { ...existing } : newTemplate();
+    const s = sheet({ title: isNew ? '新番外模板' : '编辑番外模板' });
+    const name = el('input', { type: 'text', placeholder: '例：追星论坛体、采访体·侧写' }); name.value = t.name;
+    const scope = el('select');
+    for (const [k, v] of Object.entries(SCOPES)) if (k !== 'follow') scope.append(el('option', { value: k }, v));
+    scope.value = t.scope || 'all';
+    const text = el('textarea', { class: 'tall', placeholder: '这种形式怎么写：格式、视角、要有哪些元素、要避免什么' }); text.value = t.text; text.style.minHeight = '36vh';
+    const note = el('textarea', { placeholder: '备注，只给自己看，不发给模型' }); note.value = t.note || '';
+    s.body.append(
+      el('div', { class: 'field' }, el('label', { text: '名字' }), name),
+      el('div', { class: 'field' }, el('label', { text: '默认知情范围' }), scope, el('div', { class: 'hint', text: '写番外时可以临时改。' })),
+      el('div', { class: 'field' }, el('label', { text: '写法要求（发给模型）' }), text),
+      el('div', { class: 'field' }, el('label', { text: '备注（不发给模型）' }), note));
+    s.foot.append(...[
+      isNew ? null : el('button', {
+        class: 'btn danger', style: { marginRight: 'auto' },
+        onclick: async () => {
+          if (!confirm(`删除模板「${t.name}」？已经写好的番外不受影响。`)) return;
+          await saveTemplates((await getTemplates()).filter((x) => x.id !== t.id)); s.close(); toast('已删除'); draw();
+        },
+      }, '删除'),
+      el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'),
+      el('button', {
+        class: 'btn primary',
+        onclick: async () => {
+          t.name = name.value.trim(); t.scope = scope.value; t.text = text.value; t.note = note.value;
+          if (!t.name) { toast('起个名字'); return; }
+          const list = await getTemplates();
+          const i = list.findIndex((x) => x.id === t.id);
+          if (i >= 0) list[i] = t; else list.push(t);
+          await saveTemplates(list); s.close(); toast('模板已保存'); draw();
+        },
+      }, '保存'),
+    ].filter(Boolean));
+  }
+
+  async function editBase() {
+    const s = sheet({ title: '番外通用要求' });
+    const text = el('textarea', { class: 'tall' }); text.value = await getBase(); text.style.minHeight = '46vh';
+    s.body.append(el('div', { class: 'field' }, text, el('div', { class: 'hint', text: '每篇番外都会带上，不管什么形式。可以把你的番外总纲贴在这里。' })));
+    s.foot.append(
+      el('button', { class: 'btn ghost', style: { marginRight: 'auto' }, onclick: () => { if (confirm('恢复成内置的通用要求？')) text.value = DEFAULT_BASE; } }, '恢复内置'),
+      el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'),
+      el('button', { class: 'btn primary', onclick: async () => { await saveBase(text.value); s.close(); toast('已保存'); } }, '保存'));
+  }
+
   await draw();
   if (section === 'new') editConn(null);
+  if (section === 'fanwai') requestAnimationFrame(() => document.getElementById('sec-fanwai')?.scrollIntoView({ block: 'start' }));
   if (section === 'modules') requestAnimationFrame(() => document.getElementById('sec-modules')?.scrollIntoView({ block: 'start' }));
 }

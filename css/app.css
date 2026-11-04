@@ -137,6 +137,7 @@ a { color: var(--accent); }
 .gm .chapter { font-family: var(--ui-font); font-size: 13px; color: var(--text3); letter-spacing: .08em; margin: 20px 0 2px; }
 .gm h2 { font-family: var(--read-font); font-size: calc(var(--read-size) * 1.12); font-weight: 700; margin: 0 0 12px; line-height: 1.5; }
 .gm p { margin: 0 0 .85em; text-indent: var(--indent); word-break: break-word; }
+.gm p.fw { white-space: pre-wrap; text-indent: 0; }
 .gm .thinking { font-family: var(--ui-font); font-size: 13px; color: var(--text3); padding: 6px 0; }
 .gm .thinking::after { content: "…"; animation: dots 1.2s infinite steps(3); display: inline-block; width: 1.2em; overflow: hidden; vertical-align: bottom; }
 @keyframes dots { 0% { width: .2em } 50% { width: .6em } 100% { width: 1.2em } }
