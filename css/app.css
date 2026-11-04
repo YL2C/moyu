@@ -39,13 +39,16 @@
 :root[data-indent="off"] { --indent: 0; }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
 body { font-family: var(--ui-font); font-size: 15px; overscroll-behavior: none; }
 button, input, textarea, select { font: inherit; color: inherit; }
 a { color: var(--accent); }
 
-#app, .view-host { height: var(--app-h); overflow: hidden; }
-.view { display: flex; flex-direction: column; height: var(--app-h); }
+/* 整个应用和弹出层都钉在“可见区域”上：iPhone 键盘弹出时，可见区域变矮、还可能被系统平移，
+   用 --vv-top / --app-h 跟着走，内容就永远在键盘上方 */
+#app { position: fixed; left: 0; right: 0; top: var(--vv-top, 0px); height: var(--app-h); overflow: hidden; }
+.view-host { height: 100%; overflow: hidden; }
+.view { display: flex; flex-direction: column; height: 100%; }
 
 /* 顶栏 */
 .topbar {
@@ -217,17 +220,21 @@ a { color: var(--accent); }
 
 /* 弹出层 */
 .sheet-backdrop {
-  position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 50; display: flex; align-items: flex-end; justify-content: center;
+  position: fixed; left: 0; right: 0; top: var(--vv-top, 0px); height: var(--app-h); background: rgba(0,0,0,.35); z-index: 50; display: flex; align-items: flex-end; justify-content: center;
   animation: fade .15s ease;
 }
 .sheet {
-  width: 100%; max-width: 720px; max-height: calc(var(--app-h) - env(safe-area-inset-top) - 24px); display: flex; flex-direction: column;
+  width: 100%; max-width: 720px; max-height: calc(100% - env(safe-area-inset-top) - 24px); display: flex; flex-direction: column;
   background: var(--bg); border-radius: 16px 16px 0 0; animation: up .2s ease;
 }
 .sheet .sh { display: flex; align-items: center; padding: 12px 14px 8px; border-bottom: 1px solid var(--line); }
 .sheet .sh .t { flex: 1; font-weight: 600; font-size: 16px; }
 .sheet .sb { overflow-y: auto; padding: 14px 16px; -webkit-overflow-scrolling: touch; }
 .sheet .sf { padding: 10px 16px calc(env(safe-area-inset-bottom) + 12px); border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; }
+/* 键盘弹出时：弹出层用满可见高度，底部不再留安全区 */
+:root.kb .sheet { max-height: calc(100% - 6px); }
+:root.kb .sheet .sf { padding-bottom: 10px; }
+:root.kb .composer { padding-bottom: 8px; }
 @keyframes fade { from { opacity: 0 } }
 @keyframes up { from { transform: translateY(30px); opacity: .6 } }
 @media (min-width: 760px) {
