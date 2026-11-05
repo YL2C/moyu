@@ -8,7 +8,7 @@ import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, late
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { archiveConn, DEFAULT_EVERY } from './memory.js';
 import { parseReply, paragraphs } from '../parse.js';
-import { normalizeUsage, computeCost, fmtMoney, fmtTokens, addSpend, checkBudget, getMonthSpend, getBudget, hasPrice, CUR } from '../cost.js';
+import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage, getMonthSpend, getBudget, hasPrice, CUR, getUsageLog } from '../cost.js';
 
 export async function render(root, { id }) {
   const story = await db.get('stories', id);
@@ -266,7 +266,7 @@ export async function render(root, { id }) {
     try {
       const r = await streamWithRetry(conn, { system, messages: [{ role: 'user', content: user }], maxTokens: 3000 });
       const u = normalizeUsage(r.usage, { inChars: system.length + user.length, outChars: r.text.length });
-      addSpend(computeCost(u, conn), u).then((m) => checkBudget(m)).catch(() => {});
+      recordUsage({ kind: '补选项', storyId: story.id, model: conn.model, usage: u, cost: computeCost(u, conn) });
       let opts = parseReply(r.text).options;
       if (!opts.length) opts = r.text.split('\n').map((l) => l.trim()).filter((l) => l && !/选\s*项/.test(l)).slice(0, 3);
       if (!opts.length) { toast('没补上，可以再试一次'); return; }
@@ -472,7 +472,7 @@ export async function render(root, { id }) {
           a.usageN = { input: a.usageN.input + u.input, cached: (a.usageN.cached || 0) + u.cached, output: a.usageN.output + u.output, est: a.usageN.est || u.est };
           a.cost = c && a.cost && a.cost.currency === c.currency ? { ...c, amount: a.cost.amount + c.amount, est: a.cost.est || c.est } : (c || a.cost || null);
         } else { a.usageN = u; a.cost = c; }
-        addSpend(c, u).then((m) => checkBudget(m)).catch(() => {});
+        recordUsage({ kind: a.kind === 'ooc' ? '出戏' : continueNode ? '续写' : '正文', storyId: story.id, model: conn.model, usage: u, cost: c });
       }
       touch(a);
       await persist();
@@ -847,33 +847,50 @@ export async function render(root, { id }) {
 
   async function showCost() {
     const s = sheet({ title: '花费' });
-    const sum = { CNY: 0, USD: 0, input: 0, output: 0, est: false, count: 0, priced: 0 };
-    for (const n of nodes.values()) {
-      if (n.role !== 'assistant' || !n.usageN) continue;
-      sum.count++;
-      sum.input += n.usageN.input; sum.output += n.usageN.output;
-      if (n.usageN.est) sum.est = true;
-      if (n.cost) { sum[n.cost.currency] = (sum[n.cost.currency] || 0) + n.cost.amount; sum.priced++; if (n.cost.est) sum.est = true; }
-    }
+    const log = await getUsageLog(story.id);
     const month = await getMonthSpend();
     const budget = await getBudget();
-    const money = (o) => ['CNY', 'USD'].filter((c) => o[c] > 0).map((c) => CUR[c] + o[c].toFixed(2)).join(' + ') || '—';
+    const money = (o) => ['CNY', 'USD'].filter((c) => o[c] > 0).map((c) => CUR[c] + (o[c] < 0.01 ? Number(o[c].toPrecision(2)) : o[c].toFixed(2))).join(' + ');
+    // 这个故事：按用途汇总（正文 / 整理前情 / 拆角色卡 / 补选项 / 番外…）
+    const by = new Map();
+    const tot = { CNY: 0, USD: 0, input: 0, output: 0, count: 0, est: false, unpriced: 0 };
+    for (const x of log) {
+      const g = by.get(x.kind) || { CNY: 0, USD: 0, input: 0, output: 0, count: 0 };
+      for (const o of [g, tot]) {
+        o.input += x.input; o.output += x.output; o.count++;
+        if (x.cost) o[x.cost.currency] = (o[x.cost.currency] || 0) + x.cost.amount;
+      }
+      if (x.est) tot.est = true;
+      if (!x.cost) tot.unpriced++;
+      by.set(x.kind, g);
+    }
+    const play = by.get('正文');
+    const avgIn = play?.count ? Math.round(play.input / play.count) : 0;
+    const noPrice = !hasPrice(st.conn);
     s.body.append(
-      el('div', { class: 'section-title', style: { marginTop: 0 }, text: '这个故事（含所有分支和重写）' }),
+      el('div', { class: 'section-title', style: { marginTop: 0 }, text: '这个故事' }),
       el('div', { class: 'card' },
-        el('div', { style: { fontSize: '22px', fontWeight: '600' } }, (sum.est ? '约 ' : '') + money(sum)),
-        el('div', { class: 'hint' }, `共 ${sum.count} 次生成 · 输入 ${fmtTokens(sum.input)} · 输出 ${fmtTokens(sum.output)} token`)),
+        el('div', { style: { fontSize: '22px', fontWeight: '600' } }, money(tot) ? (tot.est ? '约 ' : '') + money(tot) : (noPrice ? '没填单价，算不出金额' : '—')),
+        el('div', { class: 'hint', style: { whiteSpace: 'pre-wrap' } }, `共 ${tot.count} 次调用 · 输入 ${fmtTokens(tot.input)} · 输出 ${fmtTokens(tot.output)} token` +
+          (avgIn ? `\n正文平均每轮发出去 ${fmtTokens(avgIn)} token（规则、设定、角色卡、前情和最近几章原文，每轮都要重发）` : ''))),
+      ...(by.size ? [el('div', { class: 'card' }, ...[...by.entries()].map(([k, g]) => el('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'nowrap', fontSize: '14px', padding: '3px 0' } },
+        el('span', { text: `${k} × ${g.count}` }),
+        el('span', { style: { color: 'var(--text2)' }, text: `入 ${fmtTokens(g.input)} · 出 ${fmtTokens(g.output)}${money(g) ? ' · ' + money(g) : ''}` }))))] : []),
+      log.length ? el('div', { class: 'section-title', text: '最近的调用' }) : null,
+      log.length ? el('div', { class: 'card', style: { padding: '8px 14px' } }, ...log.slice(-30).reverse().map((x) => el('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'nowrap', fontSize: '13px', padding: '4px 0', borderBottom: '1px solid var(--line)' } },
+        el('span', { style: { whiteSpace: 'nowrap' }, text: `${new Date(x.at).toTimeString().slice(0, 5)} ${x.kind}` }),
+        el('span', { style: { color: 'var(--text2)', textAlign: 'right' }, text: `${x.est ? '约' : ''}入 ${fmtTokens(x.input)}${x.cached ? `（缓存 ${fmtTokens(x.cached)}）` : ''} · 出 ${fmtTokens(x.output)}${x.cost ? ' · ' + fmtMoney(x.cost) : ''}` })))) : null,
       el('div', { class: 'section-title', text: '本月（所有故事）' }),
       el('div', { class: 'card' },
-        el('div', { style: { fontSize: '22px', fontWeight: '600' } }, money(month)),
-        el('div', { class: 'hint' }, `共 ${month.count} 次生成 · 输入 ${fmtTokens(month.input)} · 输出 ${fmtTokens(month.output)} token` +
+        el('div', { style: { fontSize: '22px', fontWeight: '600' } }, money(month) || (month.count ? '没填单价，算不出金额' : '—')),
+        el('div', { class: 'hint' }, `共 ${month.count} 次调用 · 输入 ${fmtTokens(month.input)} · 输出 ${fmtTokens(month.output)} token` +
           (budget.amount ? ` · 提醒线 ${CUR[budget.currency]}${budget.amount}` : ''))),
-      el('div', { class: 'hint' },
-        !hasPrice(st.conn) ? '当前连接没有填价格，只能统计 token。在设置 → 连接里填上价格就能算钱。' : '',
-        sum.est ? ' 带“约”的是按字数粗估的：这个接口没有返回真实用量。' : '',
-        ' 金额按你填的价格估算，实际以中转站或官方后台为准。')
+      el('div', { class: 'hint', style: { whiteSpace: 'pre-wrap' } },
+        [noPrice ? '金额要在“设置 → 连接”里填上单价（每百万 token 多少钱，看中转站的价格页）才算得出来，没填就只统计 token。' : '',
+          tot.est ? '带“约”的是按字数粗估的：这个接口没有返回真实用量。' : '',
+          '这里是按你填的单价估算的，实际扣费以中转站或官方后台的日志为准。'].filter(Boolean).join('\n'))
     );
-    s.foot.append(el('button', { class: 'btn ghost', onclick: () => { s.close(); go('settings'); } }, '设置提醒线'), el('button', { class: 'btn primary', onclick: () => s.close() }, '关闭'));
+    s.foot.append(el('button', { class: 'btn ghost', onclick: () => { s.close(); go('settings'); } }, '去填单价 / 提醒线'), el('button', { class: 'btn primary', onclick: () => s.close() }, '关闭'));
   }
 
   async function correctChar(n) {

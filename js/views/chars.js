@@ -6,6 +6,7 @@ import { connLabel, resolveConnection, go, setCurrentStory } from '../state.js';
 import { streamWithRetry } from '../api.js';
 import { latestCheckpoint, memoryText, splitNames } from '../prompt.js';
 import { chaptersOf } from '../fanwai.js';
+import { normalizeUsage, computeCost, recordUsage } from '../cost.js';
 
 function pathTo(nodes, nodeId) {
   const out = [];
@@ -213,6 +214,8 @@ export async function render(root, { id }) {
         onText: (_d, full) => { raw = full; status.textContent = `正在整理（已收到 ${full.length} 字）`; },
       });
       raw = r.text;
+      const u = normalizeUsage(r.usage, { inChars: prompt.length + 20, outChars: raw.length });
+      recordUsage({ kind: '拆角色卡', storyId: story.id, model: conn.model, usage: u, cost: computeCost(u, conn) });
     } catch (e) {
       if (e.kind === 'aborted') return;
       status.className = 'err'; status.textContent = '整理失败：' + e.message + (e.hint ? '。' + e.hint : '');

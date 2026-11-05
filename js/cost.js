@@ -14,6 +14,10 @@ function num(v) {
 
 /** 把各家的用量字段统一成 { input, cached, output, est } */
 export function normalizeUsage(raw, { inChars = 0, outChars = 0 } = {}) {
+  // 有的中转站会返回全是 0 的用量：当成没返回，按字数粗估
+  const zero = raw && !Number(raw.input_tokens || raw.prompt_tokens || 0) && !Number(raw.output_tokens || raw.completion_tokens || 0) &&
+    !Number(raw.cache_read_input_tokens || 0) && !Number(raw.cache_creation_input_tokens || 0);
+  if (zero && (inChars || outChars)) raw = null;
   if (raw && (raw.input_tokens != null || raw.output_tokens != null)) {
     const cacheRead = raw.cache_read_input_tokens || 0;
     const cacheWrite = raw.cache_creation_input_tokens || 0;
@@ -44,7 +48,7 @@ export function computeCost(u, conn) {
 export function fmtMoney(c) {
   if (!c) return '';
   const a = c.amount;
-  const s = a === 0 ? '0' : a < 0.01 ? a.toFixed(4) : a < 1 ? a.toFixed(3) : a.toFixed(2);
+  const s = a === 0 ? '0' : a < 0.01 ? Number(a.toPrecision(2)).toString() : a < 1 ? a.toFixed(3) : a.toFixed(2);
   return `${c.est ? '约' : ''}${CUR[c.currency] || ''}${s}`;
 }
 
@@ -71,6 +75,26 @@ export async function addSpend(cost, usage) {
   all[k] = m;
   try { await db.kvSet('spend', all); } catch {}
   return m;
+}
+
+/**
+ * 每次调用模型都记一笔：kind（正文/整理前情/拆角色卡/补选项/番外…）、用量、金额。
+ * 进月度合计，也进“最近的调用”清单（最多 300 条），方便看 token 花在哪了。
+ */
+export async function recordUsage({ kind = '正文', storyId = '', model = '', usage = null, cost = null } = {}) {
+  try {
+    const log = (await db.kvGet('usageLog', null)) || [];
+    log.push({ at: Date.now(), kind, storyId, model, input: usage?.input || 0, cached: usage?.cached || 0, output: usage?.output || 0, est: !!usage?.est, cost });
+    while (log.length > 300) log.shift();
+    await db.kvSet('usageLog', log);
+  } catch {}
+  const m = await addSpend(cost, usage).catch(() => null);
+  if (m) checkBudget(m).catch(() => {});
+  return m;
+}
+export async function getUsageLog(storyId) {
+  const log = (await db.kvGet('usageLog', null)) || [];
+  return storyId ? log.filter((x) => x.storyId === storyId) : log;
 }
 
 export async function getMonthSpend(k = monthKey()) {

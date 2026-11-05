@@ -4,7 +4,7 @@ import { db } from '../db.js';
 import { el, uid, toast, menu, sheet, promptText, ago, approxTokens } from '../util.js';
 import { resolveConnection, connLabel, getModules, go, setCurrentStory } from '../state.js';
 import { streamWithRetry, ApiError } from '../api.js';
-import { normalizeUsage, computeCost, fmtMoney, fmtTokens, addSpend, checkBudget } from '../cost.js';
+import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage } from '../cost.js';
 import { getTemplates, getBase, buildExtraContext, chaptersOf, extraBlocks, SCOPES, LENGTHS } from '../fanwai.js';
 
 const SCOPE_SHORT = { all: '全知', public: '只知道公开的事', char: '视角角色所知' };
@@ -322,7 +322,7 @@ async function renderReader(root, story, nodes, extraId) {
           v.usageN = { input: v.usageN.input + u.input, cached: (v.usageN.cached || 0) + u.cached, output: v.usageN.output + u.output, est: v.usageN.est || u.est };
           v.cost = c && v.cost && v.cost.currency === c.currency ? { ...c, amount: v.cost.amount + c.amount, est: v.cost.est || c.est } : (c || v.cost || null);
         } else { v.usageN = u; v.cost = c; }
-        addSpend(c, u).then((m) => checkBudget(m)).catch(() => {});
+        recordUsage({ kind: '番外', storyId: story.id, model: conn.model, usage: u, cost: c });
       }
       await save();
       if (!destroyed) draw();

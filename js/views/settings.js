@@ -171,11 +171,11 @@ export async function render(root, { section }) {
     const budget = await getBudget();
     const bAmt = el('input', { type: 'number', min: '0', step: '1', placeholder: '不提醒', style: { flex: 1 } }); bAmt.value = budget.amount ?? '';
     const bCur = el('select', { style: { width: '110px', flex: 'none' } }); bCur.append(el('option', { value: 'CNY' }, '¥'), el('option', { value: 'USD' }, '$')); bCur.value = budget.currency || 'CNY';
-    const spent = ['CNY', 'USD'].filter((k) => month[k] > 0).map((k) => CUR[k] + month[k].toFixed(2)).join(' + ') || '—';
+    const spent = ['CNY', 'USD'].filter((k) => month[k] > 0).map((k) => CUR[k] + (month[k] < 0.01 ? Number(month[k].toPrecision(2)) : month[k].toFixed(2))).join(' + ') || (month.count ? '算不出金额（连接没填单价）' : '—');
     wrap.append(el('div', { class: 'section-title', text: '花费' }));
     wrap.append(el('div', { class: 'card' },
       el('div', { style: { fontWeight: '600' } }, `本月 ${spent}`),
-      el('div', { class: 'hint', style: { marginTop: '2px' } }, `共 ${month.count} 次生成 · 输入 ${fmtTokens(month.input)} · 输出 ${fmtTokens(month.output)} token。金额按各连接填的价格估算。`),
+      el('div', { class: 'hint', style: { marginTop: '2px' } }, `共 ${month.count} 次调用 · 输入 ${fmtTokens(month.input)} · 输出 ${fmtTokens(month.output)} token。金额按各连接填的单价（每百万 token）估算；每一笔明细在游玩页“⋯ → 花费”。`),
       el('div', { class: 'field', style: { marginTop: '12px', marginBottom: '8px' } }, el('label', { text: '每月提醒线（超过后每天提醒一次）' }),
         el('div', { class: 'row', style: { flexWrap: 'nowrap' } }, bAmt, bCur)),
       el('button', { class: 'btn small primary', onclick: async () => { await setBudget({ amount: bAmt.value === '' ? '' : Number(bAmt.value), currency: bCur.value }); toast('提醒线已保存'); } }, '保存提醒线')

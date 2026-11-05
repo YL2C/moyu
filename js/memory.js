@@ -5,7 +5,7 @@ import { db } from './db.js';
 import { streamWithRetry } from './api.js';
 import { latestCheckpoint, memoryText, applyCardState, splitNames } from './prompt.js';
 import { chaptersOf } from './fanwai.js';
-import { normalizeUsage, computeCost, addSpend, checkBudget } from './cost.js';
+import { normalizeUsage, computeCost, recordUsage } from './cost.js';
 
 export const BATCH = 20;          // 一次最多整理多少章
 const SUMMARY_LIMIT = 8000;       // 各段摘要超过这么多字，就把最早的一半压缩成“早期概要”
@@ -169,7 +169,7 @@ async function compressIfLong(m, conn, signal, track) {
     '【要并进去的摘要】\n' + old.map((x) => `第${x.from}–${x.to}章：${x.text}`).join('\n') +
     `\n\n把上面的内容合并压缩成一段“早期概要”（第1–${old[old.length - 1].to}章），1200到1800字：保留关键事件、关系变化、伏笔和人物的重要选择，按时间顺序，不写评价。只输出概要正文。`;
   const r = await streamWithRetry(conn, { system: '你是这部文字互动小说的存档员，只输出概要正文。', messages: [{ role: 'user', content: user }], maxTokens: 4000, signal });
-  track(r, user.length);
+  track(r, user.length, '压缩前情');
   return { ...m, early: r.text.trim(), earlyUpTo: old[old.length - 1].to, summaries: m.summaries.slice(half) };
 }
 
@@ -201,11 +201,11 @@ async function runInner(story, nodes, path, conn, { signal, onProgress = () => {
   const written = [];
   const newCards = [];
   let costSum = null;
-  const track = (r, inChars) => {
+  const track = (r, inChars, kind = '整理前情') => {
     const u = normalizeUsage(r.usage, { inChars, outChars: r.text.length });
     const c = computeCost(u, conn);
     if (c) costSum = costSum && costSum.currency === c.currency ? { ...c, amount: costSum.amount + c.amount, est: costSum.est || c.est } : c;
-    addSpend(c, u).then((mm) => checkBudget(mm)).catch(() => {});
+    recordUsage({ kind, storyId: story.id, model: conn?.model || '', usage: u, cost: c });
   };
   for (let i = 0; i < pending.length; i += BATCH) {
     const batch = pending.slice(i, i + BATCH);

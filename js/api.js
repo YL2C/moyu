@@ -139,10 +139,10 @@ function httpError(status, raw, url) {
   const detail = `HTTP ${status}\n${String(raw || '').slice(0, 1500)}`;
   const o = { status, detail, url };
   if (status === 401 || status === 403) {
-    if (QUOTA_RE.test(msg)) return new ApiError('quota', '余额或额度不足', { ...o, hint: '去中转站或官方后台看看余额。' });
+    if (QUOTA_RE.test(msg)) return new ApiError('quota', '余额或额度不足', { ...o, hint: '去中转站或官方后台看看余额。有的中转站会按“输入长度＋输出上限”先预扣额度，余额还剩一些也可能报这个：可以把连接的“输出上限”调小（比如 4000）再试。' });
     return new ApiError('auth', '密钥无效或没有权限', { ...o, hint: '检查密钥有没有复制完整、有没有过期。中转站的密钥只能配它自己的地址。' });
   }
-  if (status === 402 || QUOTA_RE.test(msg)) return new ApiError('quota', '余额或额度不足', { ...o, hint: '去中转站或官方后台看看余额。' });
+  if (status === 402 || QUOTA_RE.test(msg)) return new ApiError('quota', '余额或额度不足', { ...o, hint: '去中转站或官方后台看看余额。有的中转站会按“输入长度＋输出上限”先预扣额度，余额还剩一些也可能报这个：可以把连接的“输出上限”调小（比如 4000）再试。' });
   if (status === 404) {
     if (/model/i.test(msg)) return new ApiError('model', '找不到这个模型', { ...o, hint: '模型名可能拼错了，或者这个接口没有这个模型。可以在连接设置里点“获取模型列表”。' });
     return new ApiError('notfound', '地址不对（404）', { ...o, hint: `实际请求的地址是 ${url} 。检查地址结尾（中转站一般是 /v1），或者把接口格式改成“自动识别”。` });
@@ -187,7 +187,7 @@ function streamError(errObj, partial) {
   const msg = typeof e === 'string' ? e : (e.message || JSON.stringify(e));
   const type = (e && e.type) || '';
   if (/overloaded/i.test(type + msg)) return new ApiError('overloaded', '模型服务繁忙', { hint: '过一会儿再试。已收到的部分会保留。', detail: msg, partial });
-  if (QUOTA_RE.test(msg)) return new ApiError('quota', '余额或额度不足', { hint: '去后台看看余额。', detail: msg, partial });
+  if (QUOTA_RE.test(msg)) return new ApiError('quota', '余额或额度不足', { hint: '去中转站或官方后台看看余额。有的中转站会按“输入长度＋输出上限”先预扣额度，余额还剩一些也可能报这个：可以把连接的“输出上限”调小（比如 4000）再试。', detail: msg, partial });
   return new ApiError('server', '生成到一半出错了', { hint: '可以点“续写”接着写，或者重试。', detail: msg, partial });
 }
 
