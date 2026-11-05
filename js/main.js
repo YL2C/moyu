@@ -7,6 +7,7 @@ import * as play from './views/play.js';
 import * as settings from './views/settings.js';
 import * as storyPage from './views/story.js';
 import * as extrasPage from './views/extras.js';
+import * as memoryPage from './views/memory.js';
 
 const root = document.getElementById('app');
 let cleanup = null;
@@ -22,6 +23,7 @@ async function route() {
   const params = {};
   if (name === 'play' && arg) { mod = play; params.id = decodeURIComponent(arg); }
   else if (name === 'settings') { mod = settings; params.section = arg || ''; }
+  else if (name === 'memory' && arg) { mod = memoryPage; params.id = decodeURIComponent(arg); }
   else if (name === 'extra' && arg) { mod = extrasPage; params.id = decodeURIComponent(arg); params.extraId = arg2 ? decodeURIComponent(arg2) : ''; }
   else if (name === 'story' && arg) { mod = storyPage; params.id = decodeURIComponent(arg); params.tab = arg2 || 'setting'; }
   const container = document.createElement('div');

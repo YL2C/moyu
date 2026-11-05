@@ -139,6 +139,41 @@ export function tailReminder(present, { maxEach = 5 } = {}) {
   return '\n\n【在场角色提醒·玩家场外设置，不要在正文里提到】\n' + rows.join('\n');
 }
 
+// ───────────── 前情档案（存档挂在某一章的回复节点上） ─────────────
+
+/** 当前这条线上最近的一次存档：{ index, node, mem }，没有则 null */
+export function latestCheckpoint(path) {
+  for (let i = path.length - 1; i >= 0; i--) {
+    if (path[i].checkpoint) return { index: i, node: path[i], mem: path[i].checkpoint };
+  }
+  return null;
+}
+
+/** 角色卡上会随剧情变的三栏：有存档就用存档里最新的 */
+export function applyCardState(card, mem) {
+  const s = mem?.cards?.[card.name];
+  if (!s) return card;
+  return { ...card, now: s.now ?? card.now, arc: s.arc ?? card.arc, relation: s.relation ?? card.relation };
+}
+
+const bullet = (arr) => (arr || []).map((x) => String(x || '').trim()).filter(Boolean).map((x) => '- ' + x.replace(/^[-*•·]\s*/, '')).join('\n');
+
+export function memoryText(mem) {
+  if (!mem) return '';
+  const out = [`【前情档案：第 1–${mem.upTo} 章已整理；之后的剧情见对话原文。档案里的是已经发生的事实】`];
+  if (mem.early?.trim()) out.push('〔早期概要〕\n' + mem.early.trim());
+  if (mem.summaries?.length) out.push('〔各段摘要〕\n' + mem.summaries.map((x) => `第${x.from}–${x.to}章：${x.text.trim()}`).join('\n'));
+  const sec = (title, arr) => { const b = bullet(arr); if (b) out.push(`〔${title}〕\n${b}`); };
+  sec('不可逆的事（永久有效）', mem.irreversible);
+  sec('勘误（和上面冲突时以这里为准）', mem.corrections);
+  sec('物品与信物', mem.items);
+  sec('未决事项、未兑现的承诺、暗线', mem.threads);
+  sec('信息差：谁知道什么、谁不知道', mem.knowledge);
+  sec('暗处动向：各角色接下来想做什么', mem.offscreen);
+  sec('最近反复出现的套路（接下来换个写法）', mem.repeats);
+  return out.join('\n');
+}
+
 /**
  * path：从第一条到当前的节点（最后一条通常是刚发出的玩家输入）
  * opts.modules：全局规则模块库
@@ -146,6 +181,7 @@ export function tailReminder(present, { maxEach = 5 } = {}) {
  */
 export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2, modules = [], extra = '' } = {}) {
   const { sentCards, present, sentModules } = selectExtras(story, path, modules, extra);
+  const cp = latestCheckpoint(path);
   const parts = [];
   const add = (label, text, kind) => { if (text?.trim()) parts.push({ label, text: text.trim(), kind }); };
   add('开头', '你正在主持一场文字互动小说。', 'base');
@@ -153,14 +189,17 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
   for (const m of sentModules) add(`规则模块 · ${m.name}${m.mode === 'manual' ? '（情境）' : m.mode === 'keyword' ? '（关键词）' : ''}`, `【规则模块·${m.name}】\n${m.text.trim()}`, 'module');
   add('世界与角色设定', story.world?.trim() ? '【世界与角色设定】\n' + story.world.trim() : '', 'world');
   const coreFirst = [...sentCards].sort((a, b) => (b.core ? 1 : 0) - (a.core ? 1 : 0));
-  for (const c of coreFirst) add(`角色卡 · ${c.name}${c.core ? '（常驻）' : '（被提到）'}`, cardText(c), 'card');
+  for (const c of coreFirst) add(`角色卡 · ${c.name}${c.core ? '（常驻）' : '（被提到）'}`, cardText(applyCardState(c, cp?.mem)), 'card');
+  if (cp) add(`前情档案 · 整理到第 ${cp.mem.upTo} 章`, memoryText(cp.mem), 'memory');
   add('输出格式', '【输出格式】\n' + formatContract({ danmu: story.danmu !== false, options: story.options !== false }), 'format');
   const system = parts.map((p) => p.text).join('\n\n');
 
+  // 有存档时：对话原文只从存档那一章开始（那一章本身留作衔接），更早的由前情档案代替
+  const recentPath = cp ? path.slice(cp.index) : path;
   // 出戏对话：之后已经回到正戏的，就不再发给模型
   let lastPlayUser = -1;
-  path.forEach((n, i) => { if (n.role === 'user' && n.kind !== 'ooc') lastPlayUser = i; });
-  const kept = path.filter((n, i) => !(n.kind === 'ooc' && i < lastPlayUser));
+  recentPath.forEach((n, i) => { if (n.role === 'user' && n.kind !== 'ooc') lastPlayUser = i; });
+  const kept = recentPath.filter((n, i) => !(n.kind === 'ooc' && i < lastPlayUser));
 
   // 最近 keepRawLast 轮的回复保留弹幕和选项（让模型延续口气），更早的只留正文
   const playReplies = kept.filter((n) => n.role === 'assistant' && n.kind !== 'ooc');
@@ -188,6 +227,10 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
     messages.shift();
     trimmed++;
   }
+  // 第一条必须是用户消息（Claude 等接口的要求）；从存档处开始或被截断后，第一条可能是回复
+  if (messages.length && messages[0].role === 'assistant') {
+    messages.unshift({ role: 'user', content: cp ? '（更早的剧情见系统提示里的“前情档案”。下面从最近一章接着来。）' : '（更早的剧情因为太长没有发送。下面从这里接着来。）' });
+  }
   const historyChars = size(messages);
   return {
     system,
@@ -196,6 +239,7 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
       systemChars: system.length, historyChars, totalChars: system.length + historyChars, trimmed, count: messages.length,
       parts: parts.map((p) => ({ label: p.label, chars: p.text.length, text: p.text, kind: p.kind })),
       tail, cards: sentCards.map((c) => c.name), present: present.map((c) => c.name), modules: sentModules.map((m) => m.name),
+      memoryUpTo: cp ? cp.mem.upTo : 0,
     },
   };
 }

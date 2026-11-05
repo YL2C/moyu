@@ -4,7 +4,9 @@ import { db, exportStory } from '../db.js';
 import { el, uid, toast, menu, promptText, sheet, saveFile, autoGrow, insertAtCursor, approxTokens } from '../util.js';
 import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules } from '../state.js';
 import { streamWithRetry, ApiError } from '../api.js';
-import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames } from '../prompt.js';
+import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, latestCheckpoint } from '../prompt.js';
+import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
+import { archiveConn, DEFAULT_EVERY } from './memory.js';
 import { parseReply, paragraphs } from '../parse.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, addSpend, checkBudget, getMonthSpend, getBudget, hasPrice, CUR } from '../cost.js';
 
@@ -27,6 +29,8 @@ export async function render(root, { id }) {
     pick: null,      // 正在“选一段往后重写”的回复 id
     undoHead: null,  // 回退前的位置，用来撤销
     modules: await getModules(),
+    archiving: null,   // 后台整理前情 { ctrl, text }
+    archiveError: null,
   };
   story.manualOn = story.manualOn || {};
   const manualMods = () => st.modules.filter((m) => m.mode === 'manual' && story.modules?.[m.id]);
@@ -106,6 +110,17 @@ export async function render(root, { id }) {
       st.director.trim() ? el('div', { class: 'status' },
         el('span', { class: 'lbl', onclick: () => editDirector(), text: '导演：' + st.director.trim() }),
         el('button', { 'aria-label': '清除导演指令', onclick: () => { st.director = ''; updateComposer(); } }, '✕')) : null,
+      (() => {
+        const a = st.archiving || archivingNow(story.id);
+        st.extShown = !st.archiving && !!a;
+        if (!a) return null;
+        return el('div', { class: 'status ooc' },
+          el('span', { class: 'lbl', onclick: () => go(`memory/${encodeURIComponent(story.id)}`), text: a.text + '（后台进行，可以继续玩）' }),
+          el('button', { 'aria-label': '停止整理', onclick: () => a.ctrl?.abort('user') }, '✕'));
+      })(),
+      st.archiveError ? el('div', { class: 'status' },
+        el('span', { class: 'lbl', onclick: () => autoArchive(true), text: '整理前情失败：' + st.archiveError + '（点这里重试）' }),
+        el('button', { 'aria-label': '关掉', onclick: () => { st.archiveError = null; updateComposer(); } }, '✕')) : null,
       ...manualMods().filter((m) => story.manualOn[m.id]).map((m) => el('div', { class: 'status' },
         el('span', { class: 'lbl', text: `情境：${m.name}（每轮都会带上，直到关掉）` }),
         el('button', { 'aria-label': '关掉情境', onclick: () => { story.manualOn[m.id] = false; saveStory(); updateComposer(); } }, '✕'))),
@@ -271,6 +286,10 @@ export async function render(root, { id }) {
       else {
         if (n.kind !== 'ooc' && (n.text?.trim() || st.streaming?.id === n.id)) chapter++;
         feed.append(renderAssistant(n, { isLast, chapter: chapter || 1 }));
+        if (n.checkpoint) {
+          feed.append(el('button', { class: 'cp-mark', onclick: () => go(`memory/${encodeURIComponent(story.id)}`) },
+            `— 前情已整理到这里（第 ${chapter} 章）· 记忆 —`));
+        }
       }
     });
     if (st.undoHead && !st.streaming) {
@@ -430,6 +449,34 @@ export async function render(root, { id }) {
       story.updatedAt = Date.now();
       await saveStory();
       if (!destroyed) renderFeed({ keepScroll: true });
+      if (a.kind !== 'ooc' && a.text?.trim() && a.status !== 'error') autoArchive(false);
+    }
+  }
+
+  /** 到了该整理的章数就在后台整理；force：手动触发，有一章没整理就整理 */
+  async function autoArchive(force) {
+    if (st.archiving || destroyed || archivingNow(story.id)) return;
+    const every = story.memEvery ?? DEFAULT_EVERY;
+    const { pending } = pendingChapters(headPath());
+    if (!pending.length) { if (force) toast('没有需要整理的章节'); return; }
+    if (!force && (!every || pending.length < every)) return;
+    const conn = await archiveConn(story);
+    if (!conn) return;
+    const ctrl = new AbortController();
+    st.archiving = { ctrl, text: `正在整理第 ${pending[0].no}–${pending[pending.length - 1].no} 章的前情` };
+    st.archiveError = null;
+    updateComposer();
+    try {
+      const r = await runArchivist(story, nodes, headPath(), conn, {
+        signal: ctrl.signal, ctrl,
+        onProgress: (t) => { if (st.archiving) { st.archiving.text = t; updateComposer(); } },
+      });
+      if (r.written.length) toast(`前情已整理到第 ${r.to} 章，点“⋯ → 记忆”可以查看和修改`, 3500);
+    } catch (e) {
+      if (e?.kind !== 'aborted' && e?.kind !== 'busy') st.archiveError = e?.message || String(e);
+    } finally {
+      st.archiving = null;
+      if (!destroyed) { renderFeed({ keepScroll: true }); }
     }
   }
 
@@ -530,6 +577,22 @@ export async function render(root, { id }) {
           s.close();
           toast('已修改');
           renderFeed({ focusId: n.id });
+          // 这一章已经整理进记忆了：改的是事实的话，补一条勘误
+          const cp = latestCheckpoint(headPath());
+          const covered = cp && pathTo(cp.node.id).some((x) => x.id === n.id);
+          if (covered) {
+            const fix = await promptText({
+              title: '要不要补一条勘误？',
+              placeholder: '例：第12章他其实没有收下那支表',
+              hint: '这一章已经整理进记忆了。如果你改的是事实（不只是措辞），写一句更正，记忆里会以它为准。只改措辞就点取消。',
+              okText: '记下',
+            });
+            if (fix?.trim()) {
+              cp.mem.corrections = [...(cp.mem.corrections || []), fix.trim()];
+              await db.put('nodes', cp.node).catch(() => {});
+              toast('已记进勘误');
+            }
+          }
         },
       }, '保存')
     );
@@ -719,6 +782,7 @@ export async function render(root, { id }) {
       { key: 'dir', label: st.director.trim() ? '修改导演指令' : '导演指令', hint: '只对下一轮生效的要求，不写进规则' },
       ...manualMods().map((m) => ({ key: 'mod:' + m.id, label: `情境：${m.name}${story.manualOn[m.id] ? '  ✓ 开着' : '（关着）'}`, hint: story.manualOn[m.id] ? '点一下关掉' : '点一下打开，之后每轮都带上这个模块' })),
       { key: 'edit', label: '角色与设定', hint: '世界设定、角色卡、规则和模块' },
+      { key: 'memory', label: '记忆（前情档案）', hint: (() => { const pc = pendingChapters(headPath()); return pc.cp ? `整理到第 ${pc.upTo} 章${pc.pending.length ? `，还有 ${pc.pending.length} 章没整理` : ''}` : '还没整理过；也在这里设每几章整理一次'; })() },
       { key: 'extra', label: '番外册', hint: '论坛体、日记、采访，或者自己写个点子；不进正史' },
       { key: 'branch', label: `分支${leaves > 1 ? `（${leaves} 条）` : ''}`, hint: '重写或回退后留下的其他走向' },
       { key: 'cost', label: '花费', hint: '这个故事和本月花了多少' },
@@ -736,6 +800,7 @@ export async function render(root, { id }) {
     else if (k === 'dir') editDirector();
     else if (k === 'edit') go(`story/${encodeURIComponent(story.id)}`);
     else if (k === 'extra') go(`extra/${encodeURIComponent(story.id)}`);
+    else if (k === 'memory') go(`memory/${encodeURIComponent(story.id)}`);
     else if (k === 'branch') showBranches();
     else if (k === 'cost') showCost();
     else if (k === 'ctx') showContext();
@@ -844,7 +909,21 @@ export async function render(root, { id }) {
   }
 
   let destroyed = false;
+  // 别处（记忆页）开始的整理：每秒刷新一下状态行，直到它结束
+  const archTimer = setInterval(() => { if (!st.archiving && (st.extShown || archivingNow(story.id))) updateComposer(); }, 1000);
+  const onCheckpoint = (e) => {
+    const d = e.detail || {};
+    if (d.storyId !== story.id) return;
+    const n = nodes.get(d.nodeId);
+    if (n && n.checkpoint !== d.mem) { n.checkpoint = d.mem; if (!destroyed && !st.archiving) renderFeed({ keepScroll: true }); }
+  };
+  window.addEventListener('moyu:checkpoint', onCheckpoint);
   renderFeed();
   requestAnimationFrame(fit);
-  return () => { destroyed = true; if (st.streaming) st.streaming.ctrl.abort('leave'); };
+  return () => {
+    destroyed = true;
+    clearInterval(archTimer);
+    window.removeEventListener('moyu:checkpoint', onCheckpoint);
+    if (st.streaming) st.streaming.ctrl.abort('leave');
+  };
 }

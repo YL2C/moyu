@@ -174,6 +174,11 @@ a { color: var(--accent); }
 }
 .pick-bar span { flex: 1; }
 
+.cp-mark {
+  display: block; width: 100%; border: 0; background: transparent; color: var(--text3); font-family: var(--ui-font);
+  font-size: 12px; letter-spacing: .05em; padding: 6px 0 10px; cursor: pointer; text-align: center;
+}
+
 /* 弹幕 */
 .danmu { font-family: var(--ui-font); margin: 14px 0 4px; padding: 10px 0 2px; border-top: 1px dashed var(--line); }
 .danmu summary { list-style: none; cursor: pointer; font-size: 12px; color: var(--text3); margin-bottom: 6px; }
