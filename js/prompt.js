@@ -133,6 +133,13 @@ export function selectExtras(story, path, modules = [], extra = '') {
 }
 
 /** 末尾提醒：在场角色的禁止清单，放在最后一条玩家消息里（离模型“下笔”最近） */
+/** 每轮最后一句的格式提醒：规则很长时模型容易忘了写弹幕和选项 */
+export function formatTail(story) {
+  const want = [story.danmu !== false ? '【弹幕】' : '', story.options !== false ? '【选项】（A/B/C 三行）' : ''].filter(Boolean);
+  if (!want.length) return '';
+  return `\n\n（格式提醒：正文写完后依次写${want.join('和')}，不要省略。）`;
+}
+
 export function tailReminder(present, { maxEach = 5 } = {}) {
   const rows = present.filter((c) => c.forbid?.trim()).map((c) => `- ${c.name}：${lines(c.forbid).slice(-maxEach).map((l) => l.replace(/^[-*•·]\s*/, '')).join('；')}`);
   if (!rows.length) return '';
@@ -208,11 +215,13 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
   const lastUserIdx = kept.map((n) => n.role).lastIndexOf('user');
   let messages = [];
   const tail = tailReminder(present);
+  const fmtTail = formatTail(story);
   kept.forEach((n, i) => {
     if (n.role === 'user') {
       const isLastUser = i === lastUserIdx;
       let c = userContent(n, { withDirector: isLastUser });
       if (isLastUser && tail && n.kind !== 'ooc') c += tail;
+      if (isLastUser && fmtTail && n.kind !== 'ooc') c += fmtTail;
       messages.push({ role: 'user', content: c });
     } else if (n.text && n.text.trim()) {
       const content = n.kind === 'ooc' || rawSet.has(n.id) ? n.text.trim() : forContext(n.text);

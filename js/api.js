@@ -99,7 +99,7 @@ export function tidyMessages(messages) {
 }
 
 function buildBody(format, conn, { system, messages, stream, maxTokens }) {
-  const mt = num(maxTokens) || num(conn.maxTokens) || 4000;
+  const mt = num(maxTokens) || num(conn.maxTokens) || 8000;
   const temp = num(conn.temperature);
   const msgs = tidyMessages(messages);
   if (format === 'anthropic') {

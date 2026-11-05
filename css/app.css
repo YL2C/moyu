@@ -46,8 +46,26 @@ a { color: var(--accent); }
 
 /* 整个应用和弹出层都钉在“可见区域”上：iPhone 键盘弹出时，可见区域变矮、还可能被系统平移，
    用 --vv-top / --app-h 跟着走，内容就永远在键盘上方 */
-#app { position: fixed; left: 0; right: 0; top: var(--vv-top, 0px); height: var(--app-h); overflow: hidden; }
-.view-host { height: 100%; overflow: hidden; }
+#app { position: fixed; left: 0; right: 0; top: var(--vv-top, 0px); height: var(--app-h); overflow: hidden; display: flex; flex-direction: column; }
+.view-host { flex: 1; min-height: 0; overflow: hidden; }
+
+/* 底部菜单（照老版）：故事 / 游玩 / 角色 / 番外 / 设置 */
+#tabbar {
+  flex: none; display: flex; background: var(--bg2); border-top: 1px solid var(--line);
+  padding: 3px 4px calc(env(safe-area-inset-bottom) + 2px);
+}
+#tabbar .tab {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; border: 0; background: transparent;
+  padding: 5px 0 4px; cursor: pointer; opacity: .45; transition: opacity .2s;
+}
+#tabbar .tab .ic { font-size: 19px; line-height: 1.15; }
+#tabbar .tab .lb { font-size: 10.5px; color: var(--text2); letter-spacing: .04em; }
+#tabbar .tab.on { opacity: 1; }
+#tabbar .tab.on .lb { color: var(--accent); font-weight: 600; }
+#tabbar .tab.off { opacity: .22; }
+:root.kb #tabbar { display: none; }
+#app.has-tabs .composer { padding-bottom: 8px; }
+:root.kb #app.has-tabs .composer { padding-bottom: 8px; }
 .view { display: flex; flex-direction: column; height: 100%; }
 
 /* 顶栏 */
@@ -174,6 +192,28 @@ a { color: var(--accent); }
 }
 .pick-bar span { flex: 1; }
 
+/* 角色（照老版的登场人物卡片） */
+.npc-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; }
+.npc-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.npc-name { font-size: 17px; font-weight: 600; letter-spacing: .04em; }
+.npc-head .badge { margin-left: 0; }
+.npc-alias { font-size: 12px; color: var(--text3); margin-top: 2px; }
+.npc-desc { font-size: 13.5px; color: var(--text2); margin-top: 8px; line-height: 1.7; white-space: pre-wrap; }
+.clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; }
+.memo { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 9px; }
+.memo-h { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text3); letter-spacing: .06em; }
+.memo-badge { font-size: 10px; padding: 1px 7px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); letter-spacing: 0; }
+.memo-t { font-size: 13.5px; color: var(--text2); line-height: 1.75; margin-top: 4px; white-space: pre-wrap; }
+.memo-t.none { color: var(--text3); }
+.npc-foot { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.tag { font-size: 11px; padding: 2px 8px; border-radius: 20px; background: var(--bg2); color: var(--text3); }
+.npc-more { border: 0; background: transparent; color: var(--accent); font-size: 12.5px; cursor: pointer; padding: 4px 2px; }
+/* 番外（照老版碎片集的筛选） */
+.filters { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 0 0 12px; }
+.filters::-webkit-scrollbar { display: none; }
+
+.no-opts { margin: 10px 0 2px; }
+.no-opts .btn { color: var(--text2); }
 .cp-mark {
   display: block; width: 100%; border: 0; background: transparent; color: var(--text3); font-family: var(--ui-font);
   font-size: 12px; letter-spacing: .05em; padding: 6px 0 10px; cursor: pointer; text-align: center;
@@ -291,7 +331,7 @@ a { color: var(--accent); }
 .test-log .wait { color: var(--text3); }
 
 #toast {
-  position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 96px); transform: translateX(-50%) translateY(10px);
+  position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 150px); transform: translateX(-50%) translateY(10px);
   background: rgba(30,28,34,.92); color: #fff; padding: 9px 14px; border-radius: 10px; font-size: 14px;
   opacity: 0; pointer-events: none; transition: .2s; z-index: 100; max-width: 86vw; text-align: center; line-height: 1.5;
 }

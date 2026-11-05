@@ -50,8 +50,7 @@ export async function render(root, { section }) {
   const wrap = el('div', { class: 'wrap' });
   root.append(el('div', { class: 'view' },
     el('div', { class: 'topbar' },
-      el('button', { class: 'icon-btn', 'aria-label': '返回', onclick: () => go('') }, '‹'),
-      el('div', { class: 'title' }, '设置')
+      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', alignItems: 'center' } }, '设置')
     ),
     el('div', { class: 'scroll' }, wrap)
   ));
@@ -232,7 +231,7 @@ export async function render(root, { section }) {
     const conns = await getConnections();
     const isNew = !existing;
     const c = existing ? { ...existing } : {
-      id: uid(), name: '', format: 'auto', baseUrl: '', apiKey: '', model: '', maxTokens: 4000, temperature: '', stream: true, createdAt: Date.now(),
+      id: uid(), name: '', format: 'auto', baseUrl: '', apiKey: '', model: '', maxTokens: 8000, mt8000: true, temperature: '', stream: true, createdAt: Date.now(),
     };
     const s = sheet({ title: isNew ? '添加连接' : '编辑连接' });
 
@@ -250,7 +249,7 @@ export async function render(root, { section }) {
     const dl = el('datalist', { id: 'models-' + c.id });
     const model = el('input', { type: 'text', placeholder: '例：claude-sonnet-4-6、deepseek-chat', list: dl.id, autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
     model.value = c.model || '';
-    const maxT = el('input', { type: 'number', min: '256', step: '256' }); maxT.value = c.maxTokens ?? 4000;
+    const maxT = el('input', { type: 'number', min: '256', step: '256' }); maxT.value = c.maxTokens ?? 8000;
     const temp = el('input', { type: 'number', min: '0', max: '2', step: '0.05', placeholder: '留空' }); temp.value = c.temperature ?? '';
     const streamSw = el('input', { type: 'checkbox' }); streamSw.checked = c.stream !== false;
     const priceIn = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '不填' }); priceIn.value = c.priceIn ?? '';
@@ -261,7 +260,7 @@ export async function render(root, { section }) {
 
     const read = () => ({
       ...c, name: name.value.trim(), format: fmt.value, baseUrl: base.value.trim(), apiKey: key.value.trim(),
-      model: model.value.trim(), maxTokens: Number(maxT.value) || 4000, temperature: temp.value === '' ? '' : Number(temp.value),
+      model: model.value.trim(), maxTokens: Number(maxT.value) || 8000, mt8000: true, temperature: temp.value === '' ? '' : Number(temp.value),
       stream: streamSw.checked,
       priceIn: priceIn.value === '' ? '' : Number(priceIn.value),
       priceOut: priceOut.value === '' ? '' : Number(priceOut.value),
@@ -338,7 +337,7 @@ export async function render(root, { section }) {
       el('div', { class: 'field' }, el('label', { text: '模型名' }), model, dl, el('div', { class: 'row', style: { marginTop: '6px' } }, getModels, refetch)),
       el('div', { class: 'row', style: { alignItems: 'flex-start', flexWrap: 'nowrap' } },
         el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '输出上限' }), maxT,
-          el('div', { class: 'hint', text: '每轮最多写多少（单位是 token）。开了思考的模型要调大，例如 8000。' })),
+          el('div', { class: 'hint', text: '每轮最多写多少（单位是 token）。一章加弹幕和选项常要 5000 左右；开了思考的模型思考也算在里面，可以再调大。太小会写不到选项。' })),
         el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '温度' }), temp,
           el('div', { class: 'hint', text: '留空 = 模型默认。部分新模型不接受自定义温度。' }))
       ),

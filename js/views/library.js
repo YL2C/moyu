@@ -2,7 +2,7 @@
 
 import { db, exportStory } from '../db.js';
 import { el, ago, menu, saveFile, toast } from '../util.js';
-import { getConnections, go } from '../state.js';
+import { getConnections, go, getCurrentStory, setCurrentStory } from '../state.js';
 import { openStoryEditor } from './story-edit.js';
 
 export async function render(root) {
@@ -42,11 +42,13 @@ export async function render(root) {
       onclick: async (e) => {
         e.stopPropagation();
         const k = await menu(s.title, [
-          { key: 'edit', label: '角色与设定' },
+          { key: 'chars', label: '角色' },
+          { key: 'edit', label: '世界设定与规则' },
           { key: 'export', label: '导出这个故事', hint: '存成文件，可以传到别的设备或发给朋友（不含密钥）' },
           { key: 'del', label: '删除', danger: true },
         ]);
         if (k === 'edit') go(`story/${encodeURIComponent(s.id)}`);
+        else if (k === 'chars') go(`chars/${encodeURIComponent(s.id)}`);
         else if (k === 'export') {
           const data = await exportStory(s.id);
           const d = new Date();
@@ -54,6 +56,7 @@ export async function render(root) {
         } else if (k === 'del') {
           if (confirm(`删除「${s.title}」？删除后无法恢复，建议先导出。`)) {
             await db.delStory(s.id);
+            if (getCurrentStory() === s.id) setCurrentStory(null);
             toast('已删除');
             go('');
           }
@@ -76,8 +79,7 @@ export async function render(root) {
 
   root.append(el('div', { class: 'view' },
     el('div', { class: 'topbar' },
-      el('div', { class: 'title', style: { paddingLeft: '6px' } }, '墨游'),
-      el('button', { class: 'icon-btn', 'aria-label': '设置', onclick: () => go('settings') }, '⚙︎')
+      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', alignItems: 'center' } }, '墨游')
     ),
     el('div', { class: 'scroll' }, wrap)
   ));

@@ -2,7 +2,7 @@
 
 import { db } from '../db.js';
 import { el, uid, toast, menu, sheet, promptText, ago, approxTokens } from '../util.js';
-import { resolveConnection, connLabel, getModules, go } from '../state.js';
+import { resolveConnection, connLabel, getModules, go, setCurrentStory } from '../state.js';
 import { streamWithRetry, ApiError } from '../api.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, addSpend, checkBudget } from '../cost.js';
 import { getTemplates, getBase, buildExtraContext, chaptersOf, extraBlocks, SCOPES, LENGTHS } from '../fanwai.js';
@@ -35,7 +35,7 @@ function metaLine(x) {
 
 export async function render(root, { id, extraId }) {
   const story = await db.get('stories', id);
-  if (!story) { toast('找不到这个故事'); go(''); return; }
+  if (!story) { toast('找不到这个故事'); setCurrentStory(null); go(''); return; }
   const nodes = new Map((await db.byStory(id)).map((n) => [n.id, n]));
   if (extraId) return renderReader(root, story, nodes, extraId);
   return renderList(root, story, nodes);
@@ -47,21 +47,42 @@ async function renderList(root, story, nodes) {
   const wrap = el('div', { class: 'wrap' });
   root.append(el('div', { class: 'view' },
     el('div', { class: 'topbar' },
-      el('button', { class: 'icon-btn', 'aria-label': '返回', onclick: () => go('play/' + encodeURIComponent(story.id)) }, '‹'),
-      el('div', { class: 'title' }, '番外册', el('div', { class: 'sub', text: story.title || '未命名故事' }))),
+      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', flexDirection: 'column', justifyContent: 'center' } }, '番外', el('div', { class: 'sub', text: story.title || '未命名故事' }))),
     el('div', { class: 'scroll' }, wrap)));
 
-  wrap.append(el('button', { class: 'btn primary block', style: { margin: '4px 0 12px' }, onclick: () => newExtra(story, nodes) }, '写一篇番外'));
+  wrap.append(el('button', { class: 'btn primary block', style: { margin: '4px 0 12px' }, onclick: () => newExtra(story, nodes) }, '✦ 写一篇番外'));
   if (!extras.length) wrap.append(el('div', { class: 'empty', style: { padding: '28px 8px' } }, '还没有番外。', el('br'), '论坛体、日记体、采访……或者写一句突然想到的点子。'));
-  for (const x of extras) {
+  // 按形式筛选（照老版碎片集）
+  const kinds = [...new Set(extras.map((x) => x.tplName || '自定义'))];
+  const list = el('div');
+  let filter = '';
+  const drawList = () => {
+    list.replaceChildren();
+    for (const x of extras) {
+      if (filter && (x.tplName || '自定义') !== filter) continue;
+      list.append(itemEl(x));
+    }
+  };
+  if (kinds.length > 1) {
+    const bar = el('div', { class: 'filters' });
+    const chips = [['', '全部'], ...kinds.map((k) => [k, k])].map(([k, label]) => {
+      const b = el('button', { class: 'chip' + (k === filter ? ' on' : ''), onclick: () => { filter = k; chips.forEach((c) => c.classList.toggle('on', c === b)); drawList(); } }, label);
+      return b;
+    });
+    bar.append(...chips);
+    wrap.append(bar);
+  }
+  wrap.append(list);
+  function itemEl(x) {
     const v = curVersion(x);
     const first = v?.text ? (extraBlocks(v.text).blocks[0] || '') : '';
-    wrap.append(el('div', { class: 'card story-card', onclick: () => go(`extra/${encodeURIComponent(story.id)}/${encodeURIComponent(x.id)}`) },
+    return el('div', { class: 'card story-card', onclick: () => go(`extra/${encodeURIComponent(story.id)}/${encodeURIComponent(x.id)}`) },
       el('div', { class: 't' }, el('span', { text: extraTitle(x) }), (x.versions?.length || 0) > 1 ? el('span', { class: 'badge', text: `${x.versions.length} 个版本` }) : null),
       el('div', { class: 'm', text: metaLine(x) }),
-      first ? el('div', { class: 'm', style: { color: 'var(--text3)' }, text: first.replace(/\s+/g, ' ').slice(0, 40) }) : null,
-      el('div', { class: 'd', text: ago(x.updatedAt) })));
+      first ? el('div', { class: 'm clamp', style: { color: 'var(--text3)' }, text: first.replace(/\s+/g, ' ').slice(0, 80) }) : null,
+      el('div', { class: 'd', text: ago(x.updatedAt) }));
   }
+  drawList();
   wrap.append(el('div', { class: 'hint', style: { marginTop: '16px' } },
     '番外单独存放：不改正史，也不会作为前情发给正文。想互动着玩 IF 线，用正文某一章的“回到这里”开分支。',
     el('br'), el('a', { href: 'javascript:void 0', onclick: () => go('settings/fanwai') }, '管理番外模板和通用要求')));

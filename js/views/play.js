@@ -2,7 +2,7 @@
 
 import { db, exportStory } from '../db.js';
 import { el, uid, toast, menu, promptText, sheet, saveFile, autoGrow, insertAtCursor, approxTokens } from '../util.js';
-import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules } from '../state.js';
+import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory } from '../state.js';
 import { streamWithRetry, ApiError } from '../api.js';
 import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
@@ -12,7 +12,7 @@ import { normalizeUsage, computeCost, fmtMoney, fmtTokens, addSpend, checkBudget
 
 export async function render(root, { id }) {
   const story = await db.get('stories', id);
-  if (!story) { toast('找不到这个故事'); go(''); return; }
+  if (!story) { toast('找不到这个故事'); setCurrentStory(null); go(''); return; }
   const nodes = new Map((await db.byStory(id)).map((n) => [n.id, n]));
 
   // 上次没写完就被打断的（切走应用、刷新页面），标成“中断”保留下来
@@ -233,6 +233,13 @@ export async function render(root, { id }) {
         }, el('span', { class: 'k', text: 'ABCDEF'[i] }), o)));
         g.append(box);
       }
+      // 模型没写选项（或格式认不出）：一键补三个，只发这一章，花费很小
+      if (isLast && !live && !picking && !p.options.length && story.options !== false && n.kind !== 'ooc' && n.text?.trim() && n.status !== 'partial') {
+        g.append(el('div', { class: 'no-opts' },
+          st.addingOpts === n.id
+            ? el('span', { class: 'thinking', text: '正在补选项' })
+            : el('button', { class: 'btn small ghost', onclick: () => addOptions(n) }, '这一章没写选项 · 补三个')));
+      }
       wrap.append(g);
     }
     if (!live) {
@@ -243,6 +250,34 @@ export async function render(root, { id }) {
       if (isLast) wrap.append(toolsFor(n));
     }
     return wrap;
+  }
+
+  async function addOptions(n) {
+    if (st.streaming || st.addingOpts) return;
+    const conn = await resolveConnection(story);
+    if (!conn) { toast('先在设置里添加连接'); return; }
+    st.addingOpts = n.id;
+    renderFeed({ keepScroll: true });
+    const p = parseReply(n.text);
+    const system = '你在主持一场文字互动小说，玩家扮演“你”。' + (story.world?.trim() ? '\n【世界与角色设定（节选）】\n' + story.world.trim().slice(0, 2000) : '');
+    const user = '下面是刚写完的一章：\n\n' + (p.title ? '# ' + p.title + '\n' : '') + p.body +
+      '\n\n请只为这一章的结尾写 3 个参考选项，格式：\n【选项】\nA. ……\nB. ……\nC. ……\n' +
+      '要求：三个方向明显不同的具体行动（可以带一个马上会发生的事件），写行动不写结果，不泄露隐藏信息。只输出这四行。';
+    try {
+      const r = await streamWithRetry(conn, { system, messages: [{ role: 'user', content: user }], maxTokens: 3000 });
+      const u = normalizeUsage(r.usage, { inChars: system.length + user.length, outChars: r.text.length });
+      addSpend(computeCost(u, conn), u).then((m) => checkBudget(m)).catch(() => {});
+      let opts = parseReply(r.text).options;
+      if (!opts.length) opts = r.text.split('\n').map((l) => l.trim()).filter((l) => l && !/选\s*项/.test(l)).slice(0, 3);
+      if (!opts.length) { toast('没补上，可以再试一次'); return; }
+      n.text = n.text.trimEnd() + '\n\n【选项】\n' + opts.slice(0, 3).map((o, i) => `${'ABC'[i]}. ${o}`).join('\n');
+      await db.put('nodes', n).catch(() => {});
+    } catch (e) {
+      if (e?.kind !== 'aborted') toast('补选项失败：' + (e?.message || e), 3500);
+    } finally {
+      st.addingOpts = null;
+      if (!destroyed) renderFeed({ keepScroll: true });
+    }
   }
 
   function toolsFor(n) {
@@ -781,9 +816,8 @@ export async function render(root, { id }) {
       started ? { key: 'ooc', label: st.ooc ? '退出出戏' : '出戏', hint: '下一句是场外话：问设定、商量走向，不推进剧情' } : null,
       { key: 'dir', label: st.director.trim() ? '修改导演指令' : '导演指令', hint: '只对下一轮生效的要求，不写进规则' },
       ...manualMods().map((m) => ({ key: 'mod:' + m.id, label: `情境：${m.name}${story.manualOn[m.id] ? '  ✓ 开着' : '（关着）'}`, hint: story.manualOn[m.id] ? '点一下关掉' : '点一下打开，之后每轮都带上这个模块' })),
-      { key: 'edit', label: '角色与设定', hint: '世界设定、角色卡、规则和模块' },
+      { key: 'edit', label: '世界设定与规则', hint: '世界设定、开场、弹幕/选项开关、规则和模块；角色在底部“角色”里' },
       { key: 'memory', label: '记忆（前情档案）', hint: (() => { const pc = pendingChapters(headPath()); return pc.cp ? `整理到第 ${pc.upTo} 章${pc.pending.length ? `，还有 ${pc.pending.length} 章没整理` : ''}` : '还没整理过；也在这里设每几章整理一次'; })() },
-      { key: 'extra', label: '番外册', hint: '论坛体、日记、采访，或者自己写个点子；不进正史' },
       { key: 'branch', label: `分支${leaves > 1 ? `（${leaves} 条）` : ''}`, hint: '重写或回退后留下的其他走向' },
       { key: 'cost', label: '花费', hint: '这个故事和本月花了多少' },
       { key: 'ctx', label: '查看发给模型的内容', hint: '排查“为什么他又不像他了”' },
@@ -799,7 +833,6 @@ export async function render(root, { id }) {
     } else if (k === 'ooc') { st.ooc = !st.ooc; updateComposer(); if (st.ooc) ta.focus(); }
     else if (k === 'dir') editDirector();
     else if (k === 'edit') go(`story/${encodeURIComponent(story.id)}`);
-    else if (k === 'extra') go(`extra/${encodeURIComponent(story.id)}`);
     else if (k === 'memory') go(`memory/${encodeURIComponent(story.id)}`);
     else if (k === 'branch') showBranches();
     else if (k === 'cost') showCost();

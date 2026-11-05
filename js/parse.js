@@ -8,18 +8,22 @@ function clean(line) {
 // 标记行：【弹幕】/[弹幕]/弹幕：/弹幕（独占一行）；选项同理（允许“参考选项”“行动选项”）
 const MARKERS = {
   danmu: [
-    /^[【\[(（]\s*(?:实时)?\s*弹\s*幕\s*(?:区|评论|实况)?\s*[】\])）]\s*[:：]?\s*(.*)$/,
-    /^(?:实时)?\s*弹\s*幕\s*(?:区|评论|实况)?\s*[:：]\s*(.*)$/,
-    /^(?:实时)?\s*弹\s*幕\s*(?:区|评论|实况)?\s*()$/,
+    /^[【\[(（]\s*[^】\])）]{0,6}?弹\s*幕[^】\])）]{0,6}[】\])）]\s*[:：]?\s*(.*)$/,
+    /^(?:实时|直播间?)?\s*弹\s*幕\s*(?:区|评论|实况|飘过)?\s*[:：]\s*(.*)$/,
+    /^(?:实时|直播间?)?\s*弹\s*幕\s*(?:区|评论|实况|飘过)?\s*()$/,
   ],
   options: [
-    /^[【\[(（]\s*(?:参考|行动|可选|你的)?\s*(?:选\s*项|选\s*择|行\s*动|抉\s*择|下一步)\s*(?:选项)?\s*[】\])）]\s*[:：]?\s*(.*)$/,
-    /^(?:参考|行动|可选|你的)?\s*选\s*[项择]\s*[:：]\s*(.*)$/,
-    /^(?:参考|行动|可选|你的)?\s*选\s*[项择]\s*()$/,
-    /^(?:可选行动|你可以|接下来你可以)\s*[:：]\s*(.*)$/,
+    // 【选项】【参考选项】【可选行动】【抉择时刻】【你的选择】【下一步行动】……
+    /^[【\[(（]\s*[^】\])）]{0,6}?(?:选\s*项|选\s*择|行\s*动|抉\s*择|下一步)[^】\])）]{0,6}[】\])）]\s*[:：]?\s*(.*)$/,
+    /^(?:参考|行动|可选|你的|接下来的?)?\s*选\s*[项择]\s*[:：]\s*(.*)$/,
+    /^(?:参考|行动|可选|你的|接下来的?)?\s*选\s*[项择]\s*()$/,
+    /^(?:可选行动|行动建议|你可以|接下来你可以|你可以选择|接下来你要怎么做[？?]?|你会怎么做[？?]?)\s*[:：]?\s*()$/,
+    /^(?:可选行动|行动建议|你可以|接下来你可以|你可以选择)\s*[:：]\s*(.*)$/,
   ],
 };
 const SEP_RE = /^[-—=*_·~\s]{3,}$/;
+// 像一条选项的行：A. / 1、/ ① / 选项A：/ “A 走过去” / ▶ 走过去
+const OPT_LINE = /^\s*(?:(?:[-*•·➤▶►→]\s*)?\**\s*(?:选\s*[项择]\s*)?(?:(?:[A-Ea-e]|[1-5]|[一二三四五])\s*\**\s*[.、．:：)）]|[①②③④⑤]|[A-E]\s+(?=[\u4e00-\u9fff“"「（(]))|[➤▶►→]\s*)\s*\S/;
 
 /** 是标记行就返回 { rest }（同一行标记后面跟着的内容），否则 null */
 function isMarker(cleaned, type) {
@@ -31,7 +35,10 @@ function isMarker(cleaned, type) {
 }
 
 function stripOptionPrefix(s) {
-  return s.replace(/^\s*(?:[-*•·]\s*)?(?:[A-Ea-e]|[1-6]|[①②③④⑤⑥]|[一二三四五六])\s*[.、．:：)）\]】]\s*/, '')
+  return s.replace(/^\s*(?:[-*•·➤▶►→]\s*)?\**\s*(?:选\s*[项择]\s*)?(?:[A-Ea-e]|[1-6]|[一二三四五六])\s*\**\s*[.、．:：)）\]】]\s*\**\s*/, '')
+    .replace(/^\s*[①②③④⑤⑥]\s*[.、．:：)）]?\s*/, '')
+    .replace(/^\s*[➤▶►→]\s*/, '')
+    .replace(/^\s*(?:选\s*[项择]\s*)?(?:[A-Ea-e])\s+(?=[\u4e00-\u9fff“"「（(])/, '')
     .replace(/^\s*[(（【\[]\s*(?:[A-Ea-e]|[1-6])\s*[)）】\]]\s*/, '')
     .trim();
 }
@@ -52,7 +59,18 @@ export function parseReply(raw) {
   const options = [];
   let title = '';
 
-  for (const line of lines) {
+  // 从第 i 行起，连着至少两行像选项（中间可以有空行）
+  const optRun = (i) => {
+    let n = 0;
+    for (let j = i; j < lines.length; j++) {
+      if (!lines[j].trim()) continue;
+      if (OPT_LINE.test(lines[j])) n++; else break;
+    }
+    return n >= 2;
+  };
+
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
     const c = clean(line);
     if (state !== 'danmu') {
       const dm = isMarker(c, 'danmu');
@@ -64,6 +82,8 @@ export function parseReply(raw) {
     }
     if (state === 'body') { body.push(line); continue; }
     if (!c || SEP_RE.test(c)) continue;
+    // 弹幕后面直接跟着 A/B/C、没写“选项”标记：从这里开始算选项
+    if (state === 'danmu' && OPT_LINE.test(line) && optRun(li)) state = 'options';
     if (state === 'danmu') { const d = parseDanmuLine(c); if (d) danmu.push(d); }
     else if (state === 'options') { const o = stripOptionPrefix(c); if (o) options.push(o); }
   }
@@ -85,7 +105,6 @@ export function parseReply(raw) {
 
   // 模型没写“选项”标记，但正文最后是连着的 A/B/C（或 1/2/3）几行：当成选项
   if (!options.length) {
-    const OPT_LINE = /^\s*(?:[-*•·]\s*)?\**\s*(?:[A-Ea-e]|[1-5])\s*[.、．:：)）]\s*\S/;
     const tail = [];
     for (let i = body.length - 1; i >= 0; i--) {
       const l = body[i];

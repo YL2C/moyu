@@ -2,7 +2,7 @@
 
 import { db } from '../db.js';
 import { el, toast, sheet } from '../util.js';
-import { resolveConnection, getConnections, connLabel, go } from '../state.js';
+import { resolveConnection, getConnections, connLabel, go, setCurrentStory } from '../state.js';
 import { latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { fmtMoney } from '../cost.js';
@@ -28,7 +28,7 @@ export async function archiveConn(story) {
 
 export async function render(root, { id }) {
   const story = await db.get('stories', id);
-  if (!story) { toast('找不到这个故事'); go(''); return; }
+  if (!story) { toast('找不到这个故事'); setCurrentStory(null); go(''); return; }
   const nodes = new Map((await db.byStory(id)).map((n) => [n.id, n]));
   const conns = await getConnections();
   let running = null;
