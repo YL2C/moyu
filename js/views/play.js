@@ -847,7 +847,13 @@ export async function render(root, { id }) {
 
   async function showCost() {
     const s = sheet({ title: '花费' });
-    const log = await getUsageLog(story.id);
+    const logged = await getUsageLog(story.id);
+    // 记账清单是新加的：更早的几章从章节上记的用量补进来
+    const cutoff = logged.length ? logged[0].at : Infinity;
+    const older = [...nodes.values()]
+      .filter((n) => n.role === 'assistant' && n.usageN && (n.createdAt || 0) < cutoff)
+      .map((n) => ({ at: n.createdAt || 0, kind: n.kind === 'ooc' ? '出戏' : '正文', model: n.model || '', input: n.usageN.input || 0, cached: n.usageN.cached || 0, output: n.usageN.output || 0, est: !!n.usageN.est, cost: n.cost || null }));
+    const log = [...older, ...logged].sort((a, b) => a.at - b.at);
     const month = await getMonthSpend();
     const budget = await getBudget();
     const money = (o) => ['CNY', 'USD'].filter((c) => o[c] > 0).map((c) => CUR[c] + (o[c] < 0.01 ? Number(o[c].toPrecision(2)) : o[c].toFixed(2))).join(' + ');
