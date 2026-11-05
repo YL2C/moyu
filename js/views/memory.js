@@ -183,7 +183,7 @@ export async function render(root, { id }) {
       });
       running = null;
       ok = r.written.length > 0;
-      toast(r.written.length ? `已整理到第 ${r.to} 章` : '没有需要整理的章节');
+      toast(r.newCards?.length ? `已整理到第 ${r.to} 章，新建了角色卡：${r.newCards.join('、')}` : r.written.length ? `已整理到第 ${r.to} 章` : '没有需要整理的章节', r.newCards?.length ? 4500 : 2500);
     } catch (e) {
       running = null;
       if (e?.kind !== 'aborted' && e?.kind !== 'busy') {
@@ -217,10 +217,12 @@ export async function render(root, { id }) {
     if (n && n.checkpoint !== d.mem) n.checkpoint = d.mem;
   };
   window.addEventListener('moyu:checkpoint', onCheckpoint);
+  const onCards = (e) => { if (e.detail?.storyId === story.id && Array.isArray(e.detail.cards)) story.cards = e.detail.cards; };
+  window.addEventListener('moyu:cards', onCards);
 
   draw();
   // 离开这页不打断整理：它会在后台写完，游玩页会收到通知
-  return () => { destroyed = true; clearInterval(timer); window.removeEventListener('moyu:checkpoint', onCheckpoint); };
+  return () => { destroyed = true; clearInterval(timer); window.removeEventListener('moyu:checkpoint', onCheckpoint); window.removeEventListener('moyu:cards', onCards); };
 }
 
 export { pathTo as memPathTo, latestCheckpoint };

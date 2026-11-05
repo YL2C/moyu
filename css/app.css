@@ -197,6 +197,7 @@ a { color: var(--accent); }
 .npc-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .npc-name { font-size: 17px; font-weight: 600; letter-spacing: .04em; }
 .npc-head .badge { margin-left: 0; }
+.badge.ai { background: var(--accent); color: #fff; }
 .npc-alias { font-size: 12px; color: var(--text3); margin-top: 2px; }
 .npc-desc { font-size: 13.5px; color: var(--text2); margin-top: 8px; line-height: 1.7; white-space: pre-wrap; }
 .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; }

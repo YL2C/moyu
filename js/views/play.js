@@ -506,7 +506,8 @@ export async function render(root, { id }) {
         signal: ctrl.signal, ctrl,
         onProgress: (t) => { if (st.archiving) { st.archiving.text = t; updateComposer(); } },
       });
-      if (r.written.length) toast(`前情已整理到第 ${r.to} 章，点“⋯ → 记忆”可以查看和修改`, 3500);
+      if (r.newCards?.length) toast(`前情已整理到第 ${r.to} 章，新登场的 ${r.newCards.join('、')} 已经建了角色卡（底部“角色”里过目）`, 5000);
+      else if (r.written.length) toast(`前情已整理到第 ${r.to} 章，点“⋯ → 记忆”可以查看和修改`, 3500);
     } catch (e) {
       if (e?.kind !== 'aborted' && e?.kind !== 'busy') st.archiveError = e?.message || String(e);
     } finally {
@@ -951,12 +952,16 @@ export async function render(root, { id }) {
     if (n && n.checkpoint !== d.mem) { n.checkpoint = d.mem; if (!destroyed && !st.archiving) renderFeed({ keepScroll: true }); }
   };
   window.addEventListener('moyu:checkpoint', onCheckpoint);
+  // 存档员新建了角色卡（可能是别的页面发起的）：换成最新的卡，免得之后保存故事时把新卡覆盖掉
+  const onCards = (e) => { if (e.detail?.storyId === story.id && Array.isArray(e.detail.cards)) story.cards = e.detail.cards; };
+  window.addEventListener('moyu:cards', onCards);
   renderFeed();
   requestAnimationFrame(fit);
   return () => {
     destroyed = true;
     clearInterval(archTimer);
     window.removeEventListener('moyu:checkpoint', onCheckpoint);
+    window.removeEventListener('moyu:cards', onCards);
     if (st.streaming) st.streaming.ctrl.abort('leave');
   };
 }

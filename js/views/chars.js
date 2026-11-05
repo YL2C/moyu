@@ -4,7 +4,8 @@ import { db } from '../db.js';
 import { el, uid, toast, sheet } from '../util.js';
 import { connLabel, resolveConnection, go, setCurrentStory } from '../state.js';
 import { streamWithRetry } from '../api.js';
-import { latestCheckpoint } from '../prompt.js';
+import { latestCheckpoint, memoryText, splitNames } from '../prompt.js';
+import { chaptersOf } from '../fanwai.js';
 
 function pathTo(nodes, nodeId) {
   const out = [];
@@ -58,9 +59,11 @@ export async function render(root, { id }) {
       el('div', { class: 'npc-head', onclick: toggle },
         el('span', { class: 'npc-name', text: c.name || '未命名' }),
         el('span', { class: 'badge', text: c.core ? '常驻' : '被提到才发' }),
+        c.auto ? el('span', { class: 'badge ai', text: 'AI 新加' }) : null,
         el('span', { style: { flex: 1 } }),
         el('button', { class: 'btn small ghost', onclick: (e) => { e.stopPropagation(); editCard(c); } }, '编辑')),
       c.aliases?.trim() ? el('div', { class: 'npc-alias', text: '也叫 ' + c.aliases.trim() }) : null,
+      c.auto ? el('div', { class: 'npc-alias', text: `整理第 ${c.auto.from}–${c.auto.to} 章时自动建的，点“编辑”过目、保存后这个标记就去掉` }) : null,
       desc ? el('div', { class: 'npc-desc' + (isOpen ? '' : ' clamp'), text: isOpen ? (c.initial || c.base || '').trim() : desc }) : null,
       memo('当前状态与称呼', s.now, { badge: s.from ? `第 ${s.from} 章整理` : '', clamp: !isOpen }),
       ...(isOpen ? [
@@ -86,7 +89,7 @@ export async function render(root, { id }) {
         el('a', { href: 'javascript:void 0', onclick: () => go('memory/' + encodeURIComponent(id)) }, '看记忆')));
     }
     if (!story.cards.length) {
-      wrap.append(el('div', { class: 'empty', style: { padding: '28px 8px' } }, '还没有角色卡。', el('br'), '可以手动建，也可以让 AI 先从世界设定里拆一版草稿。'));
+      wrap.append(el('div', { class: 'empty', style: { padding: '28px 8px' } }, '还没有角色卡。', el('br'), '可以手动建，也可以让 AI 先从世界设定和玩过的剧情里拆一版草稿。'));
     }
     const core = story.cards.filter((c) => c.core);
     const rest = story.cards.filter((c) => !c.core);
@@ -95,11 +98,17 @@ export async function render(root, { id }) {
     wrap.append(
       el('div', { class: 'row', style: { marginTop: '14px' } },
         el('button', { class: 'btn primary', onclick: () => editCard(null) }, '＋ 新角色'),
-        el('button', { class: 'btn', onclick: () => aiSplit() }, '让 AI 从设定里拆角色卡')),
+        el('button', { class: 'btn', onclick: () => aiSplit() }, '让 AI 从设定和剧情里拆角色卡')),
       el('div', { class: 'hint', style: { marginTop: '12px' } },
-        '“常驻”的角色每轮都发给模型；其他角色只在最近的剧情或你的输入里被提到时才发。在场角色的禁止清单会贴在每轮最后提醒模型。游玩时某一章“⋯ → 这不像他”会把纠正写进禁止清单。'));
+        '“常驻”的角色每轮都发给模型；其他角色只在最近的剧情或你的输入里被提到时才发。在场角色的禁止清单会贴在每轮最后提醒模型。游玩时某一章“⋯ → 这不像他”会把纠正写进禁止清单。剧情里新登场、会反复出现的角色，整理前情时会自动建卡（标“AI 新加”）。'));
   }
   const redraw = draw;
+  const onCards = (e) => {
+    if (e.detail?.storyId !== story.id || !Array.isArray(e.detail.cards)) return;
+    story.cards = e.detail.cards;
+    db.byStory(id).then((ns) => { nodes.clear(); ns.forEach((n) => nodes.set(n.id, n)); draw(); }).catch(() => draw());
+  };
+  window.addEventListener('moyu:cards', onCards);
 
   function editCard(existing) {
     const isNew = !existing;
@@ -150,6 +159,7 @@ export async function render(root, { id }) {
           if (!c.name) { toast('名字要填'); return; }
           c.core = core.checked;
           c.updatedAt = Date.now();
+          delete c.auto;
           const i = story.cards.findIndex((x) => x.id === c.id);
           if (i >= 0) story.cards[i] = c; else story.cards.push(c);
           if (memEntry) {
@@ -164,18 +174,38 @@ export async function render(root, { id }) {
   }
 
   async function aiSplit() {
-    if (!story.world?.trim()) { toast('先在“⋯ → 世界设定与规则”里写好世界设定'); return; }
+    const path = pathTo(nodes, story.headId);
+    const chs = chaptersOf(path);
+    const m = cp();
+    // 最近的剧情原文：从后往前取，最多约 3 万字
+    const picked = [];
+    let used = 0;
+    for (let i = chs.length - 1; i >= 0; i--) {
+      const c = chs[i];
+      const block = `【第${c.no}章${c.title ? ' · ' + c.title : ''}】\n${c.said ? '（主角：' + c.said.trim() + '）\n' : ''}${c.text}`;
+      if (used && used + block.length > 30000) break;
+      picked.unshift({ no: c.no, block });
+      used += block.length;
+    }
+    if (!story.world?.trim() && !picked.length) { toast('先写世界设定，或者玩几章'); return; }
     const conn = await resolveConnection(story);
     if (!conn) { toast('先在设置里添加连接'); return; }
-    const s = sheet({ title: '从设定里拆角色卡' });
+    const s = sheet({ title: '从设定和剧情里拆角色卡' });
     const status = el('div', { class: 'thinking', text: '正在整理' });
-    s.body.append(el('div', { class: 'hint', style: { marginTop: 0 } }, `用「${connLabel(conn)}」读一遍世界设定，整理出角色卡草稿。只会整理设定里写了的内容，没写的栏留空。`), status);
+    const range = picked.length ? `第 ${picked[0].no}–${picked[picked.length - 1].no} 章` : '';
+    s.body.append(el('div', { class: 'hint', style: { marginTop: 0 } },
+      `用「${connLabel(conn)}」读一遍${story.world?.trim() ? '世界设定' : ''}${m && picked.length && picked[0].no > 1 ? '、前情档案' : ''}${picked.length ? `${story.world?.trim() ? '和' : ''}最近的剧情（${range}，约 ${used} 字）` : ''}，整理出角色卡草稿。已经有卡的不会重复；没写到的栏留空。`), status);
     const ctrl = new AbortController();
     s.foot.append(el('button', { class: 'btn ghost', onclick: () => { ctrl.abort('user'); s.close(); } }, '取消'));
-    const prompt = '下面是一个文字互动小说的世界设定。请把其中除主角（玩家扮演的人）以外、有名有姓、会反复出现的角色，整理成角色卡草稿。\n' +
-      '要求：只根据设定原文，不要编造设定里没有的内容；没写到的栏留空字符串。只输出一个 JSON 数组，不要任何说明或代码块标记。\n' +
-      '每个元素：{"name":"名字","aliases":"别名，用顿号分开","core":是否主要角色(true/false),"initial":"设定里关于这个人的要点：身份、外貌、和主角的关系、初始态度","base":"性格底色：设定里写到的遇事反应和说话方式","voice":"设定里出现过的他的原话，一行一句","forbid":"设定里明确写了他不会做的事，一行一条"}\n\n' +
-      '【世界设定】\n' + story.world.trim();
+    const have = story.cards.filter((c) => c.name?.trim()).map((c) => c.name.trim() + (c.aliases?.trim() ? '（' + c.aliases.trim() + '）' : ''));
+    const prompt = '下面是一个文字互动小说的' + [story.world?.trim() ? '世界设定' : '', picked.length ? '已经玩过的剧情' : ''].filter(Boolean).join('和') +
+      '。请把其中除主角（玩家扮演的“你”）以外、有名有姓、会反复出现的角色，整理成角色卡草稿。剧情里新登场的角色（包括设定里没有的）也要整理。\n' +
+      (have.length ? '这些角色已经有卡了，不要再写：' + have.join('、') + '\n' : '') +
+      '要求：只根据下面的原文，不要编造没写到的内容；没写到的栏留空字符串；路人和只出现一次的角色不要。只输出一个 JSON 数组，不要任何说明或代码块标记。\n' +
+      '每个元素：{"name":"名字","aliases":"别名、别人对他的称呼，用顿号分开","core":是否主要角色(true/false),"initial":"身份、外貌、和主角的关系、初始态度；剧情里登场的写清第几章怎么登场","base":"性格底色：遇事怎么反应、怎么说话","voice":"他说过的有代表性的原话，原样摘，一行一句","forbid":"明确写了或明显看得出他不会做的事，一行一条","now":"（剧情里出现过才写）现在走到哪一步、对主角的立场、彼此怎么称呼","relation":"（剧情里出现过才写）和主角的关系：相处梗、称呼、约定"}\n\n' +
+      [story.world?.trim() ? '【世界设定】\n' + story.world.trim() : '',
+        m && picked.length && picked[0].no > 1 ? '【前情档案（更早的剧情）】\n' + memoryText(m.mem) : '',
+        picked.length ? `【最近的剧情：${range}】\n` + picked.map((x) => x.block).join('\n\n') : ''].filter(Boolean).join('\n\n');
     let raw = '';
     try {
       const r = await streamWithRetry(conn, {
@@ -198,20 +228,22 @@ export async function render(root, { id }) {
       status.replaceChildren('模型返回的格式看不懂，可以再试一次或换个模型。', el('pre', { class: 'raw', text: raw.slice(0, 1500) }));
       return;
     }
-    const existing = new Set(story.cards.map((c) => c.name));
+    const existing = new Set(story.cards.flatMap((c) => splitNames(c)));
+    const txt = (v) => (Array.isArray(v) ? v.join('\n') : String(v ?? '')).trim();
     const drafts = arr.filter((x) => x && x.name).map((x) => ({
-      id: uid(), name: String(x.name).trim(), aliases: String(x.aliases || ''), core: !!x.core,
-      initial: String(x.initial || ''), base: String(x.base || ''), voice: String(x.voice || ''), forbid: String(x.forbid || ''),
-      arc: '', now: '', relation: '',
+      id: uid(), name: String(x.name).trim(), aliases: txt(x.aliases), core: x.core === true || x.core === 'true',
+      initial: txt(x.initial), base: txt(x.base), voice: txt(x.voice), forbid: txt(x.forbid),
+      arc: '', now: txt(x.now), relation: txt(x.relation),
     }));
+    const dup = (d) => splitNames(d).some((n) => existing.has(n));
     status.remove();
-    if (!drafts.length) { s.body.append(el('div', { class: 'hint', text: '设定里没找到可以建卡的角色。' })); return; }
+    if (!drafts.length) { s.body.append(el('div', { class: 'hint', text: '没找到还没建卡的角色。' })); return; }
     const checks = drafts.map((d) => {
       const cb = el('input', { type: 'checkbox' });
-      cb.checked = !existing.has(d.name);
+      cb.checked = !dup(d);
       s.body.append(el('label', { class: 'card', style: { display: 'flex', gap: '10px', alignItems: 'flex-start' } }, cb,
         el('div', { style: { flex: 1 } },
-          el('div', { style: { fontWeight: 600 } }, d.name, d.core ? el('span', { class: 'badge', text: '常驻' }) : null, existing.has(d.name) ? el('span', { class: 'badge', text: '已有同名' }) : null),
+          el('div', { style: { fontWeight: 600 } }, d.name, d.core ? el('span', { class: 'badge', text: '常驻' }) : null, dup(d) ? el('span', { class: 'badge', text: '已有同名' }) : null),
           el('div', { class: 'hint', style: { marginTop: '4px' }, text: (d.initial || d.base || '').slice(0, 120) }))));
       return cb;
     });
@@ -228,4 +260,5 @@ export async function render(root, { id }) {
   }
 
   draw();
+  return () => window.removeEventListener('moyu:cards', onCards);
 }
