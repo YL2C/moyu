@@ -91,7 +91,7 @@ async function renderList(root, story, nodes) {
 // ───────────── 新建 ─────────────
 async function newExtra(story, nodes) {
   const templates = await getTemplates();
-  const modules = await getModules();
+  const modules = [...(await getModules()), ...(story.localModules || [])];
   const enabledAlways = modules.filter((m) => m.mode !== 'manual' && m.mode !== 'keyword' && story.modules?.[m.id]);
   const chapters = chaptersOf(pathTo(nodes, story.headId));
   const cards = (story.cards || []).filter((c) => c.name?.trim());
@@ -254,7 +254,7 @@ async function renderReader(root, story, nodes, extraId) {
   }
 
   async function buildCtx() {
-    const modules = x.withModules ? (await getModules()).filter((m) => m.mode !== 'manual' && m.mode !== 'keyword' && story.modules?.[m.id]) : [];
+    const modules = x.withModules ? [...(await getModules()), ...(story.localModules || [])].filter((m) => m.mode !== 'manual' && m.mode !== 'keyword' && story.modules?.[m.id]) : [];
     const base = await getBase();
     const path = x.anchorId ? pathTo(nodes, x.anchorId) : [];
     const chapters = chaptersOf(path);

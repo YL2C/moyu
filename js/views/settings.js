@@ -5,8 +5,10 @@ import { el, uid, toast, sheet, saveFile, pickFile, APP_VERSION } from '../util.
 import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, MODULE_MODES, modulesFromMarkdown, modulesToMarkdown } from '../state.js';
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
 import { DEFAULT_RULES } from '../prompt.js';
-import { getMonthSpend, getBudget, setBudget, fmtTokens, CUR } from '../cost.js';
+import { getMonthSpend, getBudget, setBudget, fmtTokens, CUR, priceLabel } from '../cost.js';
 import { getTemplates, saveTemplates, getBase, saveBase, DEFAULT_BASE, builtinTemplates, newTemplate, SCOPES } from '../fanwai.js';
+import { getPacks, deleteGlobalPack, KIND_LABEL } from '../tavern.js';
+import { importFlow } from './packs-ui.js';
 
 function sw(checked, onchange) {
   const input = el('input', { type: 'checkbox', onchange: () => onchange(input.checked) });
@@ -70,7 +72,7 @@ export async function render(root, { section }) {
       wrap.append(el('div', { class: 'card' },
         el('div', { style: { fontWeight: '600' } }, connLabel(c), isDef ? el('span', { class: 'badge', text: '默认' }) : null),
         el('div', { class: 'hint', style: { marginTop: '4px', wordBreak: 'break-all' } },
-          `${FORMAT_LABEL[c.format || 'auto']} · ${c.model || '未填模型'}` + (c.priceIn !== '' && c.priceIn != null ? ` · ${CUR[c.currency || 'CNY']}${c.priceIn}/${c.priceOut ?? '?'} 每百万` : ''), el('br'), url),
+          `${FORMAT_LABEL[c.format || 'auto']} · ${c.model || '未填模型'}` + (priceLabel(c) ? ` · ${priceLabel(c)}` : ''), el('br'), url),
         el('div', { class: 'row', style: { marginTop: '10px' } },
           el('button', { class: 'btn small', onclick: () => editConn(c) }, '编辑 / 测试'),
           isDef ? null : el('button', { class: 'btn small ghost', onclick: async () => { await setDefaultConnId(c.id); toast('已设为默认'); draw(); } }, '设为默认')
@@ -96,18 +98,28 @@ export async function render(root, { section }) {
     ));
 
     // ── 规则模块 ──
-    const mods = await getModules();
+    const allMods = await getModules();
+    const mods = allMods.filter((m) => !m.pack);
+    const packs = (await getPacks()).filter((p) => allMods.some((m) => m.pack === p.id));
     const modTitle = el('div', { class: 'section-title', id: 'sec-modules', text: '规则模块（所有故事共用，每个故事自己选启用哪些）' });
     wrap.append(modTitle);
     const modCard = el('div', { class: 'card' });
-    if (!mods.length) modCard.append(el('div', { class: 'hint', style: { marginTop: 0, marginBottom: '10px' } }, '模块是可以在多个故事之间复用的规则块，比如“文风”“弹幕写法”“成人场景”。可以一条条加，也可以导入一份 markdown：每个“## 标题”拆成一个模块。'));
+    if (!mods.length && !packs.length) modCard.append(el('div', { class: 'hint', style: { marginTop: 0, marginBottom: '10px' } }, '模块是可以在多个故事之间复用的规则块，比如“文风”“弹幕写法”“成人场景”。可以一条条加，也可以导入一份 markdown：每个“## 标题”拆成一个模块。'));
     for (const m of mods) {
       modCard.append(el('div', { class: 'switch-row', style: { cursor: 'pointer' }, onclick: () => editModule(m) },
         el('div', { class: 'lbl' }, m.name, el('small', { text: `${MODULE_MODES[m.mode] || MODULE_MODES.always}${m.mode === 'keyword' && m.keywords ? '：' + m.keywords : ''} · ${m.text.length} 字${m.note?.trim() ? ' · 有备注' : ''}` })),
         el('span', { class: 'muted', text: '›' })));
     }
+    // 从酒馆导入的整包：一行一个，点开看条目，可以整包删除
+    for (const p of packs) {
+      const pm = allMods.filter((m) => m.pack === p.id);
+      modCard.append(el('div', { class: 'switch-row', style: { cursor: 'pointer' }, onclick: () => showPack(p, pm) },
+        el('div', { class: 'lbl' }, '📦 ' + p.name, el('small', { text: `${KIND_LABEL[p.kind] || '导入'} · ${pm.length} 条 · ${pm.reduce((a, m) => a + m.text.length, 0)} 字 · 酒馆导入` })),
+        el('span', { class: 'muted', text: '›' })));
+    }
     modCard.append(el('div', { class: 'row', style: { marginTop: '10px' } },
       el('button', { class: 'btn small primary', onclick: () => editModule(null) }, '＋ 新模块'),
+      el('button', { class: 'btn small', onclick: async () => { if (await importFlow(null)) draw(); } }, '导入酒馆文件'),
       el('button', {
         class: 'btn small',
         onclick: async () => {
@@ -171,11 +183,11 @@ export async function render(root, { section }) {
     const budget = await getBudget();
     const bAmt = el('input', { type: 'number', min: '0', step: '1', placeholder: '不提醒', style: { flex: 1 } }); bAmt.value = budget.amount ?? '';
     const bCur = el('select', { style: { width: '110px', flex: 'none' } }); bCur.append(el('option', { value: 'CNY' }, '¥'), el('option', { value: 'USD' }, '$')); bCur.value = budget.currency || 'CNY';
-    const spent = ['CNY', 'USD'].filter((k) => month[k] > 0).map((k) => CUR[k] + (month[k] < 0.01 ? Number(month[k].toPrecision(2)) : month[k].toFixed(2))).join(' + ') || (month.count ? '算不出金额（连接没填单价）' : '—');
+    const spent = ['CNY', 'USD'].filter((k) => month[k] > 0).map((k) => CUR[k] + (month[k] < 0.01 ? Number(month[k].toPrecision(2)) : month[k].toFixed(2))).join(' + ') || (month.count ? '算不出金额（连接没设计价方式）' : '—');
     wrap.append(el('div', { class: 'section-title', text: '花费' }));
     wrap.append(el('div', { class: 'card' },
       el('div', { style: { fontWeight: '600' } }, `本月 ${spent}`),
-      el('div', { class: 'hint', style: { marginTop: '2px' } }, `共 ${month.count} 次调用 · 输入 ${fmtTokens(month.input)} · 输出 ${fmtTokens(month.output)} token。金额按各连接填的单价（每百万 token）估算；每一笔明细在游玩页“⋯ → 花费”。`),
+      el('div', { class: 'hint', style: { marginTop: '2px' } }, `共 ${month.count} 次调用 · 输入 ${fmtTokens(month.input)} · 输出 ${fmtTokens(month.output)} token。金额按各连接设的价格估算（按次或按 token）；每一笔明细在游玩页“⋯ → 花费”。`),
       el('div', { class: 'field', style: { marginTop: '12px', marginBottom: '8px' } }, el('label', { text: '每月提醒线（超过后每天提醒一次）' }),
         el('div', { class: 'row', style: { flexWrap: 'nowrap' } }, bAmt, bCur)),
       el('button', { class: 'btn small primary', onclick: async () => { await setBudget({ amount: bAmt.value === '' ? '' : Number(bAmt.value), currency: bCur.value }); toast('提醒线已保存'); } }, '保存提醒线')
@@ -256,6 +268,20 @@ export async function render(root, { section }) {
     const priceOut = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '不填' }); priceOut.value = c.priceOut ?? '';
     const priceCache = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '同输入价' }); priceCache.value = c.priceCache ?? '';
     const currency = el('select'); currency.append(el('option', { value: 'CNY' }, '人民币 ¥'), el('option', { value: 'USD' }, '美元 $')); currency.value = c.currency || 'CNY';
+    const perCall = el('input', { type: 'number', min: '0', step: '0.001', placeholder: '例：0.05' }); perCall.value = c.pricePerCall ?? '';
+    // 计价方式：按次 / 按 token / 不算钱（以前填过 token 单价的默认按 token）
+    let pMode = c.priceMode || ((c.priceIn !== '' && c.priceIn != null) || (c.priceOut !== '' && c.priceOut != null) ? 'token' : 'none');
+    const tokenBox = el('div');
+    const callBox = el('div');
+    const modeHint = el('div', { class: 'hint' });
+    const pModeSeg = seg([['call', '按次'], ['token', '按 token'], ['none', '不算钱']], pMode, (v) => { pMode = v; showMode(); });
+    const showMode = () => {
+      tokenBox.style.display = pMode === 'token' ? '' : 'none';
+      callBox.style.display = pMode === 'call' ? '' : 'none';
+      modeHint.textContent = pMode === 'call' ? '每次请求（正文、续写、整理前情、补选项、番外……各算一次）按这个价格记。token 照样统计。'
+        : pMode === 'token' ? '单位都是“每百万 token”，照中转站或官方的价格表填。'
+        : '只统计 token 和次数，不算钱。';
+    };
     const log = el('div', { class: 'test-log' });
 
     const read = () => ({
@@ -266,6 +292,8 @@ export async function render(root, { section }) {
       priceOut: priceOut.value === '' ? '' : Number(priceOut.value),
       priceCache: priceCache.value === '' ? '' : Number(priceCache.value),
       currency: currency.value,
+      priceMode: pMode,
+      pricePerCall: perCall.value === '' ? '' : Number(perCall.value),
     });
     const refreshUrl = () => {
       const cur = read();
@@ -342,17 +370,19 @@ export async function render(root, { section }) {
           el('div', { class: 'hint', text: '留空 = 模型默认。部分新模型不接受自定义温度。' }))
       ),
       el('div', { class: 'section-title', text: '价格（可选，用来算花费）' }),
-      el('div', { class: 'row', style: { alignItems: 'flex-start', flexWrap: 'nowrap' } },
+      el('div', { class: 'field' }, el('label', { text: '计价方式' }), pModeSeg, modeHint),
+      (callBox.append(el('div', { class: 'field' }, el('label', { text: '每次多少钱' }), perCall)), callBox),
+      (tokenBox.append(el('div', { class: 'row', style: { alignItems: 'flex-start', flexWrap: 'nowrap' } },
         el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '输入价' }), priceIn),
         el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '输出价' }), priceOut),
-        el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '缓存命中价' }), priceCache)),
-      el('div', { class: 'field' }, el('label', { text: '货币' }), currency,
-        el('div', { class: 'hint', text: '单位都是“每百万 token”，照中转站或官方的价格表填。不填就只统计 token、不算钱。' })),
+        el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '缓存命中价' }), priceCache))), tokenBox),
+      el('div', { class: 'field' }, el('label', { text: '货币' }), currency),
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '流式输出', el('small', { text: '边写边显示。测试提示流式有问题时再关掉。' })),
         el('label', { class: 'switch' }, streamSw, el('span'))),
       el('div', { style: { marginTop: '12px' } }, testBtn),
       log
     );
+    showMode();
 
     s.foot.append(...[
       isNew ? null : el('button', {
@@ -380,6 +410,26 @@ export async function render(root, { section }) {
         },
       }, '保存'),
     ].filter(Boolean));
+  }
+
+  // ───── 酒馆导入的包：看条目 / 删除 ─────
+  function showPack(p, pm) {
+    const s = sheet({ title: '📦 ' + p.name });
+    s.body.append(el('div', { class: 'hint', style: { marginTop: 0 } }, `${KIND_LABEL[p.kind] || '导入'} · ${pm.length} 条 · 来自 ${p.file || '导入的文件'}。点一条可以修改；每个故事在“世界设定与规则 → 规则”里整包或逐条开关。`));
+    const list = el('div', { class: 'card' });
+    for (const m of pm) {
+      list.append(el('div', { class: 'switch-row', style: { cursor: 'pointer' }, onclick: () => { s.close(); editModule(m); } },
+        el('div', { class: 'lbl' }, m.name, el('small', { text: `${MODULE_MODES[m.mode] || ''}${m.mode === 'keyword' && m.keywords ? '：' + m.keywords.slice(0, 40) : ''} · ${m.text.length} 字${m.defaultOn === false ? ' · 原本关着' : ''}` })),
+        el('span', { class: 'muted', text: '›' })));
+    }
+    s.body.append(list);
+    s.foot.append(
+      el('button', { class: 'btn danger', style: { marginRight: 'auto' }, onclick: async () => {
+        if (!confirm(`删除「${p.name}」的全部 ${pm.length} 条？已经在用它的故事也会一起去掉。`)) return;
+        await deleteGlobalPack(p.id);
+        s.close(); toast('已删除'); draw();
+      } }, '删除整包'),
+      el('button', { class: 'btn primary', onclick: () => s.close() }, '关闭'));
   }
 
   // ───── 规则模块编辑 ─────

@@ -4,6 +4,8 @@ import { db } from '../db.js';
 import { el, toast } from '../util.js';
 import { getConnections, connLabel, getModules, MODULE_MODES, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
 import { DEFAULT_RULES } from '../prompt.js';
+import { getPacks, deleteStoryPack, KIND_LABEL } from '../tavern.js';
+import { packToggle, importFlow } from './packs-ui.js';
 
 function sw(checked, onchange) {
   const input = el('input', { type: 'checkbox', onchange: () => onchange(input.checked) });
@@ -77,22 +79,49 @@ export async function render(root, { id, tab = 'setting' }) {
         el('div', { class: 'hint' }, '只对这个故事生效。',
           el('a', { href: 'javascript:void 0', onclick: () => { if (confirm('用内置的通用规则替换当前内容？')) { rules.value = DEFAULT_RULES; story.rules = DEFAULT_RULES; saveSoon(); } } }, '恢复内置规则'))),
     );
-    const mods = await getModules();
+    const all = await getModules();
+    const mods = all.filter((m) => !m.pack);
+    const globalPacks = (await getPacks()).filter((p) => all.some((m) => m.pack === p.id));
+    story.localModules = story.localModules || [];
+    story.packs = story.packs || [];
     body.append(el('div', { class: 'section-title', text: '启用的规则模块' }));
-    if (!mods.length) {
-      body.append(el('div', { class: 'card hint', style: { marginTop: 0 } }, '还没有规则模块。模块是可以在多个故事之间复用的规则块，比如“文风”“弹幕写法”“成人场景”。',
+    if (!mods.length && !globalPacks.length) {
+      body.append(el('div', { class: 'card hint', style: { marginTop: 0 } }, '还没有规则模块。模块是可以在多个故事之间复用的规则块，比如“文风”“弹幕写法”“成人场景”；也可以在设置里导入酒馆的预设、世界书。',
         el('div', { class: 'row', style: { marginTop: '8px' } }, el('button', { class: 'btn small', onclick: () => go('settings/modules') }, '去添加模块'))));
-      return;
+    } else {
+      const box = el('div', { class: 'card' });
+      for (const m of mods) {
+        box.append(el('div', { class: 'switch-row' },
+          el('div', { class: 'lbl' }, m.name, el('small', { text: `${MODULE_MODES[m.mode] || MODULE_MODES.always}${m.mode === 'keyword' && m.keywords ? '：' + m.keywords : ''} · ${m.text.length} 字` })),
+          sw(!!story.modules[m.id], (v) => { story.modules[m.id] = v; saveSoon(); })));
+      }
+      for (const p of globalPacks) box.append(packToggle(p, all.filter((m) => m.pack === p.id), story.modules, saveSoon));
+      body.append(box,
+        el('div', { class: 'hint' }, '“手动开关”的模块启用后，要在游玩页右上角“⋯”里打开才会发送，比如进入成人场景前再开。📦 是从酒馆导入的整包，可以整包开关，也可以逐条开。'),
+        el('div', { class: 'row', style: { marginTop: '8px' } }, el('button', { class: 'btn small ghost', onclick: () => go('settings/modules') }, '管理规则模块')));
     }
-    const box = el('div', { class: 'card' });
-    for (const m of mods) {
-      box.append(el('div', { class: 'switch-row' },
-        el('div', { class: 'lbl' }, m.name, el('small', { text: `${MODULE_MODES[m.mode] || MODULE_MODES.always}${m.mode === 'keyword' && m.keywords ? '：' + m.keywords : ''} · ${m.text.length} 字` })),
-        sw(!!story.modules[m.id], (v) => { story.modules[m.id] = v; saveSoon(); })));
+
+    // 只给这个故事导入的（酒馆预设、世界书、角色卡）
+    body.append(el('div', { class: 'section-title', text: '这个故事自己导入的' }));
+    const own = el('div', { class: 'card' });
+    if (!story.packs.length) own.append(el('div', { class: 'hint', style: { marginTop: 0 } }, '可以导入酒馆的预设、世界书、角色卡（JSON、PNG 角色卡，或者打包的 ZIP），只对这个故事生效。'));
+    for (const p of story.packs) {
+      const pm = story.localModules.filter((m) => m.pack === p.id);
+      const del = () => {
+        const cards = (p.cardIds || []).map((cid) => story.cards.find((c) => c.id === cid)?.name).filter(Boolean);
+        if (!confirm(`删除「${p.name}」？会删掉它带来的 ${pm.length} 条规则${cards.length ? '和角色卡：' + cards.join('、') : ''}。`)) return;
+        deleteStoryPack(story, p.id);
+        saveNow().then(() => { body.replaceChildren(); drawRules(); });
+        toast('已删除');
+      };
+      if (pm.length) own.append(packToggle(p, pm, story.modules, saveSoon, del));
+      else own.append(el('div', { class: 'switch-row' },
+        el('div', { class: 'lbl' }, '📦 ' + p.name, el('small', { text: `${KIND_LABEL[p.kind] || '导入'}${p.cardIds?.length ? ' · 加了角色卡' : ''}` })),
+        el('button', { class: 'btn small ghost danger-text', onclick: del }, '删除')));
     }
-    body.append(box,
-      el('div', { class: 'hint' }, '“手动开关”的模块启用后，要在游玩页右上角“⋯”里打开才会发送，比如进入成人场景前再开。'),
-      el('div', { class: 'row', style: { marginTop: '8px' } }, el('button', { class: 'btn small ghost', onclick: () => go('settings/modules') }, '管理规则模块')));
+    own.append(el('div', { class: 'row', style: { marginTop: '8px' } },
+      el('button', { class: 'btn small primary', onclick: async () => { if (await importFlow(story)) { await saveNow(); body.replaceChildren(); drawRules(); } } }, '导入酒馆文件')));
+    body.append(own);
   }
 
   function redraw() {

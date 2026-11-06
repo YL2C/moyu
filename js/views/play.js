@@ -8,7 +8,8 @@ import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, late
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { archiveConn, DEFAULT_EVERY } from './memory.js';
 import { parseReply, paragraphs } from '../parse.js';
-import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage, getMonthSpend, getBudget, hasPrice, CUR, getUsageLog } from '../cost.js';
+import { openExportDialog } from '../exporter.js';
+import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage, getMonthSpend, getBudget, hasPrice, priceMode, CUR, getUsageLog } from '../cost.js';
 
 export async function render(root, { id }) {
   const story = await db.get('stories', id);
@@ -34,7 +35,7 @@ export async function render(root, { id }) {
     archiveError: null,
   };
   story.manualOn = story.manualOn || {};
-  const manualMods = () => st.modules.filter((m) => m.mode === 'manual' && story.modules?.[m.id]);
+  const manualMods = () => [...st.modules, ...(story.localModules || [])].filter((m) => m.mode === 'manual' && story.modules?.[m.id]);
   const prefs = getPrefs();
 
   // ───── 树结构工具 ─────
@@ -831,7 +832,8 @@ export async function render(root, { id }) {
       { key: 'branch', label: `分支${leaves > 1 ? `（${leaves} 条）` : ''}`, hint: '重写或回退后留下的其他走向' },
       { key: 'cost', label: '花费', hint: '这个故事和本月花了多少' },
       { key: 'ctx', label: '查看发给模型的内容', hint: '排查“为什么他又不像他了”' },
-      { key: 'export', label: '导出这个故事', hint: '不含密钥' },
+      { key: 'transcript', label: '导出游玩记录', hint: 'JSON 或纯文本；可选带弹幕、选项、番外' },
+      { key: 'export', label: '备份这个故事', hint: '完整存档（含所有分支），可以导回墨游；不含密钥' },
     ]);
     if (!k) return;
     if (k.startsWith('mod:')) {
@@ -847,10 +849,11 @@ export async function render(root, { id }) {
     else if (k === 'branch') showBranches();
     else if (k === 'cost') showCost();
     else if (k === 'ctx') showContext();
+    else if (k === 'transcript') openExportDialog(story.id, story.title);
     else if (k === 'export') {
       const data = await exportStory(story.id);
       const d = new Date();
-      await saveFile(`墨游_${story.title}_${d.getMonth() + 1}月${d.getDate()}日.json`, JSON.stringify(data, null, 1));
+      await saveFile(`墨游_${story.title}_备份_${d.getMonth() + 1}月${d.getDate()}日.json`, JSON.stringify(data, null, 1));
     }
   }
 
@@ -858,7 +861,8 @@ export async function render(root, { id }) {
     const s = sheet({ title: '花费' });
     const logged = await getUsageLog(story.id);
     // 记账清单是新加的：更早的几章从章节上记的用量补进来
-    const cutoff = logged.length ? logged[0].at : Infinity;
+    // （记账发生在一章写完时，章节是开始写时建的，所以留 10 分钟余量，免得第一笔重复算）
+    const cutoff = logged.length ? logged[0].at - 600000 : Infinity;
     const older = [...nodes.values()]
       .filter((n) => n.role === 'assistant' && n.usageN && (n.createdAt || 0) < cutoff)
       .map((n) => ({ at: n.createdAt || 0, kind: n.kind === 'ooc' ? '出戏' : '正文', model: n.model || '', input: n.usageN.input || 0, cached: n.usageN.cached || 0, output: n.usageN.output || 0, est: !!n.usageN.est, cost: n.cost || null }));
@@ -882,11 +886,15 @@ export async function render(root, { id }) {
     const play = by.get('正文');
     const avgIn = play?.count ? Math.round(play.input / play.count) : 0;
     const noPrice = !hasPrice(st.conn);
+    // 按次计价：没记上金额的早期调用，按现在的单价补算一个参考数
+    const callMode = priceMode(st.conn) === 'call';
+    const perCall = callMode ? Number(st.conn.pricePerCall) || 0 : 0;
+    const callEst = callMode ? `按次：${tot.count} 次 × ${CUR[st.conn.currency || 'CNY']}${perCall} ≈ ${CUR[st.conn.currency || 'CNY']}${(tot.count * perCall).toFixed(2)}${tot.unpriced ? `（其中 ${tot.unpriced} 次是设单价之前的，按现在的单价补算）` : ''}` : '';
     s.body.append(
       el('div', { class: 'section-title', style: { marginTop: 0 }, text: '这个故事' }),
       el('div', { class: 'card' },
-        el('div', { style: { fontSize: '22px', fontWeight: '600' } }, money(tot) ? (tot.est ? '约 ' : '') + money(tot) : (noPrice ? '没填单价，算不出金额' : '—')),
-        el('div', { class: 'hint', style: { whiteSpace: 'pre-wrap' } }, `共 ${tot.count} 次调用 · 输入 ${fmtTokens(tot.input)} · 输出 ${fmtTokens(tot.output)} token` +
+        el('div', { style: { fontSize: '22px', fontWeight: '600' } }, callMode ? `${CUR[st.conn.currency || 'CNY']}${(tot.count * perCall).toFixed(2)}` : money(tot) ? (tot.est ? '约 ' : '') + money(tot) : (noPrice ? '没设计价方式，算不出金额' : '—')),
+        el('div', { class: 'hint', style: { whiteSpace: 'pre-wrap' } }, (callEst ? callEst + '\n' : '') + `共 ${tot.count} 次调用 · 输入 ${fmtTokens(tot.input)} · 输出 ${fmtTokens(tot.output)} token` +
           (avgIn ? `\n正文平均每轮发出去 ${fmtTokens(avgIn)} token（规则、设定、角色卡、前情和最近几章原文，每轮都要重发）` : ''))),
       ...(by.size ? [el('div', { class: 'card' }, ...[...by.entries()].map(([k, g]) => el('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'nowrap', fontSize: '14px', padding: '3px 0' } },
         el('span', { text: `${k} × ${g.count}` }),
@@ -897,15 +905,15 @@ export async function render(root, { id }) {
         el('span', { style: { color: 'var(--text2)', textAlign: 'right' }, text: `${x.est ? '约' : ''}入 ${fmtTokens(x.input)}${x.cached ? `（缓存 ${fmtTokens(x.cached)}）` : ''} · 出 ${fmtTokens(x.output)}${x.cost ? ' · ' + fmtMoney(x.cost) : ''}` })))) : null,
       el('div', { class: 'section-title', text: '本月（所有故事）' }),
       el('div', { class: 'card' },
-        el('div', { style: { fontSize: '22px', fontWeight: '600' } }, money(month) || (month.count ? '没填单价，算不出金额' : '—')),
+        el('div', { style: { fontSize: '22px', fontWeight: '600' } }, money(month) || (month.count ? '没设计价方式，算不出金额' : '—')),
         el('div', { class: 'hint' }, `共 ${month.count} 次调用 · 输入 ${fmtTokens(month.input)} · 输出 ${fmtTokens(month.output)} token` +
           (budget.amount ? ` · 提醒线 ${CUR[budget.currency]}${budget.amount}` : ''))),
       el('div', { class: 'hint', style: { whiteSpace: 'pre-wrap' } },
-        [noPrice ? '金额要在“设置 → 连接”里填上单价（每百万 token 多少钱，看中转站的价格页）才算得出来，没填就只统计 token。' : '',
+        [noPrice ? '金额要在“设置 → 连接 → 编辑”里选计价方式：按次（每次多少钱）或按 token（每百万 token 多少钱）。不设就只统计次数和 token。' : '',
           tot.est ? '带“约”的是按字数粗估的：这个接口没有返回真实用量。' : '',
-          '这里是按你填的单价估算的，实际扣费以中转站或官方后台的日志为准。'].filter(Boolean).join('\n'))
+          '金额按你设的价格估算，实际扣费以中转站或官方后台的日志为准。'].filter(Boolean).join('\n'))
     );
-    s.foot.append(el('button', { class: 'btn ghost', onclick: () => { s.close(); go('settings'); } }, '去填单价 / 提醒线'), el('button', { class: 'btn primary', onclick: () => s.close() }, '关闭'));
+    s.foot.append(el('button', { class: 'btn ghost', onclick: () => { s.close(); go('settings'); } }, '去设价格 / 提醒线'), el('button', { class: 'btn primary', onclick: () => s.close() }, '关闭'));
   }
 
   async function correctChar(n) {

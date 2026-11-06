@@ -31,13 +31,25 @@ export function normalizeUsage(raw, { inChars = 0, outChars = 0 } = {}) {
   return { input: Math.round(inChars), cached: 0, output: Math.round(outChars), est: true };
 }
 
-export function hasPrice(conn) {
-  return num(conn?.priceIn) != null || num(conn?.priceOut) != null;
+/** 计价方式：call = 按次（每次请求固定多少钱）；token = 每百万 token；没填就不算钱 */
+export function priceMode(conn) {
+  if (conn?.priceMode === 'call') return num(conn.pricePerCall) != null ? 'call' : '';
+  if (conn?.priceMode === 'none') return '';
+  return num(conn?.priceIn) != null || num(conn?.priceOut) != null ? 'token' : '';
+}
+export function hasPrice(conn) { return !!priceMode(conn); }
+export function priceLabel(conn) {
+  const m = priceMode(conn);
+  const cur = CUR[conn?.currency || 'CNY'] || '';
+  if (m === 'call') return `${cur}${conn.pricePerCall}/次`;
+  if (m === 'token') return `${cur}${conn.priceIn ?? '?'}/${conn.priceOut ?? '?'} 每百万`;
+  return '';
 }
 
-/** 价格单位：每百万 token。没填价格返回 null */
+/** 按次：每次请求固定价；按 token：单位是每百万 token。没填价格返回 null */
 export function computeCost(u, conn) {
   if (!u || !hasPrice(conn)) return null;
+  if (priceMode(conn) === 'call') return { amount: num(conn.pricePerCall) || 0, currency: conn.currency || 'CNY', est: false, perCall: true };
   const ip = num(conn.priceIn) ?? 0;
   const op = num(conn.priceOut) ?? 0;
   const cp = num(conn.priceCache) ?? ip;

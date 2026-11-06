@@ -123,7 +123,8 @@ export function selectExtras(story, path, modules = [], extra = '') {
   const sentCards = cards.filter((c) => c.core || mentioned(scan, c));
   const present = sentCards.filter((c) => mentioned(scan, c));
   const enabled = new Set(Object.keys(story.modules || {}).filter((k) => story.modules[k]));
-  const sentModules = modules.filter((m) => {
+  // 全局模块库 + 这个故事自己导入的（酒馆预设、世界书）
+  const sentModules = [...modules, ...(story.localModules || [])].filter((m) => {
     if (!enabled.has(m.id) || !m.text?.trim()) return false;
     if (m.mode === 'manual') return !!story.manualOn?.[m.id];
     if (m.mode === 'keyword') return String(m.keywords || '').split(/[,，、;；\s]+/).filter(Boolean).some((k) => scan.includes(k));

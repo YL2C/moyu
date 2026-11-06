@@ -3,6 +3,7 @@
 import { db, exportStory } from '../db.js';
 import { el, ago, menu, saveFile, toast } from '../util.js';
 import { getConnections, go, getCurrentStory, setCurrentStory } from '../state.js';
+import { openExportDialog } from '../exporter.js';
 import { openStoryEditor } from './story-edit.js';
 
 export async function render(root) {
@@ -44,15 +45,17 @@ export async function render(root) {
         const k = await menu(s.title, [
           { key: 'chars', label: '角色' },
           { key: 'edit', label: '世界设定与规则' },
-          { key: 'export', label: '导出这个故事', hint: '存成文件，可以传到别的设备或发给朋友（不含密钥）' },
+          { key: 'transcript', label: '导出游玩记录', hint: 'JSON 或纯文本；可选带弹幕、选项、番外' },
+          { key: 'export', label: '备份这个故事', hint: '完整存档，可以传到别的设备或发给朋友再导回墨游（不含密钥）' },
           { key: 'del', label: '删除', danger: true },
         ]);
         if (k === 'edit') go(`story/${encodeURIComponent(s.id)}`);
         else if (k === 'chars') go(`chars/${encodeURIComponent(s.id)}`);
+        else if (k === 'transcript') openExportDialog(s.id, s.title);
         else if (k === 'export') {
           const data = await exportStory(s.id);
           const d = new Date();
-          await saveFile(`墨游_${s.title}_${d.getMonth() + 1}月${d.getDate()}日.json`, JSON.stringify(data, null, 1));
+          await saveFile(`墨游_${s.title}_备份_${d.getMonth() + 1}月${d.getDate()}日.json`, JSON.stringify(data, null, 1));
         } else if (k === 'del') {
           if (confirm(`删除「${s.title}」？删除后无法恢复，建议先导出。`)) {
             try { window.dispatchEvent(new CustomEvent('moyu:story-deleted', { detail: { id: s.id } })); } catch {}

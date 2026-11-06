@@ -1,6 +1,6 @@
 // 墨游 · 小工具
 
-export const APP_VERSION = '0.6.5';
+export const APP_VERSION = '0.6.6';
 
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -149,6 +149,16 @@ export function pickFile(accept = '.json,application/json') {
       r.onerror = () => resolve(null);
       r.readAsText(f, 'utf-8');
     });
+    document.body.append(inp);
+    inp.click();
+  });
+}
+
+/** 选一个文件，原样返回 File（读二进制用：PNG、ZIP） */
+export function pickRawFile(accept = '*/*') {
+  return new Promise((resolve) => {
+    const inp = el('input', { type: 'file', accept, style: { display: 'none' } });
+    inp.addEventListener('change', () => { const f = inp.files && inp.files[0]; inp.remove(); resolve(f || null); });
     document.body.append(inp);
     inp.click();
   });

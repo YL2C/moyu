@@ -117,16 +117,17 @@ export async function storageInfo() {
 
 /** 导出：默认不含 API 密钥 */
 export async function exportAll({ includeKeys = false } = {}) {
-  const [stories, nodes, extras, connections, defaultRules, prefs, modules, fwTemplates, fwBase, globalMemo] = await Promise.all([
+  const [stories, nodes, extras, connections, defaultRules, prefs, modules, fwTemplates, fwBase, globalMemo, packs] = await Promise.all([
     db.all('stories'), db.all('nodes'), db.all('extras'), db.all('connections'),
     db.kvGet('defaultRules', null), db.kvGet('prefs', null),
     db.kvGet('modules', null), db.kvGet('fwTemplates', null), db.kvGet('fwBase', null), db.kvGet('globalMemo', null),
+    db.kvGet('packs', null),
   ]);
   let discussions = [];
   try { discussions = await (await import('./discuss.js')).exportDiscussions(); } catch {}
   return {
     app: 'moyu', schema: SCHEMA, exportedAt: Date.now(),
-    stories, nodes, extras, modules, fwTemplates, fwBase, globalMemo, discussions,
+    stories, nodes, extras, modules, packs, fwTemplates, fwBase, globalMemo, discussions,
     connections: connections.map((c) => (includeKeys ? c : { ...c, apiKey: '' })),
     defaultRules, prefs,
   };
@@ -154,7 +155,10 @@ export async function importData(data) {
   const extras = Array.isArray(data.extras) ? data.extras.filter(Boolean) : [];
   if (extras.length) await db.putMany('extras', extras);
   // 模块和番外模板：本机还没有的时候才用备份里的（不覆盖本机已经改过的）
-  if (Array.isArray(data.modules) && !(await db.kvGet('modules', null))) await db.kvSet('modules', data.modules);
+  if (Array.isArray(data.modules) && !(await db.kvGet('modules', null))) {
+    await db.kvSet('modules', data.modules);
+    if (Array.isArray(data.packs)) await db.kvSet('packs', data.packs);
+  }
   if (Array.isArray(data.fwTemplates) && !(await db.kvGet('fwTemplates', null))) await db.kvSet('fwTemplates', data.fwTemplates);
   if (data.fwBase && !(await db.kvGet('fwBase', null))) await db.kvSet('fwBase', data.fwBase);
   if (data.globalMemo && !(await db.kvGet('globalMemo', null))) await db.kvSet('globalMemo', data.globalMemo);

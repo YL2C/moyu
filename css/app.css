@@ -218,6 +218,12 @@ a { color: var(--accent); }
 .filters::-webkit-scrollbar { display: none; }
 
 .no-opts { margin: 10px 0 2px; }
+/* 酒馆导入的包 */
+.pack { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 2px; }
+.pack:first-child { border-top: 0; margin-top: 0; }
+.switch-row.sub { padding-left: 14px; }
+.switch-row.sub .lbl { font-size: 14px; }
+.danger-text { color: var(--danger) !important; }
 .no-opts .btn { color: var(--text2); }
 .cp-mark {
   display: block; width: 100%; border: 0; background: transparent; color: var(--text3); font-family: var(--ui-font);

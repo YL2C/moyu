@@ -74,8 +74,12 @@ export async function buildDiscussContext(d) {
     add('开头', ROLE.replace('下面的资料是这部故事目前的设定和前情档案，档案里的是已经发生的事实。', '这次是全局讨论：聊的是所有故事通用的写法、规则和偏好。'));
     add('全局备忘', '【全局备忘（所有故事每轮都会带上）】\n' + (memo || '（目前是空的）'));
     add('默认规则', '【默认规则（新故事会复制一份）】\n' + (await getDefaultRules()));
-    const mods = await getModules();
+    const all = await getModules();
+    const mods = all.filter((m) => !m.pack);
+    // 酒馆导入的整包可能有上百条：只列名字，不整段发
+    const packNames = [...new Set(all.filter((m) => m.pack).map((m) => (m.note || '').match(/「(.+?)」/)?.[1] || '导入的包'))];
     if (mods.length) add('规则模块库', '【规则模块库（各故事自己选择启用）】\n' + mods.map((m) => `〔${m.name}〕\n${(m.text || '').trim()}`).join('\n\n'));
+    if (packNames.length) add('酒馆导入', '【从酒馆导入的预设和世界书（只列名字）】\n' + packNames.map((n) => '- ' + n).join('\n'));
     const stories = await db.all('stories');
     if (stories.length) add('故事列表', '【用户现有的故事】\n' + stories.map((s) => `- ${s.title || '未命名'}：${(s.world || '').replace(/\s+/g, ' ').slice(0, 80)}`).join('\n'));
   }
