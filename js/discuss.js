@@ -218,10 +218,41 @@ export async function undoLast() {
   const u = await getUndo();
   if (!u) return false;
   await setGlobalMemo(u.globalMemo || '');
-  if (u.story) await db.put('stories', u.story);
-  if (u.node) await db.put('nodes', u.node);
+  // 只恢复写回会动的字段：写回之后又玩了几章，当前位置和章数不跟着退回去
+  if (u.story) {
+    const cur = await db.get('stories', u.story.id);
+    if (cur) {
+      for (const k of ['rules', 'world', 'opening', 'cards']) cur[k] = u.story[k];
+      cur.updatedAt = Date.now();
+      await db.put('stories', cur);
+    }
+  }
+  if (u.node) {
+    const cur = await db.get('nodes', u.node.id);
+    if (cur) { cur.checkpoint = u.node.checkpoint; await db.put('nodes', cur); }
+  }
   await db.del('kv', 'disc.undo');
   return true;
+}
+
+/** 备份用：所有讨论 */
+export async function exportDiscussions() {
+  const list = (await db.kvGet('disc.index', null)) || [];
+  const out = [];
+  for (const m of list) { const d = await db.kvGet('disc.' + m.id, null); if (d) out.push(d); }
+  return out;
+}
+/** 恢复备份：本机没有的讨论才补进来 */
+export async function importDiscussions(arr) {
+  if (!Array.isArray(arr) || !arr.length) return 0;
+  const have = new Set(((await db.kvGet('disc.index', null)) || []).map((x) => x.id));
+  let n = 0;
+  for (const d of arr) {
+    if (!d?.id || have.has(d.id) || !Array.isArray(d.messages)) continue;
+    await saveDiscussion(d);
+    n++;
+  }
+  return n;
 }
 
 // ───── 新故事 ─────

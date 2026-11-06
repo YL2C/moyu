@@ -2,7 +2,7 @@
 
 import { db } from '../db.js';
 import { el, toast } from '../util.js';
-import { getConnections, connLabel, getModules, MODULE_MODES, go, setCurrentStory } from '../state.js';
+import { getConnections, connLabel, getModules, MODULE_MODES, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
 import { DEFAULT_RULES } from '../prompt.js';
 
 function sw(checked, onchange) {
@@ -101,5 +101,6 @@ export async function render(root, { id, tab = 'setting' }) {
     else drawSetting();
   }
   redraw();
-  return () => { clearTimeout(saveTimer); saveNow(); };
+  const unwatch = watchStory(story, null, PLAY_KEYS);
+  return () => { unwatch(); clearTimeout(saveTimer); saveNow(); };
 }

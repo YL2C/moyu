@@ -2,7 +2,7 @@
 
 import { db, exportStory } from '../db.js';
 import { el, uid, toast, menu, promptText, sheet, saveFile, autoGrow, insertAtCursor, approxTokens } from '../util.js';
-import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo } from '../state.js';
+import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo, watchStory } from '../state.js';
 import { streamWithRetry, ApiError } from '../api.js';
 import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
@@ -387,7 +387,15 @@ export async function render(root, { id }) {
    * reuse：重试时复用失败的那条；continueNode：续写（已有的接着写）或“从某段重写”（新建的带前文）
    * extraDirector：这次额外的要求；rewriteNote：从某段重写时的要求
    */
-  async function generate(userNode, { reuse = null, continueNode = null, extraDirector = '', rewriteNote = null } = {}) {
+  // 正在进行的生成数：切到别的页面时，有生成在跑就把这一页留在后台接着写
+  let jobs = 0;
+  const idleCbs = new Set();
+  async function generate(...args) {
+    jobs++;
+    try { return await generateInner(...args); }
+    finally { jobs--; if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} }); }
+  }
+  async function generateInner(userNode, { reuse = null, continueNode = null, extraDirector = '', rewriteNote = null } = {}) {
     if (st.streaming) return;
     st.conn = await resolveConnection(story);
     const conn = st.conn;
@@ -979,13 +987,39 @@ export async function render(root, { id }) {
   // 存档员新建了角色卡（可能是别的页面发起的）：换成最新的卡，免得之后保存故事时把新卡覆盖掉
   const onCards = (e) => { if (e.detail?.storyId === story.id && Array.isArray(e.detail.cards)) story.cards = e.detail.cards; };
   window.addEventListener('moyu:cards', onCards);
+  // 别的页面改了这个故事或某一章（角色卡、记忆、设定……）：换成最新的，免得后台写完时把别人的改动盖掉
+  const unwatch = watchStory(story);
+  let nodesDirty = false;
+  const onPut = (e) => {
+    const { store, obj } = e.detail || {};
+    if (store !== 'nodes' || !obj || obj.storyId !== story.id) return;
+    const mine = nodes.get(obj.id);
+    if (mine === obj || obj.id === st.streaming?.id) return;
+    nodes.set(obj.id, JSON.parse(JSON.stringify(obj)));
+    nodesDirty = true;
+  };
+  window.addEventListener('moyu:put', onPut);
   renderFeed();
   requestAnimationFrame(fit);
-  return () => {
+  const destroy = () => {
     destroyed = true;
     clearInterval(archTimer);
     window.removeEventListener('moyu:checkpoint', onCheckpoint);
     window.removeEventListener('moyu:cards', onCards);
+    window.removeEventListener('moyu:put', onPut);
+    unwatch();
     if (st.streaming) st.streaming.ctrl.abort('leave');
   };
+  destroy.busy = () => jobs > 0;
+  destroy.onIdle = (fn) => { idleCbs.add(fn); return () => idleCbs.delete(fn); };
+  // 从后台切回来：连接、模块可能在设置里改过，重新拿一下；别处改过的章节重新画
+  destroy.show = async () => {
+    try { st.modules = await getModules(); } catch {}
+    try { st.globalMemo = await getGlobalMemo(); } catch {}
+    if (!st.streaming) { try { st.conn = await resolveConnection(story); } catch {} }
+    if (nodesDirty || !st.streaming) { nodesDirty = false; renderFeed({ keepScroll: true }); }
+    updateComposer();
+    requestAnimationFrame(fit);
+  };
+  return destroy;
 }

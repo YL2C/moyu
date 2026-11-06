@@ -63,9 +63,13 @@ export const db = {
   byStory: (storyId) => run('nodes', 'readonly', (os) => os.index('storyId').getAll(storyId)),
   extrasOf: (storyId) => run('extras', 'readonly', (os) => os.index('storyId').getAll(storyId)),
   async put(store, value, key) {
+    let r;
     try {
-      return await run(store, 'readwrite', (os) => (key === undefined ? os.put(value) : os.put(value, key)));
+      r = await run(store, 'readwrite', (os) => (key === undefined ? os.put(value) : os.put(value, key)));
     } catch (e) { reportWriteError(e); throw e; }
+    // 告诉其他还开着的页面（比如在后台继续生成的游玩页）：这条数据变了
+    if (store !== 'kv') { try { window.dispatchEvent(new CustomEvent('moyu:put', { detail: { store, obj: value } })); } catch {} }
+    return r;
   },
   async putMany(store, values) {
     try {
@@ -118,9 +122,11 @@ export async function exportAll({ includeKeys = false } = {}) {
     db.kvGet('defaultRules', null), db.kvGet('prefs', null),
     db.kvGet('modules', null), db.kvGet('fwTemplates', null), db.kvGet('fwBase', null), db.kvGet('globalMemo', null),
   ]);
+  let discussions = [];
+  try { discussions = await (await import('./discuss.js')).exportDiscussions(); } catch {}
   return {
     app: 'moyu', schema: SCHEMA, exportedAt: Date.now(),
-    stories, nodes, extras, modules, fwTemplates, fwBase, globalMemo,
+    stories, nodes, extras, modules, fwTemplates, fwBase, globalMemo, discussions,
     connections: connections.map((c) => (includeKeys ? c : { ...c, apiKey: '' })),
     defaultRules, prefs,
   };
@@ -152,6 +158,7 @@ export async function importData(data) {
   if (Array.isArray(data.fwTemplates) && !(await db.kvGet('fwTemplates', null))) await db.kvSet('fwTemplates', data.fwTemplates);
   if (data.fwBase && !(await db.kvGet('fwBase', null))) await db.kvSet('fwBase', data.fwBase);
   if (data.globalMemo && !(await db.kvGet('globalMemo', null))) await db.kvSet('globalMemo', data.globalMemo);
+  if (Array.isArray(data.discussions)) { try { await (await import('./discuss.js')).importDiscussions(data.discussions); } catch {} }
   let addedConn = 0;
   if (Array.isArray(data.connections)) {
     const existing = new Set((await db.all('connections')).map((c) => c.id));

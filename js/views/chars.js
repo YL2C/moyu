@@ -2,7 +2,7 @@
 
 import { db } from '../db.js';
 import { el, uid, toast, sheet } from '../util.js';
-import { connLabel, resolveConnection, go, setCurrentStory } from '../state.js';
+import { connLabel, resolveConnection, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
 import { streamWithRetry } from '../api.js';
 import { latestCheckpoint, memoryText, splitNames } from '../prompt.js';
 import { chaptersOf } from '../fanwai.js';
@@ -110,6 +110,7 @@ export async function render(root, { id }) {
     db.byStory(id).then((ns) => { nodes.clear(); ns.forEach((n) => nodes.set(n.id, n)); draw(); }).catch(() => draw());
   };
   window.addEventListener('moyu:cards', onCards);
+  const unwatch = watchStory(story, null, PLAY_KEYS);
 
   function editCard(existing) {
     const isNew = !existing;
@@ -263,5 +264,5 @@ export async function render(root, { id }) {
   }
 
   draw();
-  return () => window.removeEventListener('moyu:cards', onCards);
+  return () => { window.removeEventListener('moyu:cards', onCards); unwatch(); };
 }

@@ -2,7 +2,7 @@
 
 import { db } from '../db.js';
 import { el, uid, toast, menu, sheet, promptText, ago, approxTokens } from '../util.js';
-import { resolveConnection, connLabel, getModules, go, setCurrentStory } from '../state.js';
+import { resolveConnection, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
 import { streamWithRetry, ApiError } from '../api.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage } from '../cost.js';
 import { getTemplates, getBase, buildExtraContext, chaptersOf, extraBlocks, SCOPES, LENGTHS } from '../fanwai.js';
@@ -265,8 +265,15 @@ async function renderReader(root, story, nodes, extraId) {
     });
   }
 
+  let jobs = 0;
+  const idleCbs = new Set();
   async function generate(mode) {
     if (st.streaming) return;
+    jobs++;
+    try { return await generateInner(mode); }
+    finally { jobs--; if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} }); }
+  }
+  async function generateInner(mode) {
     const conn = await resolveConnection(story);
     const ctx = await buildCtx();
     st.lastCtx = ctx;
@@ -366,5 +373,10 @@ async function renderReader(root, story, nodes, extraId) {
 
   draw();
   if (x.pending) generate('new');
-  return () => { destroyed = true; if (st.streaming) st.streaming.ctrl.abort('leave'); };
+  const unwatch = watchStory(story, null, PLAY_KEYS);
+  const destroy = () => { destroyed = true; unwatch(); if (st.streaming) st.streaming.ctrl.abort('leave'); };
+  destroy.busy = () => jobs > 0;
+  destroy.onIdle = (fn) => { idleCbs.add(fn); return () => idleCbs.delete(fn); };
+  destroy.show = () => { draw(); };
+  return destroy;
 }

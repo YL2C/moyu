@@ -48,6 +48,8 @@ a { color: var(--accent); }
    用 --vv-top / --app-h 跟着走，内容就永远在键盘上方 */
 #app { position: fixed; left: 0; right: 0; top: var(--vv-top, 0px); height: var(--app-h); overflow: hidden; display: flex; flex-direction: column; }
 .view-host { flex: 1; min-height: 0; overflow: hidden; }
+/* 切走时还在生成的页面：藏起来接着写（不用 display:none，免得滚动位置丢了） */
+.view-host.parked { position: absolute; left: 0; right: 0; top: 0; height: 100%; visibility: hidden; pointer-events: none; z-index: -1; }
 
 /* 底部菜单（照老版）：故事 / 游玩 / 角色 / 番外 / 设置 */
 #tabbar {
@@ -63,6 +65,8 @@ a { color: var(--accent); }
 #tabbar .tab.on { opacity: 1; }
 #tabbar .tab.on .lb { color: var(--accent); font-weight: 600; }
 #tabbar .tab.off { opacity: .22; }
+#tabbar .tab { position: relative; }
+#tabbar .tab.busy::after { content: ''; position: absolute; top: 5px; left: calc(50% + 9px); width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 1.2s ease-in-out infinite; }
 :root.kb #tabbar { display: none; }
 #app.has-tabs .composer { padding-bottom: 8px; }
 :root.kb #app.has-tabs .composer { padding-bottom: 8px; }
@@ -354,5 +358,5 @@ a { color: var(--accent); }
 .chg-text { width: 100%; margin-top: 8px; border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 8px; font-size: 15px; line-height: 1.6; resize: none; color: var(--text); }
 .chg-old { font-size: 12.5px; color: var(--text3); text-decoration: line-through; margin-top: 6px; white-space: pre-wrap; }
 .segs { display: flex; gap: 6px; margin-top: 8px; }
-.seg { flex: 1; border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px; font-size: 13px; color: var(--text2); cursor: pointer; }
-.seg.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.segs > .seg { flex: 1; display: block; border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px; font-size: 13px; color: var(--text2); cursor: pointer; overflow: visible; }
+.segs > .seg.on { background: var(--accent); border-color: var(--accent); color: #fff; }

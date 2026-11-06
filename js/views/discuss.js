@@ -163,8 +163,15 @@ async function renderChat(root, id) {
     }
   }
 
+  let jobs = 0;
+  const idleCbs = new Set();
   async function onSend() {
     if (ctrl) return;
+    jobs++;
+    try { return await onSendInner(); }
+    finally { jobs--; if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} }); }
+  }
+  async function onSendInner() {
     const text = ta.value.trim();
     if (!text) return;
     if (!conn) { toast('先在设置里添加一个连接'); return; }
@@ -203,7 +210,7 @@ async function renderChat(root, id) {
   }
 
   async function makeChanges() {
-    if (ctrl) return;
+    if (ctrl) { toast('等这条回复写完再整理'); return; }
     if (!d.messages.some((m) => m.role === 'assistant' && m.content?.trim())) { toast('先聊几句再整理'); return; }
     const s = sheet({ title: '整理成修改' });
     const status = el('div', { class: 'hint', text: '正在整理…（只调用一次，量不大）' });
@@ -280,7 +287,7 @@ async function renderChat(root, id) {
   }
 
   async function makeNewStory() {
-    if (ctrl) return;
+    if (ctrl) { toast('等这条回复写完再生成'); return; }
     if (!d.messages.some((m) => m.role === 'assistant' && m.content?.trim())) { toast('先聊一聊新故事的设定，再生成'); return; }
     toast('正在根据讨论整理新故事…', 4000);
     try {
@@ -350,5 +357,9 @@ async function renderChat(root, id) {
   for (const m of d.messages) if (m.streaming) { delete m.streaming; m.error = m.error || '生成被中断了'; }
   header();
   draw();
-  return () => { destroyed = true; ctrl?.abort(); };
+  const destroy = () => { destroyed = true; ctrl?.abort(); };
+  destroy.busy = () => jobs > 0;
+  destroy.onIdle = (fn) => { idleCbs.add(fn); return () => idleCbs.delete(fn); };
+  destroy.show = () => { header(); draw(false); };
+  return destroy;
 }
