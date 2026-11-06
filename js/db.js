@@ -63,9 +63,13 @@ export const db = {
   byStory: (storyId) => run('nodes', 'readonly', (os) => os.index('storyId').getAll(storyId)),
   extrasOf: (storyId) => run('extras', 'readonly', (os) => os.index('storyId').getAll(storyId)),
   async put(store, value, key) {
+    let r;
     try {
-      return await run(store, 'readwrite', (os) => (key === undefined ? os.put(value) : os.put(value, key)));
+      r = await run(store, 'readwrite', (os) => (key === undefined ? os.put(value) : os.put(value, key)));
     } catch (e) { reportWriteError(e); throw e; }
+    // 告诉其他还开着的页面（比如在后台继续生成的游玩页）：这条数据变了
+    if (store !== 'kv') { try { window.dispatchEvent(new CustomEvent('moyu:put', { detail: { store, obj: value } })); } catch {} }
+    return r;
   },
   async putMany(store, values) {
     try {

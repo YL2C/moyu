@@ -55,6 +55,7 @@ export async function render(root) {
           await saveFile(`墨游_${s.title}_${d.getMonth() + 1}月${d.getDate()}日.json`, JSON.stringify(data, null, 1));
         } else if (k === 'del') {
           if (confirm(`删除「${s.title}」？删除后无法恢复，建议先导出。`)) {
+            try { window.dispatchEvent(new CustomEvent('moyu:story-deleted', { detail: { id: s.id } })); } catch {}
             await db.delStory(s.id);
             if (getCurrentStory() === s.id) setCurrentStory(null);
             toast('已删除');

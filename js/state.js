@@ -68,6 +68,25 @@ export function setCurrentStory(id) {
   try { if (id) localStorage.setItem('moyu.curStory', id); else localStorage.removeItem('moyu.curStory'); } catch {}
 }
 
+// 游玩页自己管的字段：别的页面只从它那里同步这些，免得把自己正在编辑、还没存的内容冲掉
+export const PLAY_KEYS = ['headId', 'chapters', 'updatedAt', 'lastTitle'];
+/**
+ * 别的页面保存了同一个故事：把最新内容合进这个页面手里的故事对象。
+ * keys 不填就全部同步（游玩页用）；填了只同步这些字段（设定、角色、记忆页用）。返回取消监听的函数
+ */
+export function watchStory(story, onChange, keys = null) {
+  const fn = (e) => {
+    const d = e.detail || {};
+    if (d.store !== 'stories' || !d.obj || d.obj === story || d.obj.id !== story.id) return;
+    const fresh = JSON.parse(JSON.stringify(d.obj));
+    if (keys) for (const k of keys) { if (k in fresh) story[k] = fresh[k]; }
+    else Object.assign(story, fresh);
+    onChange?.();
+  };
+  window.addEventListener('moyu:put', fn);
+  return () => window.removeEventListener('moyu:put', fn);
+}
+
 export function go(path = '') {
   const h = '#/' + path;
   if (location.hash === h) window.dispatchEvent(new HashChangeEvent('hashchange'));

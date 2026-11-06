@@ -48,6 +48,8 @@ a { color: var(--accent); }
    用 --vv-top / --app-h 跟着走，内容就永远在键盘上方 */
 #app { position: fixed; left: 0; right: 0; top: var(--vv-top, 0px); height: var(--app-h); overflow: hidden; display: flex; flex-direction: column; }
 .view-host { flex: 1; min-height: 0; overflow: hidden; }
+/* 切走时还在生成的页面：藏起来接着写（不用 display:none，免得滚动位置丢了） */
+.view-host.parked { position: absolute; left: 0; right: 0; top: 0; height: 100%; visibility: hidden; pointer-events: none; z-index: -1; }
 
 /* 底部菜单（照老版）：故事 / 游玩 / 角色 / 番外 / 设置 */
 #tabbar {
@@ -63,6 +65,8 @@ a { color: var(--accent); }
 #tabbar .tab.on { opacity: 1; }
 #tabbar .tab.on .lb { color: var(--accent); font-weight: 600; }
 #tabbar .tab.off { opacity: .22; }
+#tabbar .tab { position: relative; }
+#tabbar .tab.busy::after { content: ''; position: absolute; top: 5px; left: calc(50% + 9px); width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 1.2s ease-in-out infinite; }
 :root.kb #tabbar { display: none; }
 #app.has-tabs .composer { padding-bottom: 8px; }
 :root.kb #app.has-tabs .composer { padding-bottom: 8px; }

@@ -2,7 +2,7 @@
 
 import { db } from '../db.js';
 import { el, toast, sheet } from '../util.js';
-import { resolveConnection, getConnections, connLabel, go, setCurrentStory } from '../state.js';
+import { resolveConnection, getConnections, connLabel, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
 import { latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { fmtMoney } from '../cost.js';
@@ -219,10 +219,11 @@ export async function render(root, { id }) {
   window.addEventListener('moyu:checkpoint', onCheckpoint);
   const onCards = (e) => { if (e.detail?.storyId === story.id && Array.isArray(e.detail.cards)) story.cards = e.detail.cards; };
   window.addEventListener('moyu:cards', onCards);
+  const unwatch = watchStory(story, null, PLAY_KEYS);
 
   draw();
   // 离开这页不打断整理：它会在后台写完，游玩页会收到通知
-  return () => { destroyed = true; clearInterval(timer); window.removeEventListener('moyu:checkpoint', onCheckpoint); window.removeEventListener('moyu:cards', onCards); };
+  return () => { destroyed = true; clearInterval(timer); window.removeEventListener('moyu:checkpoint', onCheckpoint); window.removeEventListener('moyu:cards', onCards); unwatch(); };
 }
 
 export { pathTo as memPathTo, latestCheckpoint };

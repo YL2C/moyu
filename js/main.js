@@ -12,15 +12,38 @@ import * as charsPage from './views/chars.js';
 import { getCurrentStory, setCurrentStory } from './state.js';
 
 const root = document.getElementById('app');
-let cleanup = null;
+let current = null;   // 正在显示的页面 { key, name, el, api }
+const parked = new Map();   // 切走时还在生成的页面：留在后台接着写，切回来接着看
 let routeToken = 0;
+
+function dispose(entry) {
+  if (!entry) return;
+  if (typeof entry.api === 'function') { try { entry.api(); } catch {} }
+  entry.el.remove();
+}
+
+/** 离开一个页面：有生成在跑就停到后台，写完再收掉；否则直接收掉 */
+function retire(entry) {
+  if (!entry) return;
+  const api = entry.api;
+  if (api && typeof api.busy === 'function' && api.busy()) {
+    entry.el.classList.add('parked');
+    parked.set(entry.key, entry);
+    entry.stopIdle?.();
+    entry.stopIdle = api.onIdle?.(() => {
+      if (parked.get(entry.key) === entry) { parked.delete(entry.key); dispose(entry); }
+      if (current) placeTabs(current.name);
+    });
+    return;
+  }
+  dispose(entry);
+}
 
 async function route() {
   const token = ++routeToken;
-  const h = location.hash.replace(/^#\/?/, '');
+  const h = location.hash.replace(/^#\/?/, '').replace(/\/+$/, '');
   const [name, arg, arg2] = h.split('/');
-  if (typeof cleanup === 'function') { try { cleanup(); } catch {} }
-  cleanup = null;
+  const key = h;
   let mod = library;
   const params = {};
   if (name === 'play' && arg) { mod = play; params.id = decodeURIComponent(arg); }
@@ -32,13 +55,47 @@ async function route() {
   else if (name === 'story' && arg) { mod = storyPage; params.id = decodeURIComponent(arg); params.tab = arg2 || 'setting'; }
   // 进了哪个故事，底部的“游玩 / 角色 / 番外”就指向哪个故事
   if (params.id && ['play', 'chars', 'extra', 'memory', 'story'].includes(name)) setCurrentStory(params.id);
+
+  // 同一页又跳一次（比如刷新自己）：正在生成就别重来
+  if (current && current.key === key && current.api?.busy?.()) { current.api.show?.(); return; }
+  // 后台还在写的那一页：直接拿回来
+  if (parked.has(key)) {
+    const entry = parked.get(key);
+    parked.delete(key);
+    entry.stopIdle?.(); entry.stopIdle = null;
+    const prev = current;
+    current = entry;
+    entry.el.classList.remove('parked');
+    if (prev && prev !== entry) retire(prev);
+    placeTabs(name);
+    entry.api.show?.();
+    return;
+  }
+
   const container = document.createElement('div');
   container.className = 'view-host';
   const c = await mod.render(container, params);
-  if (token !== routeToken) { if (typeof c === 'function') c(); return; }
-  root.replaceChildren(container, tabBar(name));
+  if (token !== routeToken) { if (typeof c === 'function' && !(c.busy && c.busy())) c(); else if (typeof c === 'function') retire({ key, name, el: container, api: c }); return; }
+  const prev = current;
+  current = { key, name, el: container, api: c };
+  if (prev) retire(prev);
+  root.insertBefore(container, root.querySelector('#tabbar'));
+  placeTabs(name);
   root.classList.add('has-tabs');
-  cleanup = c;
+}
+
+// 删了故事：后台还在写这个故事的页面一起收掉
+window.addEventListener('moyu:story-deleted', (e) => {
+  const id = e.detail?.id;
+  for (const [k, entry] of [...parked]) {
+    if (k.split('/').map(decodeURIComponent).includes(id)) { parked.delete(k); dispose(entry); }
+  }
+});
+
+function placeTabs(name) {
+  const old = root.querySelector('#tabbar');
+  const bar = tabBar(name);
+  if (old) old.replaceWith(bar); else root.append(bar);
 }
 
 // 底部菜单（照老版）：故事 / 游玩 / 角色 / 番外 / 设置
@@ -57,7 +114,9 @@ function tabBar(routeName) {
   bar.id = 'tabbar';
   for (const t of TABS) {
     const b = document.createElement('button');
-    b.className = 'tab' + (t.key === active ? ' on' : '') + (t.story && !cur ? ' off' : '');
+    // 后台还在写：游玩 / 番外 上亮个小点
+    const busy = [...parked.values()].some((p) => TAB_OF[p.name] === t.key);
+    b.className = 'tab' + (t.key === active ? ' on' : '') + (t.story && !cur ? ' off' : '') + (busy ? ' busy' : '');
     b.dataset.tab = t.key;
     b.innerHTML = '<span class="ic"></span><span class="lb"></span>';
     b.firstChild.textContent = t.icon;
