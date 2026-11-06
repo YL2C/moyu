@@ -107,3 +107,7 @@ export function modulesFromMarkdown(md, fallbackName = '导入的规则') {
 export function modulesToMarkdown(list) {
   return list.map((m) => `## ${m.name}\n${m.text.trim()}\n`).join('\n');
 }
+
+// ───── 全局备忘：所有故事每轮都带上（讨论页里写入） ─────
+export async function getGlobalMemo() { return (await db.kvGet('globalMemo', '')) || ''; }
+export async function setGlobalMemo(text) { return db.kvSet('globalMemo', String(text || '')); }

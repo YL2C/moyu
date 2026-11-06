@@ -16,7 +16,7 @@ function switchRow(label, sub, checked) {
 }
 
 /** 打开设定编辑。返回保存后的故事；取消返回 null */
-export function openStoryEditor(existing) {
+export function openStoryEditor(existing, prefill = null) {
   return new Promise(async (resolve) => {
     let saved = null;
     const isNew = !existing;
@@ -25,6 +25,10 @@ export function openStoryEditor(existing) {
       danmu: true, options: true, connectionId: null, headId: null,
       createdAt: Date.now(), updatedAt: Date.now(), schema: 1,
     };
+    if (!existing && prefill) {
+      for (const k of ['title', 'world', 'opening']) if (prefill[k]) story[k] = prefill[k];
+      if (prefill.rulesExtra?.trim()) story.rules = (story.rules || '').trim() + '\n\n' + prefill.rulesExtra.trim();
+    }
     const conns = await getConnections();
     const s = sheet({ title: isNew ? '新故事' : '故事设定', onClose: () => resolve(saved) });
 

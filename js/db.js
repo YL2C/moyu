@@ -113,14 +113,14 @@ export async function storageInfo() {
 
 /** 导出：默认不含 API 密钥 */
 export async function exportAll({ includeKeys = false } = {}) {
-  const [stories, nodes, extras, connections, defaultRules, prefs, modules, fwTemplates, fwBase] = await Promise.all([
+  const [stories, nodes, extras, connections, defaultRules, prefs, modules, fwTemplates, fwBase, globalMemo] = await Promise.all([
     db.all('stories'), db.all('nodes'), db.all('extras'), db.all('connections'),
     db.kvGet('defaultRules', null), db.kvGet('prefs', null),
-    db.kvGet('modules', null), db.kvGet('fwTemplates', null), db.kvGet('fwBase', null),
+    db.kvGet('modules', null), db.kvGet('fwTemplates', null), db.kvGet('fwBase', null), db.kvGet('globalMemo', null),
   ]);
   return {
     app: 'moyu', schema: SCHEMA, exportedAt: Date.now(),
-    stories, nodes, extras, modules, fwTemplates, fwBase,
+    stories, nodes, extras, modules, fwTemplates, fwBase, globalMemo,
     connections: connections.map((c) => (includeKeys ? c : { ...c, apiKey: '' })),
     defaultRules, prefs,
   };
@@ -135,7 +135,7 @@ export async function exportStory(storyId) {
 
 /** 导入：同 id 的故事会被覆盖；连接只补充不存在的（不覆盖本机已有密钥） */
 export async function importData(data) {
-  if (!data || data.app !== 'moyu') throw new Error('这不是墨游的备份文件');
+  if (!data || (data.app !== 'moyu' && data.app !== 'yl2c')) throw new Error('这不是墨游的备份文件');
   if ((data.schema || 1) > SCHEMA) throw new Error('这个备份来自更新版本的墨游，请先更新');
   const stories = Array.isArray(data.stories) ? data.stories.filter(Boolean) : [];
   const nodes = Array.isArray(data.nodes) ? data.nodes.filter(Boolean) : [];
@@ -151,6 +151,7 @@ export async function importData(data) {
   if (Array.isArray(data.modules) && !(await db.kvGet('modules', null))) await db.kvSet('modules', data.modules);
   if (Array.isArray(data.fwTemplates) && !(await db.kvGet('fwTemplates', null))) await db.kvSet('fwTemplates', data.fwTemplates);
   if (data.fwBase && !(await db.kvGet('fwBase', null))) await db.kvSet('fwBase', data.fwBase);
+  if (data.globalMemo && !(await db.kvGet('globalMemo', null))) await db.kvSet('globalMemo', data.globalMemo);
   let addedConn = 0;
   if (Array.isArray(data.connections)) {
     const existing = new Set((await db.all('connections')).map((c) => c.id));

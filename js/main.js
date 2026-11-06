@@ -9,6 +9,7 @@ import * as storyPage from './views/story.js';
 import * as extrasPage from './views/extras.js';
 import * as memoryPage from './views/memory.js';
 import * as charsPage from './views/chars.js';
+import * as discussPage from './views/discuss.js';
 import { getCurrentStory, setCurrentStory } from './state.js';
 
 const root = document.getElementById('app');
@@ -24,6 +25,7 @@ async function route() {
   let mod = library;
   const params = {};
   if (name === 'play' && arg) { mod = play; params.id = decodeURIComponent(arg); }
+  else if (name === 'discuss') { mod = discussPage; params.id = arg ? decodeURIComponent(arg) : ''; }
   else if (name === 'settings') { mod = settings; params.section = arg || ''; }
   else if (name === 'memory' && arg) { mod = memoryPage; params.id = decodeURIComponent(arg); }
   else if (name === 'chars' && arg) { mod = charsPage; params.id = decodeURIComponent(arg); }
@@ -47,9 +49,10 @@ const TABS = [
   { key: 'play', icon: '📖', label: '游玩', story: true, to: (id) => 'play/' + encodeURIComponent(id) },
   { key: 'chars', icon: '👤', label: '角色', story: true, to: (id) => 'chars/' + encodeURIComponent(id) },
   { key: 'extra', icon: '🎴', label: '番外', story: true, to: (id) => 'extra/' + encodeURIComponent(id) },
+  { key: 'discuss', icon: '💬', label: '讨论', to: () => 'discuss' },
   { key: 'settings', icon: '⚙️', label: '设置', to: () => 'settings' },
 ];
-const TAB_OF = { '': 'home', play: 'play', memory: 'play', story: 'play', chars: 'chars', extra: 'extra', settings: 'settings' };
+const TAB_OF = { '': 'home', play: 'play', memory: 'play', story: 'play', chars: 'chars', extra: 'extra', discuss: 'discuss', settings: 'settings' };
 function tabBar(routeName) {
   const active = TAB_OF[routeName || ''] || '';
   const cur = getCurrentStory();

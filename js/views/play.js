@@ -2,7 +2,7 @@
 
 import { db, exportStory } from '../db.js';
 import { el, uid, toast, menu, promptText, sheet, saveFile, autoGrow, insertAtCursor, approxTokens } from '../util.js';
-import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory } from '../state.js';
+import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo } from '../state.js';
 import { streamWithRetry, ApiError } from '../api.js';
 import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
@@ -29,6 +29,7 @@ export async function render(root, { id }) {
     pick: null,      // 正在“选一段往后重写”的回复 id
     undoHead: null,  // 回退前的位置，用来撤销
     modules: await getModules(),
+    globalMemo: await getGlobalMemo(),
     archiving: null,   // 后台整理前情 { ctrl, text }
     archiveError: null,
   };
@@ -405,7 +406,7 @@ export async function render(root, { id }) {
     try { await db.put('nodes', a); } catch {}
     await saveStory();
 
-    const ctx = buildContext(story, pathTo(a.parentId), { modules: st.modules, extra: extraDirector || '' });
+    const ctx = buildContext(story, pathTo(a.parentId), { modules: st.modules, extra: extraDirector || '', globalMemo: st.globalMemo });
     if (extraDirector?.trim()) {
       const last = ctx.messages[ctx.messages.length - 1];
       if (last && last.role === 'user') last.content += directorBlock(extraDirector);
@@ -940,7 +941,7 @@ export async function render(root, { id }) {
   }
 
   function showContext() {
-    const ctx = st.lastCtx || buildContext(story, headPath(), { modules: st.modules });
+    const ctx = st.lastCtx || buildContext(story, headPath(), { modules: st.modules, globalMemo: st.globalMemo });
     const s = sheet({ title: st.lastCtx ? '上一轮发给模型的内容' : '下一轮会发给模型的内容' });
     const i = ctx.info;
     const block = (label, text, open = false) => {

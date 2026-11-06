@@ -186,13 +186,14 @@ export function memoryText(mem) {
  * opts.modules：全局规则模块库
  * 返回 { system, messages, info }，info.parts 是各部分的明细（给查看器用）
  */
-export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2, modules = [], extra = '' } = {}) {
+export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2, modules = [], extra = '', globalMemo = '' } = {}) {
   const { sentCards, present, sentModules } = selectExtras(story, path, modules, extra);
   const cp = latestCheckpoint(path);
   const parts = [];
   const add = (label, text, kind) => { if (text?.trim()) parts.push({ label, text: text.trim(), kind }); };
   add('开头', '你正在主持一场文字互动小说。', 'base');
   add('规则（这个故事）', story.rules?.trim() ? '【规则】\n' + story.rules.trim() : '', 'rules');
+  add('全局备忘', globalMemo?.trim() ? '【全局备忘（所有故事通用）】\n' + globalMemo.trim() : '', 'rules');
   for (const m of sentModules) add(`规则模块 · ${m.name}${m.mode === 'manual' ? '（情境）' : m.mode === 'keyword' ? '（关键词）' : ''}`, `【规则模块·${m.name}】\n${m.text.trim()}`, 'module');
   add('世界与角色设定', story.world?.trim() ? '【世界与角色设定】\n' + story.world.trim() : '', 'world');
   const coreFirst = [...sentCards].sort((a, b) => (b.core ? 1 : 0) - (a.core ? 1 : 0));
