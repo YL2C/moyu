@@ -101,10 +101,49 @@ export async function render(root, { id }) {
     for (const g of ['', '女', '男', '其他']) gender.append(el('option', { value: g }, g || '不指定'));
     gender.value = p.gender || '';
     const note = el('textarea', { class: 'tall', placeholder: '身份、外貌、性格、别人怎么称呼你……第三人称番外会照这个写' }); note.value = p.note || '';
+    const genderHint = el('div', { class: 'hint', text: '正文、番外、整理前情、讨论每次都会带上这张卡。' });
+    const aiStatus = el('div', { class: 'hint' });
+    const aiBtn = el('button', { class: 'btn small', onclick: () => aiFill() }, '让 AI 从设定和剧情里整理');
     s.body.append(
+      el('div', { class: 'row', style: { margin: '0 0 10px' } }, aiBtn), aiStatus,
       el('div', { class: 'field' }, el('label', { text: '名字' }), name),
-      el('div', { class: 'field' }, el('label', { text: '性别' }), gender, el('div', { class: 'hint', text: '正文、番外、整理前情、讨论每次都会带上这张卡。' })),
+      el('div', { class: 'field' }, el('label', { text: '性别' }), gender, genderHint),
       el('div', { class: 'field' }, el('label', { text: '其他' }), note));
+
+    // AI 写草稿：名字、其他直接填进框里（你可以改）；性别只给建议，由你自己选
+    async function aiFill() {
+      const conn = await resolveConnection(story);
+      if (!conn) { toast('先在设置里添加连接'); return; }
+      const chs = chaptersOf(pathTo(nodes, story.headId));
+      const picked = [];
+      let used = 0;
+      for (let i = chs.length - 1; i >= 0; i--) {
+        const c = chs[i];
+        const block = `【第${c.no}章】\n${c.said ? '（主角：' + c.said.trim() + '）\n' : ''}${c.text}`;
+        if (used && used + block.length > 20000) break;
+        picked.unshift(block); used += block.length;
+      }
+      if (!story.world?.trim() && !picked.length) { toast('先写世界设定，或者玩几章'); return; }
+      aiBtn.disabled = true;
+      aiStatus.textContent = `正在用「${connLabel(conn)}」整理…`;
+      const prompt = '下面是一个文字互动小说的设定' + (picked.length ? '和最近的剧情' : '') + '。玩家扮演主角（正文里的“你”）。请只根据原文整理主角的资料，不要编造。' +
+        '只输出一个 JSON 对象，不要说明：{"name":"主角的名字，原文没写就空字符串","gender":"女/男/其他/不确定——只有原文明确写了才填女或男","genderWhy":"判断性别的依据，引用原文的一小句","note":"身份、外貌、穿着、性格、别人怎么称呼主角、和主要角色的关系，几行短句，原文没有的不写"}\n\n' +
+        (story.world?.trim() ? '【世界设定】\n' + story.world.trim() + '\n\n' : '') + (picked.length ? '【最近的剧情】\n' + picked.join('\n\n') : '');
+      try {
+        const r = await streamWithRetry(conn, { system: '你是资料整理助手，只输出 JSON。', messages: [{ role: 'user', content: prompt }], maxTokens: 3000 });
+        const u = normalizeUsage(r.usage, { inChars: prompt.length, outChars: r.text.length });
+        recordUsage({ kind: '整理主角卡', storyId: story.id, model: conn.model, usage: u, cost: computeCost(u, conn) });
+        const t = r.text.replace(/```(?:json)?/g, '');
+        const j = JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));
+        if (j.name && !name.value.trim()) name.value = String(j.name).trim();
+        if (j.note) note.value = note.value.trim() ? note.value.trim() + '\n' + String(j.note).trim() : String(j.note).trim();
+        const g = String(j.gender || '').trim();
+        genderHint.textContent = (/^(女|男)$/.test(g) ? `AI 觉得是「${g}」${j.genderWhy ? '，依据：' + String(j.genderWhy).slice(0, 60) : ''}。对的话在上面选一下。` : 'AI 从原文看不出性别，请自己选。') + ' 正文、番外、整理前情、讨论每次都会带上这张卡。';
+        aiStatus.textContent = '整理好了，看一下、改一改再保存。';
+      } catch (e) {
+        aiStatus.textContent = '没整理成：' + (e?.message || e);
+      } finally { aiBtn.disabled = false; }
+    }
     s.foot.append(el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'),
       el('button', { class: 'btn primary', onclick: async () => {
         story.protagonist = { name: name.value.trim(), gender: gender.value, note: note.value.trim() };
