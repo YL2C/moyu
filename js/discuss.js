@@ -3,7 +3,7 @@
 import { db } from './db.js';
 import { uid } from './util.js';
 import { getGlobalMemo, setGlobalMemo, getDefaultRules, getModules } from './state.js';
-import { cardText, applyCardState, latestCheckpoint, memoryText } from './prompt.js';
+import { cardText, applyCardState, latestCheckpoint, memoryText, protagonistText } from './prompt.js';
 import { chaptersOf } from './fanwai.js';
 
 // ───── 存储：讨论列表 + 每个讨论单独一条 ─────
@@ -61,6 +61,7 @@ export async function buildDiscussContext(d) {
     add('本故事规则', story.rules ? '【本故事规则】\n' + story.rules : '');
     add('世界与角色设定', story.world ? '【世界与角色设定】\n' + story.world : '');
     add('开场', story.opening ? '【开场】\n' + story.opening : '');
+    add('主角', protagonistText(story));
     for (const c of (story.cards || []).filter((x) => x.name?.trim())) add('角色卡 · ' + c.name, cardText(applyCardState(c, cp?.mem)));
     if (cp) {
       add('前情档案', memoryText(cp.mem));

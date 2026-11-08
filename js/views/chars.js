@@ -81,8 +81,40 @@ export async function render(root, { id }) {
         el('button', { class: 'npc-more', onclick: toggle }, isOpen ? '收起' : '展开全部')));
   }
 
+  // 主角（你）：名字、性别、外貌身份——番外第三人称、整理前情、讨论都会带上
+  function protagonistEl() {
+    const p = story.protagonist || {};
+    const empty = !p.name && !p.gender && !p.note;
+    return el('div', { class: 'npc-card', 'data-name': '主角' },
+      el('div', { class: 'npc-head', onclick: () => editProtagonist() },
+        el('span', { class: 'npc-name', text: p.name || '主角（你）' }),
+        el('span', { class: 'badge', text: '主角' + (p.gender ? ' · ' + p.gender : '') }),
+        el('span', { style: { flex: 1 } }),
+        el('button', { class: 'btn small ghost', onclick: (e) => { e.stopPropagation(); editProtagonist(); } }, '编辑')),
+      el('div', { class: 'npc-desc clamp', text: empty ? '还没写。至少填个性别：番外换成第三人称时，模型就是靠这个才不会把“你”的性别写错。' : (p.note || '（只填了名字和性别）') }));
+  }
+  function editProtagonist() {
+    const p = { ...(story.protagonist || {}) };
+    const s = sheet({ title: '主角（你）' });
+    const name = el('input', { type: 'text', placeholder: '例：顾律' }); name.value = p.name || '';
+    const gender = el('select');
+    for (const g of ['', '女', '男', '其他']) gender.append(el('option', { value: g }, g || '不指定'));
+    gender.value = p.gender || '';
+    const note = el('textarea', { class: 'tall', placeholder: '身份、外貌、性格、别人怎么称呼你……第三人称番外会照这个写' }); note.value = p.note || '';
+    s.body.append(
+      el('div', { class: 'field' }, el('label', { text: '名字' }), name),
+      el('div', { class: 'field' }, el('label', { text: '性别' }), gender, el('div', { class: 'hint', text: '正文、番外、整理前情、讨论每次都会带上这张卡。' })),
+      el('div', { class: 'field' }, el('label', { text: '其他' }), note));
+    s.foot.append(el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'),
+      el('button', { class: 'btn primary', onclick: async () => {
+        story.protagonist = { name: name.value.trim(), gender: gender.value, note: note.value.trim() };
+        await saveNow(); s.close(); toast('已保存'); draw();
+      } }, '保存'));
+  }
+
   function draw() {
     wrap.replaceChildren();
+    wrap.append(protagonistEl());
     const m = cp();
     if (m && story.cards.some((c) => m.mem.cards?.[c.name])) {
       wrap.append(el('div', { class: 'hint', style: { margin: '0 2px 12px' } },

@@ -49,6 +49,12 @@ export function openStoryEditor(existing, prefill = null) {
     const opening = el('textarea', { placeholder: '可以不填。例：从新婚夜他“醒过来”的那一刻开始。' });
     opening.value = story.opening || '';
 
+    const pro = story.protagonist || {};
+    const pName = el('input', { type: 'text', placeholder: '例：顾律' }); pName.value = pro.name || '';
+    const pGender = el('select');
+    for (const g of ['', '女', '男', '其他']) pGender.append(el('option', { value: g }, g || '不指定'));
+    pGender.value = pro.gender || '';
+
     const dm = switchRow('弹幕', '读者实况评论，显示在正文下面', story.danmu !== false);
     const op = switchRow('参考选项', '每轮给 3 个方向不同的行动建议', story.options !== false);
 
@@ -56,6 +62,10 @@ export function openStoryEditor(existing, prefill = null) {
       el('div', { class: 'field' }, el('label', { text: '故事名' }), title),
       el('div', { class: 'field' }, el('label', { text: '使用的连接' }), connSel,
         conns.length ? null : el('div', { class: 'hint', text: '还没有连接，先去设置里添加一个。' })),
+      el('div', { class: 'row', style: { alignItems: 'flex-start', flexWrap: 'nowrap' } },
+        el('div', { class: 'field', style: { flex: 2 } }, el('label', { text: '主角（你）的名字' }), pName),
+        el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '性别' }), pGender)),
+      el('div', { class: 'hint', style: { marginTop: '-6px', marginBottom: '10px' } }, '番外换成第三人称时会照这个写，不会弄错性别。更多可以在底部“角色”里补。'),
       el('div', { class: 'field' }, el('label', { text: '世界与角色设定' }), world),
       el('div', { class: 'field' }, el('label', { text: '开场（可选）' }), opening),
       el('div', { class: 'field' },
@@ -73,6 +83,7 @@ export function openStoryEditor(existing, prefill = null) {
       el('button', {
         class: 'btn primary',
         onclick: async () => {
+          story.protagonist = { ...(story.protagonist || {}), name: pName.value.trim(), gender: pGender.value };
           story.title = title.value.trim() || '未命名故事';
           story.connectionId = connSel.value || null;
           story.world = world.value;

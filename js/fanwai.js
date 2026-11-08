@@ -4,7 +4,7 @@
 import { db } from './db.js';
 import { uid } from './util.js';
 import { forContext, parseReply } from './parse.js';
-import { cardText, splitNames } from './prompt.js';
+import { cardText, splitNames, protagonistText } from './prompt.js';
 
 export const SCOPES = {
   follow: '跟随形式',
@@ -97,6 +97,7 @@ export function buildExtraContext(story, opts) {
   add('知情范围', '【知情范围】\n' + scopeText);
   for (const m of modules) add(`规则模块 · ${m.name}`, `【规则模块·${m.name}】\n${m.text.trim()}`);
   add('世界设定', story.world?.trim() ? '【世界设定】\n' + story.world.trim() : '');
+  add('主角', protagonistText(story));
   for (const c of cards) add(`角色卡 · ${c.name}`, cardText(c));
   add('时间点', anchorNo > 0
     ? `【时间点】这篇番外发生在正史第 ${anchorNo} 章之后。第 ${anchorNo} 章之后的正史还没有发生，不要写到。`

@@ -3,7 +3,7 @@
 
 import { db } from './db.js';
 import { streamWithRetry } from './api.js';
-import { latestCheckpoint, memoryText, applyCardState, splitNames } from './prompt.js';
+import { latestCheckpoint, memoryText, applyCardState, splitNames, protagonistText } from './prompt.js';
 import { chaptersOf } from './fanwai.js';
 import { normalizeUsage, computeCost, recordUsage } from './cost.js';
 
@@ -87,6 +87,7 @@ function archivistPrompt(story, prev, batch) {
     system: '你是这部文字互动小说的存档员。把新发生的剧情整理进前情档案：只记正文里确实发生的事，不脑补、不美化、不写感想；拿不准的放进“unsure”。只输出一个 JSON 对象，不要任何说明，也不要代码块标记。',
     user: [
       story.world?.trim() ? '【世界设定】\n' + story.world.trim().slice(0, 4000) : '',
+      protagonistText(story),
       cards ? '【角色卡（初始设定、原话、禁止清单这些不归你改；你只负责“当前状态”“变化轨迹”“关系档案”）】\n' + cards : '【角色卡】\n（还没有任何角色卡）',
       '【已有的前情档案】\n' + prevText,
       `【新的剧情：第${from}–${to}章】\n` + batch.map(chapterBlock).join('\n\n'),

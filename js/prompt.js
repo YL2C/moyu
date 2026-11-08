@@ -88,6 +88,18 @@ export function splitNames(card) {
 const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
 const asList = (t) => lines(t).map((l) => (/^[-*•·]/.test(l) ? l.replace(/^[-*•·]\s*/, '- ') : '- ' + l)).join('\n');
 
+/** 主角（玩家扮演的“你”）：名字、性别、外貌身份等。番外换成第三人称时最容易写错性别，所以每处都带上 */
+export function protagonistText(story) {
+  const p = story?.protagonist || {};
+  const lines = [
+    p.name?.trim() ? `名字：${p.name.trim()}` : '',
+    p.gender?.trim() ? `性别：${p.gender.trim()}${/女/.test(p.gender) ? '（用“她”）' : /男/.test(p.gender) ? '（用“他”）' : ''}` : '',
+    p.note?.trim() ? p.note.trim() : '',
+  ].filter(Boolean);
+  if (!lines.length) return '';
+  return '【主角（玩家扮演的“你”）】\n' + lines.join('\n') + '\n写到主角时，性别、称呼都按这里来，第三人称视角也一样。';
+}
+
 export function cardText(c) {
   const parts = [`【角色卡·${c.name || '未命名'}】` + (c.aliases?.trim() ? `（也叫：${c.aliases.trim()}）` : '')];
   if (c.initial?.trim()) parts.push('〔初始设定〕\n' + c.initial.trim());
@@ -197,6 +209,7 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
   add('全局备忘', globalMemo?.trim() ? '【全局备忘（所有故事通用）】\n' + globalMemo.trim() : '', 'rules');
   for (const m of sentModules) add(`规则模块 · ${m.name}${m.mode === 'manual' ? '（情境）' : m.mode === 'keyword' ? '（关键词）' : ''}`, `【规则模块·${m.name}】\n${m.text.trim()}`, 'module');
   add('世界与角色设定', story.world?.trim() ? '【世界与角色设定】\n' + story.world.trim() : '', 'world');
+  add('主角', protagonistText(story), 'card');
   const coreFirst = [...sentCards].sort((a, b) => (b.core ? 1 : 0) - (a.core ? 1 : 0));
   for (const c of coreFirst) add(`角色卡 · ${c.name}${c.core ? '（常驻）' : '（被提到）'}`, cardText(applyCardState(c, cp?.mem)), 'card');
   if (cp) add(`前情档案 · 整理到第 ${cp.mem.upTo} 章`, memoryText(cp.mem), 'memory');
