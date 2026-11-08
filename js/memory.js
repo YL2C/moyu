@@ -7,7 +7,7 @@ import { latestCheckpoint, memoryText, applyCardState, splitNames } from './prom
 import { chaptersOf } from './fanwai.js';
 import { normalizeUsage, computeCost, recordUsage } from './cost.js';
 
-export const BATCH = 20;          // 一次最多整理多少章
+export const BATCH = 10;          // 一次最多整理多少章（太多会写不完，JSON 被截断）
 const SUMMARY_LIMIT = 8000;       // 各段摘要超过这么多字，就把最早的一半压缩成“早期概要”
 
 export function emptyMemory() {
@@ -36,8 +36,35 @@ function parseJson(raw) {
   const t = String(raw || '').replace(/```(?:json)?/g, '');
   const a = t.indexOf('{');
   const b = t.lastIndexOf('}');
-  if (a < 0 || b <= a) throw new Error('没有找到 JSON');
-  return JSON.parse(t.slice(a, b + 1));
+  if (a >= 0 && b > a) { try { return JSON.parse(t.slice(a, b + 1)); } catch {} }
+  if (a < 0) throw new Error('没有找到 JSON');
+  return repairJson(t.slice(a));
+}
+
+/** 写到一半被截断的 JSON：退回到最后一个完整的值，把没关的括号补上 */
+export function repairJson(t) {
+  const closersAt = (str) => {
+    const stack = [];
+    let inStr = false, esc = false;
+    for (const ch of str) {
+      if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') stack.push('}');
+      else if (ch === '[') stack.push(']');
+      else if (ch === '}' || ch === ']') stack.pop();
+    }
+    return inStr ? null : stack.reverse().join('');
+  };
+  let cut = t.length;
+  for (let tries = 0; tries < 400 && cut > 1; tries++) {
+    let head = t.slice(0, cut).replace(/[\s,:]+$/, '');
+    const close = closersAt(head);
+    if (close != null) { try { const j = JSON.parse(head + close); j.__repaired = true; return j; } catch {} }
+    const prev = Math.max(t.lastIndexOf(',', cut - 1), t.lastIndexOf('[', cut - 1) + 1, t.lastIndexOf('{', cut - 1) + 1);
+    if (prev <= 0 || prev >= cut) break;
+    cut = prev;
+  }
+  throw new Error('JSON 不完整');
 }
 
 function chapterBlock(c) {
@@ -207,8 +234,10 @@ async function runInner(story, nodes, path, conn, { signal, onProgress = () => {
     if (c) costSum = costSum && costSum.currency === c.currency ? { ...c, amount: costSum.amount + c.amount, est: costSum.est || c.est } : c;
     recordUsage({ kind, storyId: story.id, model: conn?.model || '', usage: u, cost: c });
   };
-  for (let i = 0; i < pending.length; i += BATCH) {
-    const batch = pending.slice(i, i + BATCH);
+  const queue = [];
+  for (let i = 0; i < pending.length; i += BATCH) queue.push(pending.slice(i, i + BATCH));
+  while (queue.length) {
+    const batch = queue.shift();
     const from = batch[0].no;
     const to = batch[batch.length - 1].no;
     onProgress(`正在整理第 ${from}–${to} 章`);
@@ -216,17 +245,27 @@ async function runInner(story, nodes, path, conn, { signal, onProgress = () => {
     let r;
     let raw = '';
     r = await streamWithRetry(conn, {
-      system: p.system, messages: [{ role: 'user', content: p.user }], maxTokens: 8000, signal,
+      system: p.system, messages: [{ role: 'user', content: p.user }], maxTokens: 16000, signal,
       onText: (_d, full) => { raw = full; onProgress(`正在整理第 ${from}–${to} 章（已写 ${full.length} 字）`); },
     });
     raw = r.text;
     track(r, p.system.length + p.user.length);
     let j;
-    try { j = parseJson(raw); } catch {
+    try { j = parseJson(raw); } catch { j = null; }
+    // 写不完被截断：章数多就拆成两半重来；只剩一两章还不行才报错
+    if ((!j || (j.__repaired && r.truncated)) && batch.length > 2) {
+      const half = Math.ceil(batch.length / 2);
+      queue.unshift(batch.slice(0, half), batch.slice(half));
+      onProgress(`第 ${from}–${to} 章一次写不完，拆开重新整理`);
+      continue;
+    }
+    if (!j) {
       const e = new Error('存档员返回的格式看不懂，可以重试或换个模型');
-      e.detail = raw.slice(0, 1500);
+      e.detail = (raw.length > 1500 ? raw.slice(0, 700) + '\n……\n' + raw.slice(-700) : raw);
+      e.hint = r.truncated ? '回复写到输出上限被截断了。可以在连接里把“输出上限”调大，或者换个不开思考的模型来整理。' : '';
       throw e;
     }
+    delete j.__repaired;
     newCards.push(...(await addNewCharacters(story, j, from, to)).map((c) => c.name));
     let m = merge(prev, j, from, to, story);
     m = await compressIfLong(m, conn, signal, track);
