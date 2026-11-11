@@ -4,6 +4,7 @@ import { db, exportAll, importData, storageInfo } from '../db.js';
 import { el, uid, toast, sheet, saveFile, pickFile, APP_VERSION } from '../util.js';
 import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, MODULE_MODES, modulesFromMarkdown, modulesToMarkdown } from '../state.js';
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
+import { parseServiceAccount } from '../vertex.js';
 import { DEFAULT_RULES } from '../prompt.js';
 import { getMonthSpend, getBudget, setBudget, fmtTokens, CUR, priceLabel } from '../cost.js';
 import { getTemplates, saveTemplates, getBase, saveBase, DEFAULT_BASE, builtinTemplates, newTemplate, SCOPES } from '../fanwai.js';
@@ -68,7 +69,7 @@ export async function render(root, { section }) {
     for (const c of conns) {
       const isDef = c.id === defId || (!defId && c === conns[0]);
       let url = '';
-      try { url = normalizeUrl(guessFormat(c), c.baseUrl); } catch {}
+      try { url = c.format === 'vertex' ? `地区 ${c.region || 'global'}` : normalizeUrl(guessFormat(c), c.baseUrl); } catch {}
       wrap.append(el('div', { class: 'card' },
         el('div', { style: { fontWeight: '600' } }, connLabel(c), isDef ? el('span', { class: 'badge', text: '默认' }) : null),
         el('div', { class: 'hint', style: { marginTop: '4px', wordBreak: 'break-all' } },
@@ -255,7 +256,7 @@ export async function render(root, { section }) {
     base.value = c.baseUrl || '';
     const urlHint = el('div', { class: 'hint', style: { wordBreak: 'break-all' } });
     const key = el('input', { type: 'password', placeholder: 'sk-…', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off' });
-    key.value = c.apiKey || '';
+    key.value = c.format === 'vertex' ? '' : (c.apiKey || '');
     key.style.flex = '1';
     const showKey = el('button', { class: 'btn small ghost', style: { whiteSpace: 'nowrap', flex: 'none' }, onclick: () => { key.type = key.type === 'password' ? 'text' : 'password'; showKey.textContent = key.type === 'password' ? '显示' : '隐藏'; } }, '显示');
     const dl = el('datalist', { id: 'models-' + c.id });
@@ -284,8 +285,39 @@ export async function render(root, { section }) {
     };
     const log = el('div', { class: 'test-log' });
 
+    // Google Vertex AI：不用地址和 sk- 密钥，改成粘贴服务账号 JSON + 地区
+    const isV = () => fmt.value === 'vertex';
+    const saText = el('textarea', { class: 'tall', placeholder: '把服务账号的 .json 文件内容整段粘贴进来（包括最外层的 { 和 }）', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', style: { fontFamily: 'ui-monospace, monospace', fontSize: '12px' } });
+    if (c.format === 'vertex') saText.value = c.apiKey || '';
+    const saStatus = el('div', { class: 'hint' });
+    const checkSa = () => {
+      if (!saText.value.trim()) { saStatus.textContent = '只存在这台设备上，导出备份时不会带出去。这份 JSON 权限比普通密钥大，建议在 Google Cloud 里只给这个服务账号开 Vertex AI User 权限。'; return; }
+      try { const j = parseServiceAccount(saText.value); saStatus.textContent = `✓ 看起来没问题：项目 ${j.project_id} · ${j.client_email}`; }
+      catch (e) { saStatus.textContent = '✗ ' + e.message + (e.hint ? '：' + e.hint : ''); }
+    };
+    saText.addEventListener('input', checkSa);
+    // 默认打码，免得截图时把私钥带出去
+    saText.style.webkitTextSecurity = 'disc';
+    const saShow = el('button', { class: 'btn small ghost', onclick: () => { const hid = saText.style.webkitTextSecurity === 'disc'; saText.style.webkitTextSecurity = hid ? 'none' : 'disc'; saShow.textContent = hid ? '隐藏' : '显示'; } }, '显示');
+    const saFile = el('button', { class: 'btn small', onclick: async () => { const f = await pickFile('.json,application/json'); if (f) { saText.value = f.text; checkSa(); refreshUrl(); } } }, '从文件导入');
+    const region = el('input', { type: 'text', placeholder: 'global', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' }); region.value = c.region || 'global';
+    const baseField = el('div', { class: 'field' });
+    const keyField = el('div', { class: 'field' });
+    const saField = el('div', { class: 'field' }, el('label', { text: '服务账号 JSON' }), saText, el('div', { class: 'row', style: { marginTop: '6px' } }, saFile, saShow), saStatus);
+    const regionField = el('div', { class: 'field' }, el('label', { text: '地区' }), region, el('div', { class: 'hint', text: '一般填 global。' }));
+    const vertexUrl = el('div', { class: 'hint', style: { wordBreak: 'break-all' } });
+    regionField.append(vertexUrl);
+    const showFmt = () => {
+      const v = isV();
+      baseField.style.display = keyField.style.display = v ? 'none' : '';
+      saField.style.display = regionField.style.display = v ? '' : 'none';
+      model.placeholder = v ? '例：gemini-2.5-pro' : '例：claude-sonnet-4-6、deepseek-chat';
+      if (v) checkSa();
+    };
+
     const read = () => ({
-      ...c, name: name.value.trim(), format: fmt.value, baseUrl: base.value.trim(), apiKey: key.value.trim(),
+      ...c, name: name.value.trim(), format: fmt.value, baseUrl: isV() ? '' : base.value.trim(), apiKey: isV() ? saText.value.trim() : key.value.trim(),
+      region: region.value.trim() || 'global',
       model: model.value.trim(), maxTokens: Number(maxT.value) || 8000, mt8000: true, temperature: temp.value === '' ? '' : Number(temp.value),
       stream: streamSw.checked,
       priceIn: priceIn.value === '' ? '' : Number(priceIn.value),
@@ -297,13 +329,19 @@ export async function render(root, { section }) {
     });
     const refreshUrl = () => {
       const cur = read();
+      if (cur.format === 'vertex') {
+        try { vertexUrl.textContent = cur.apiKey ? '实际请求：' + normalizeUrl('vertex', '', cur) : ''; } catch { vertexUrl.textContent = ''; }
+        return;
+      }
       try {
         const f = guessFormat(cur);
         urlHint.textContent = `实际请求：${normalizeUrl(f, cur.baseUrl)}` + (cur.format === 'auto' ? `（按${FORMAT_LABEL[f]}格式猜测，测试时会自动确认）` : '');
       } catch (e) { urlHint.textContent = e.message; }
     };
     base.addEventListener('input', refreshUrl);
-    fmt.addEventListener('change', refreshUrl);
+    fmt.addEventListener('change', () => { showFmt(); refreshUrl(); });
+    region.addEventListener('input', refreshUrl);
+    saText.addEventListener('input', refreshUrl);
     refreshUrl();
 
     // 模型列表：iPhone 上输入框自带的候选列表点不出来，所以拉到列表后弹一个可搜索的选择框
@@ -356,12 +394,13 @@ export async function render(root, { section }) {
 
     s.body.append(
       el('div', { class: 'field' }, el('label', { text: '名称' }), name),
-      el('div', { class: 'field' }, el('label', { text: '接口地址' }), base, urlHint,
-        el('div', { class: 'hint', text: '中转站一般填到 /v1 为止。官方 Claude 留空并把格式选成“Claude 原生”。' })),
       el('div', { class: 'field' }, el('label', { text: '接口格式' }), fmt,
-        el('div', { class: 'hint', text: '不确定就选“自动识别”，测试时会自己判断。' })),
-      el('div', { class: 'field' }, el('label', { text: 'API 密钥' }), el('div', { class: 'row', style: { flexWrap: 'nowrap' } }, key, showKey),
-        el('div', { class: 'hint', text: '只存在这台设备上，导出备份时不会带出去。' })),
+        el('div', { class: 'hint', text: '不确定就选“自动识别”，测试时会自己判断。用 Google 的服务账号 JSON 就选“Google Vertex AI”。' })),
+      (baseField.append(el('label', { text: '接口地址' }), base, urlHint,
+        el('div', { class: 'hint', text: '中转站一般填到 /v1 为止。官方 Claude 留空并把格式选成“Claude 原生”。' })), baseField),
+      (keyField.append(el('label', { text: 'API 密钥' }), el('div', { class: 'row', style: { flexWrap: 'nowrap' } }, key, showKey),
+        el('div', { class: 'hint', text: '只存在这台设备上，导出备份时不会带出去。' })), keyField),
+      saField, regionField,
       el('div', { class: 'field' }, el('label', { text: '模型名' }), model, dl, el('div', { class: 'row', style: { marginTop: '6px' } }, getModels, refetch)),
       el('div', { class: 'row', style: { alignItems: 'flex-start', flexWrap: 'nowrap' } },
         el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '输出上限' }), maxT,
@@ -383,6 +422,7 @@ export async function render(root, { section }) {
       log
     );
     showMode();
+    showFmt();
 
     s.foot.append(...[
       isNew ? null : el('button', {
@@ -399,7 +439,8 @@ export async function render(root, { section }) {
         class: 'btn primary',
         onclick: async () => {
           const v = read();
-          if (!v.apiKey || !v.model) { toast('密钥和模型名都要填'); return; }
+          if (!v.apiKey || !v.model) { toast(v.format === 'vertex' ? '服务账号 JSON 和模型名都要填' : '密钥和模型名都要填'); return; }
+          if (v.format === 'vertex') { try { parseServiceAccount(v.apiKey); } catch (e) { toast(e.message, 3500); return; } }
           try {
             await db.put('connections', v);
             if (!conns.length || !(await getDefaultConnId())) await setDefaultConnId(v.id);

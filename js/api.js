@@ -6,7 +6,16 @@
 //  - 回复内容为空、被拦截、被截断，和网络错误分开报告
 //  - 所有错误都翻译成中文并附修法，原始返回保留在 detail 里方便排查
 
-export const FORMAT_LABEL = { auto: '自动识别', openai: 'OpenAI 兼容', anthropic: 'Claude 原生' };
+import { resolveVertex, parseServiceAccount, vertexBaseUrl, VERTEX_MODELS } from './vertex.js';
+
+export const FORMAT_LABEL = { auto: '自动识别', openai: 'OpenAI 兼容', anthropic: 'Claude 原生', vertex: 'Google Vertex AI（服务账号 JSON）' };
+
+/** Vertex 连接：先用服务账号 JSON 换令牌，变成一条 OpenAI 兼容连接；其他连接原样返回 */
+async function effectiveConn(conn) {
+  if (conn?.format !== 'vertex') return conn;
+  try { return await resolveVertex(conn); }
+  catch (e) { throw new ApiError(e.kind === 'vertex' ? 'auth' : 'network', e.message, { hint: e.hint || '', detail: e.detail || '' }); }
+}
 
 export class ApiError extends Error {
   constructor(kind, message, { hint = '', status = 0, detail = '', url = '', partial = '' } = {}) {
@@ -30,7 +39,11 @@ export function guessFormat(conn) {
   return /anthropic|claude/i.test(conn.baseUrl || '') && !/openai/i.test(conn.baseUrl || '') ? 'anthropic' : 'openai';
 }
 
-export function normalizeUrl(format, base) {
+export function normalizeUrl(format, base, conn = null) {
+  if (format === 'vertex') {
+    try { return vertexBaseUrl(parseServiceAccount(conn?.apiKey), conn?.region) + '/chat/completions'; }
+    catch (e) { throw new ApiError('bad_url', e.message, { hint: e.hint || '' }); }
+  }
   let u = String(base || '').trim().replace(/\s+/g, '');
   if (!u) u = format === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com';
   if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
@@ -247,6 +260,7 @@ function checkConn(conn) {
  */
 export async function streamChat(conn, { system, messages, maxTokens, signal, onText = () => {}, onThinking = () => {}, firstByteMs = 150000, idleMs = 90000 }) {
   checkConn(conn);
+  conn = await effectiveConn(conn);
   const format = guessFormat(conn);
   const url = normalizeUrl(format, conn.baseUrl);
   const wantStream = conn.stream !== false;
@@ -406,6 +420,7 @@ export async function streamWithRetry(conn, opts, { retries = 1, onRetry = () =>
 }
 
 export async function listModels(conn) {
+  if (conn?.format === 'vertex') return [...VERTEX_MODELS];
   const format = guessFormat(conn);
   const url = modelsUrl(format, conn.baseUrl);
   let res;
@@ -430,7 +445,7 @@ const PING = [{ role: 'user', content: '请只回复四个字：连接成功' }]
  */
 export async function testConnection(conn, onStep = () => {}) {
   const step = (id, state, text, detail = '') => onStep({ id, state, text, detail });
-  if (!conn.apiKey) { step('pre', 'bad', '还没有填 API 密钥'); return { ok: false }; }
+  if (!conn.apiKey) { step('pre', 'bad', conn.format === 'vertex' ? '还没有粘贴服务账号 JSON' : '还没有填 API 密钥'); return { ok: false }; }
   if (!conn.model) { step('pre', 'bad', '还没有填模型名'); return { ok: false }; }
 
   const candidates = conn.format && conn.format !== 'auto'
@@ -441,13 +456,13 @@ export async function testConnection(conn, onStep = () => {}) {
   let patch = {};
   for (const fmt of candidates) {
     let url;
-    try { url = normalizeUrl(fmt, conn.baseUrl); } catch (e) { step('url', 'bad', e.message, e.hint); return { ok: false }; }
+    try { url = normalizeUrl(fmt, conn.baseUrl, conn); } catch (e) { step('url', 'bad', e.message, e.hint); return { ok: false }; }
     const c = { ...conn, format: fmt, stream: false };
     const sid = 'req-' + fmt;
     step(sid, 'wait', `用「${FORMAT_LABEL[fmt]}」格式请求：${url}`);
     const t0 = performance.now();
     try {
-      const r = await streamChat(c, { messages: PING, maxTokens: 400, firstByteMs: 60000 });
+      const r = await streamChat(c, { messages: PING, maxTokens: fmt === 'vertex' ? 2000 : 400, firstByteMs: 60000 });
       const ms = Math.round(performance.now() - t0);
       step(sid, 'ok', `「${FORMAT_LABEL[fmt]}」格式可用，普通请求成功（${(ms / 1000).toFixed(1)} 秒）：模型回复「${r.text.trim().slice(0, 40)}」`);
       chosen = fmt;
