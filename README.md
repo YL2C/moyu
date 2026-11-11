@@ -12,7 +12,7 @@
 
 ## Google Vertex AI（服务账号 JSON）
 
-添加连接时“接口格式”选“Google Vertex AI”，把服务账号的 .json 内容整段粘贴（或从文件导入），地区一般填 global，模型名填 gemini-2.5-pro 这类。墨游在本机用这份 JSON 换一小时有效的访问令牌，再调 Vertex 的 OpenAI 兼容接口。JSON 和其他密钥一样只存在本机、不进备份；它的权限比普通密钥大，建议只给服务账号开 Vertex AI User。
+添加连接时“接口格式”选“Google Vertex AI”，把服务账号的 .json 内容整段粘贴（或从文件导入），地区一般填 global，模型名填 gemini-3.8-flash 这类（Google 会下线旧模型，填不通就点“获取模型列表”换一个）。墨游在本机用这份 JSON 换一小时有效的访问令牌，再调 Vertex 的 OpenAI 兼容接口。JSON 和其他密钥一样只存在本机、不进备份；它的权限比普通密钥大，建议只给服务账号开 Vertex AI User。
 
 ## 花费
 

@@ -311,7 +311,7 @@ export async function render(root, { section }) {
       const v = isV();
       baseField.style.display = keyField.style.display = v ? 'none' : '';
       saField.style.display = regionField.style.display = v ? '' : 'none';
-      model.placeholder = v ? '例：gemini-2.5-pro' : '例：claude-sonnet-4-6、deepseek-chat';
+      model.placeholder = v ? '例：gemini-3.8-flash' : '例：claude-sonnet-4-6、deepseek-chat';
       if (v) checkSa();
     };
 

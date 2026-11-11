@@ -157,7 +157,7 @@ function httpError(status, raw, url) {
   }
   if (status === 402 || QUOTA_RE.test(msg)) return new ApiError('quota', '余额或额度不足', { ...o, hint: '去中转站或官方后台看看余额。有的中转站会按“输入长度＋输出上限”先预扣额度，余额还剩一些也可能报这个：可以把连接的“输出上限”调小（比如 4000）再试。' });
   if (status === 404) {
-    if (/model/i.test(msg)) return new ApiError('model', '找不到这个模型', { ...o, hint: '模型名可能拼错了，或者这个接口没有这个模型。可以在连接设置里点“获取模型列表”。' });
+    if (/model/i.test(msg)) return new ApiError('model', '找不到这个模型', { ...o, hint: /aiplatform\.googleapis\.com/.test(url || '') ? '这个模型在 Vertex 上找不到：可能已经下线（gemini-2.5 系列 2026 年 10 月下线了），或者这个地区没有。点“获取模型列表”换一个，比如 gemini-3.8-flash。' : '模型名可能拼错了，或者这个接口没有这个模型。可以在连接设置里点“获取模型列表”。' });
     return new ApiError('notfound', '地址不对（404）', { ...o, hint: `实际请求的地址是 ${url} 。检查地址结尾（中转站一般是 /v1），或者把接口格式改成“自动识别”。` });
   }
   if (status === 405) return new ApiError('notfound', '地址不对（这个地址不接受这种请求）', { ...o, hint: '可能选错了接口格式，试试“自动识别”。' });
