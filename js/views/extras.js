@@ -5,7 +5,7 @@ import { el, uid, toast, menu, sheet, promptText, ago, approxTokens } from '../u
 import { resolveConnection, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
 import { streamWithRetry, ApiError } from '../api.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage } from '../cost.js';
-import { getTemplates, getBase, buildExtraContext, chaptersOf, extraBlocks, SCOPES, LENGTHS } from '../fanwai.js';
+import { getTemplates, getBase, buildExtraContext, chaptersOf, extraBlocks, SCOPES, LENGTHS, lengthOf } from '../fanwai.js';
 
 const SCOPE_SHORT = { all: '全知', public: '只知道公开的事', char: '视角角色所知' };
 
@@ -119,11 +119,17 @@ async function newExtra(story, nodes) {
   const scopeSel = el('select');
   for (const [k, v] of Object.entries(SCOPES)) scopeSel.append(el('option', { value: k }, v));
   let length = 'mid';
-  const lenSeg = el('div', { class: 'seg' });
+  const lenSeg = el('div', { class: 'filters', style: { margin: 0 } });
+  const lenCustom = el('input', { type: 'number', min: '200', max: '20000', step: '100', placeholder: '自己填字数，例：6000', style: { marginTop: '8px' } });
+  const clearLen = () => lenSeg.querySelectorAll('button').forEach((x) => x.classList.remove('on'));
   for (const [k, [label, n]] of Object.entries(LENGTHS)) {
-    const b = el('button', { class: k === length ? 'on' : '', onclick: () => { length = k; lenSeg.querySelectorAll('button').forEach((x) => x.classList.remove('on')); b.classList.add('on'); } }, `${label} · 约${n}字`);
+    const b = el('button', { class: 'chip' + (k === length ? ' on' : ''), onclick: () => { length = k; lenCustom.value = ''; clearLen(); b.classList.add('on'); } }, `${label} · 约${n}字`);
     lenSeg.append(b);
   }
+  lenCustom.addEventListener('input', () => {
+    const n = Number(lenCustom.value);
+    if (n >= 200) { length = Math.min(n, 20000); clearLen(); }
+  });
   const withMods = sw(true);
   const tplHint = el('div', { class: 'hint' });
   const syncTpl = () => {
@@ -141,7 +147,7 @@ async function newExtra(story, nodes) {
     el('div', { class: 'field' }, el('label', { text: '带上时间点前最近几章的原文' }), recent, el('div', { class: 'hint', text: '让模型熟悉人物口吻和最近发生的事。更早的剧情可以在下面单独指定。' })),
     chapters.length ? el('details', { class: 'card', style: { padding: '10px 12px' } }, el('summary', { style: { cursor: 'pointer' }, text: '额外指定章节作素材（可选）' }), pinBox) : null,
     el('div', { class: 'field', style: { marginTop: '12px' } }, el('label', { text: '知情范围' }), scopeSel),
-    el('div', { class: 'field' }, el('label', { text: '篇幅' }), lenSeg),
+    el('div', { class: 'field' }, el('label', { text: '篇幅' }), lenSeg, lenCustom, el('div', { class: 'hint', text: '很长的番外模型可能一次写不完，写完后点“接着写”可以续上。' })),
     enabledAlways.length ? el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '带上这个故事的规则模块', el('small', { text: enabledAlways.map((m) => m.name).join('、') + '（不带正文的游玩规则）' })), withMods.el) : null,
   ].filter(Boolean));
   s.foot.append(
@@ -300,7 +306,7 @@ async function renderReader(root, story, nodes, extraId) {
     let lastSave = 0;
     try {
       const r = await streamWithRetry(conn, {
-        system: ctx.system, messages, signal: ctrl.signal, maxTokens: Math.max(Number(conn?.maxTokens) || 4000, x.length === 'long' ? 8000 : 4000),
+        system: ctx.system, messages, signal: ctrl.signal, maxTokens: Math.max(Number(conn?.maxTokens) || 4000, Math.ceil(lengthOf(x.length)[1] * 2) + 1500),
         onText: (_d, full) => {
           v.text = base + full; v.thinking = false;
           if (!st.frame) st.frame = requestAnimationFrame(() => { st.frame = 0; if (!destroyed) draw({ stick: true }); });

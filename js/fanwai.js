@@ -13,7 +13,13 @@ export const SCOPES = {
   char: '只知道视角角色知道的事',
 };
 
-export const LENGTHS = { short: ['短', 1000], mid: ['中', 2500], long: ['长', 5000] };
+export const LENGTHS = { short: ['短', 1000], mid: ['中', 2500], long: ['长', 5000], xlong: ['超长', 8000] };
+/** 篇幅：可以是上面的档位，也可以是自己填的字数 */
+export function lengthOf(length) {
+  const n = Number(length);
+  if (Number.isFinite(n) && n >= 200) { const c = Math.min(Math.round(n), 20000); return [c >= 6500 ? '超长' : c >= 3500 ? '长' : c >= 1800 ? '中' : '短', c]; }
+  return LENGTHS[length] || LENGTHS.mid;
+}
 
 export const DEFAULT_BASE = `- 第一行写番外标题（# 开头），然后是正文。
 - 这是非正史番外：不改变正史的事实、人物认知和关系进度；论坛猜测、网友同人、假设剧情都不算正史。
@@ -87,7 +93,7 @@ export function buildExtraContext(story, opts) {
     : scope === 'char'
       ? (pov ? `以${pov}的视角写：只能写${pov}亲眼见过、亲耳听过、或通过合理渠道得知的事；${pov}不知道的事，不能写成他知道。` : '以视角角色的视角写：只能写他亲眼见过、亲耳听过、或通过合理渠道得知的事。')
       : '可以写正史里发生过的任何事，但不能和正史矛盾。';
-  const [lenLabel, lenChars] = LENGTHS[length] || LENGTHS.mid;
+  const [lenLabel, lenChars] = lengthOf(length);
 
   const parts = [];
   const add = (label, text) => { if (text?.trim()) parts.push({ label, text: text.trim() }); };
@@ -104,7 +110,7 @@ export function buildExtraContext(story, opts) {
     : '【时间点】正史还没开始，按设定写。');
   add(`正史素材 · ${picked.length} 章`, material ? '【正史素材（只用来了解人物和发生过的事，不要照抄原句）】\n' + material : '');
   const system = parts.map((p) => p.text).join('\n\n');
-  const user = `请写这篇番外，篇幅大约 ${lenChars} 字（${lenLabel}篇）。` + (request.trim() ? `\n这次的要求：${request.trim()}` : '') + (pov && scope !== 'char' ? `\n视角角色：${pov}` : '');
+  const user = `请写这篇番外，篇幅大约 ${lenChars} 字（${lenLabel}篇）${lenChars >= 5000 ? '，要写足，不要提前收尾' : ''}。` + (request.trim() ? `\n这次的要求：${request.trim()}` : '') + (pov && scope !== 'char' ? `\n视角角色：${pov}` : '');
   return {
     system,
     messages: [{ role: 'user', content: user }],
