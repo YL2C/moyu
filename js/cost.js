@@ -93,14 +93,20 @@ export async function addSpend(cost, usage) {
  * 每次调用模型都记一笔：kind（正文/整理前情/拆角色卡/补选项/番外…）、用量、金额。
  * 进月度合计，也进“最近的调用”清单（最多 300 条），方便看 token 花在哪了。
  */
-export async function recordUsage({ kind = '正文', storyId = '', model = '', usage = null, cost = null } = {}) {
-  try {
-    const log = (await db.kvGet('usageLog', null)) || [];
-    log.push({ at: Date.now(), kind, storyId, model, input: usage?.input || 0, cached: usage?.cached || 0, output: usage?.output || 0, est: !!usage?.est, cost });
+export async function recordUsage({ kind = '正文', storyId = '', model = '', usage = null, cost = null, requestId = null } = {}) {
+  const m = await db.kvUpdate(['usageLog', 'spend'], (values) => {
+    const log = values.usageLog || [];
+    const all = values.spend || {};
+    const k = monthKey();
+    const month = all[k] || { CNY: 0, USD: 0, input: 0, output: 0, count: 0 };
+    if (requestId && log.some((x) => x.requestId === requestId)) return { values: {}, result: month };
+    log.push({ at: Date.now(), kind, storyId, model, input: usage?.input || 0, cached: usage?.cached || 0, output: usage?.output || 0, est: !!usage?.est, cost, ...(requestId ? { requestId } : {}) });
     while (log.length > 300) log.shift();
-    await db.kvSet('usageLog', log);
-  } catch {}
-  const m = await addSpend(cost, usage).catch(() => null);
+    if (cost) month[cost.currency] = (month[cost.currency] || 0) + cost.amount;
+    if (usage) { month.input += usage.input || 0; month.output += usage.output || 0; }
+    month.count += 1; all[k] = month;
+    return { values: { usageLog: log, spend: all }, result: month };
+  }).catch(() => null);
   if (m) checkBudget(m).catch(() => {});
   return m;
 }
