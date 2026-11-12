@@ -407,6 +407,16 @@ export async function render(root, { id }) {
   // 正在进行的生成数：切到别的页面时，有生成在跑就把这一页留在后台接着写
   let jobs = 0;
   let reconnectRequested = false;
+  // 后台任务断线后的自动接回：次数有上限，接上并有新内容就清零
+  let relayRetry = 0;
+  let relayTimer = null;
+  const scheduleResume = () => {
+    clearTimeout(relayTimer);
+    if (destroyed || relayRetry >= 40) return;
+    const wait = Math.min(10000, 1500 * 2 ** Math.min(relayRetry, 3));
+    relayRetry++;
+    relayTimer = setTimeout(() => { if (!destroyed && document.visibilityState === 'visible') void resumePending(); }, wait);
+  };
   const idleCbs = new Set();
   async function generate(...args) {
     if (jobs) return;
@@ -460,6 +470,7 @@ export async function render(root, { id }) {
     let lastSave = 0;
     let usageRaw = null;
     let pendingRelay = false;
+    let autoResume = false;
     const persist = () => db.put('nodes', a).catch(() => {});
     const onHide = () => { if (document.visibilityState === 'hidden') persist(); };
     document.addEventListener('visibilitychange', onHide);
@@ -476,6 +487,8 @@ export async function render(root, { id }) {
           catch { throw new ApiError('storage', '无法保存后台任务', { hint: '请先检查设备存储空间，再重试。' }); }
         },
         onText: (_d, full) => {
+          // 接回时服务器从头重放：没追上之前不动画面，免得正文倒回去再长出来
+          if (resumeJob && base.length + full.length < previousText.length) return;
           a.text = base + full; a.thinking = false;
           updateLive(a);
           const now = Date.now();
@@ -499,7 +512,8 @@ export async function render(root, { id }) {
       pendingRelay = !!a.relayJob && (['relay_network', 'relay_auth', 'relay_config'].includes(err.kind) || (err.kind === 'aborted' && ['leave', 'reconnect'].includes(ctrl.signal.reason)));
       if (pendingRelay) {
         a.status = 'streaming';
-        a.error = { ...err, message: '后台生成待接回', hint: '服务器仍会继续生成。恢复网络后点“接回后台生成”；完成后 30 分钟内可以取回。' };
+        autoResume = err.kind === 'relay_network';
+        a.error = { ...err, message: autoResume && relayRetry < 40 ? '连接断了，正在自动接回…' : '后台生成待接回', hint: '服务器仍会继续生成。恢复网络后会自动接回，也可以点“接回后台生成”；完成后 30 分钟内可以取回。' };
       } else if (err.kind === 'aborted') {
         a.stopped = hasText;
         a.status = hasText ? 'partial' : 'error';
@@ -527,7 +541,9 @@ export async function render(root, { id }) {
         await recordUsage({ kind: usageKind, storyId: story.id, model: conn?.model || a.model, usage: u, cost: c,
           requestId: a.relayJob ? (a.relayContext?.server || '') + '/' + a.relayJob : null });
       }
-      if (!pendingRelay) { delete a.relayJob; delete a.relayContext; }
+      if (!pendingRelay) { delete a.relayJob; delete a.relayContext; relayRetry = 0; clearTimeout(relayTimer); }
+      else if ((a.text || '').length > previousText.length) relayRetry = 0;
+      if (autoResume) scheduleResume();
       touch(a);
       await persist();
       if (a.kind !== 'ooc' && a.text?.trim()) {
@@ -1061,9 +1077,13 @@ export async function render(root, { id }) {
   const onVisible = () => {
     if (document.visibilityState !== 'visible' || destroyed) return;
     const node = st.streaming && nodes.get(st.streaming.id);
+    relayRetry = 0;
     if (node?.relayJob) { reconnectRequested = true; st.streaming.ctrl.abort('reconnect'); }
+    else if (jobs) reconnectRequested = true; // 上一次正在收尾，收完马上接回
     else void resumePending();
   };
+  const onOnline = () => { relayRetry = 0; if (!destroyed && !jobs && document.visibilityState === 'visible') void resumePending(); };
+  window.addEventListener('online', onOnline);
   document.addEventListener('visibilitychange', onVisible);
   renderFeed();
   requestAnimationFrame(fit);
@@ -1075,6 +1095,8 @@ export async function render(root, { id }) {
     window.removeEventListener('moyu:cards', onCards);
     window.removeEventListener('moyu:put', onPut);
     document.removeEventListener('visibilitychange', onVisible);
+    window.removeEventListener('online', onOnline);
+    clearTimeout(relayTimer);
     unwatch();
     if (st.streaming) st.streaming.ctrl.abort('leave');
   };

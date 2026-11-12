@@ -44,7 +44,7 @@ function stripOptionPrefix(s) {
 }
 
 function parseDanmuLine(s) {
-  const t = s.replace(/^\s*[-*•·]\s*/, '').trim();
+  const t = s.replace(/^\s*[-*•·]\s*/, '').replace(/\*\*|__/g, '').trim();
   if (!t) return null;
   const m = t.match(/^([^：:\n]{1,16})[：:]\s*(.+)$/);
   if (m) return { name: m[1].replace(/^【|】$/g, '').trim(), text: m[2].trim() };
@@ -120,6 +120,11 @@ export function parseReply(raw) {
   }
 
   const bodyText = body.join('\n').trim();
+  // 只有绝大多数弹幕都带“昵称：”时才把昵称单独标色；否则“哈哈哈：xxx”这种会被误当昵称，颜色一条一个样
+  const named = danmu.filter((d) => d.name).length;
+  if (danmu.length && named < Math.max(2, danmu.length * 0.8)) {
+    for (const d of danmu) if (d.name) { d.text = d.name + '：' + d.text; d.name = ''; }
+  }
   return { title, body: bodyText, danmu: danmu.slice(0, 30), options: options.slice(0, 6) };
 }
 
