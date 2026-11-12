@@ -1,0 +1,27 @@
+services:
+  relay:
+    image: node:24-alpine
+    working_dir: /app
+    command: ["node", "relay.mjs"]
+    init: true
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 384m
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - "./:/app:ro"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
