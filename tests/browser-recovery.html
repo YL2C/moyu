@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>墨游 · 转发恢复验收</title>
+<link rel="stylesheet" href="../css/app.css">
+<style>body{overflow:auto;height:auto}#report{white-space:pre-wrap;padding:16px;font:14px/1.6 system-ui}#fixture{height:700px;position:relative;border-top:1px solid #888}#fixture .view{height:100%}</style>
+<pre id="report">正在运行浏览器验收（只使用虚拟接口和此测试端口的本机存储）…</pre><div id="fixture"></div>
+<script type="module">
+import { db } from '../js/db.js';
+import { render as renderPlay } from '../js/views/play.js';
+import { render as renderSettings } from '../js/views/settings.js';
+import { recordUsage, getMonthSpend } from '../js/cost.js';
+
+const report = document.querySelector('#report');
+const root = document.querySelector('#fixture');
+if (!['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname) || location.port !== '8976') {
+  report.textContent = '此验收页仅允许在独立的本机 8976 端口运行，避免改动正式站点的存储。';
+  throw new Error('Browser tests require isolated localhost:8976');
+}
+const results = [];
+let dispose = null;
+const requests = [];
+const encoder = new TextEncoder();
+let mode = 'complete';
+let creates = 0;
+const check = (ok, message) => { if (!ok) throw new Error(message); results.push('✓ ' + message); report.textContent = results.join('\n'); };
+const waitFor = async (fn) => { for (let i = 0; i < 150; i++) { if (await fn()) return; await new Promise(r => setTimeout(r, 20)); } throw new Error('等待结果超时'); };
+const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+const frame = (text) => `data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 3 } })}\n\ndata: [DONE]\n\n`;
+const realFetch = window.fetch;
+window.fetch = async (url, init = {}) => {
+  if (!String(url).startsWith('https://relay.test')) return realFetch(url, init);
+  requests.push({ url: String(url), method: init.method || 'GET' });
+  if (String(url).endsWith('/health')) return json({ ok: true });
+  if (String(url).endsWith('/jobs')) { creates++; return json({ id: 'created-job' }, 201); }
+  if (init.method === 'DELETE') return json({ state: 'error' });
+  if (String(url).includes('/stream?')) {
+    if (mode === 'offline') throw new TypeError('网络断开');
+    let body = frame('新的一段');
+    if (mode === 'running') body = new ReadableStream({ start(controller) {
+      controller.enqueue(encoder.encode(frame('生成到一半')));
+      init.signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), { once: true });
+    } });
+    return new Response(body, { headers: { 'X-Upstream-Status': '200', 'X-Upstream-Content-Type': 'text/event-stream', 'X-Job-State': mode === 'running' ? 'running' : 'done' } });
+  }
+  return json({ state: 'done' });
+};
+
+const story = { id: 'relay-browser-test', title: '恢复验收', headId: 'a', connectionId: 'test-conn', memEvery: 0, options: false, modules: {}, cards: [] };
+const connection = { id: 'test-conn', model: 'test', format: 'openai', baseUrl: 'https://api.test/v1', apiKey: '', viaRelay: true, mt8000: true, priceMode: 'call', pricePerCall: 0.5, currency: 'CNY' };
+const node = () => ({ id: 'a', storyId: story.id, parentId: 'u', role: 'assistant', kind: 'play', status: 'streaming', text: '已有前文\n旧的部分', createdAt: Date.now(), relayJob: 'existing-job',
+  relayContext: { server: 'https://relay.test', connectionId: connection.id, base: '已有前文\n', continuation: true, usageKind: '续写', inChars: 20,
+    connection: { format: 'openai', model: 'test', stream: true, priceMode: 'call', pricePerCall: 0.5, currency: 'CNY' } },
+  usageN: { input: 2, cached: 0, output: 2, est: false }, cost: { amount: 0.5, currency: 'CNY', est: false } });
+async function mount() { root.replaceChildren(); dispose = await renderPlay(root, { id: story.id }); }
+async function reset() {
+  if (dispose) { dispose(); await waitFor(() => !dispose.busy()); dispose = null; }
+  await db.put('stories', { ...story });
+  await db.put('nodes', { id: 'u', storyId: story.id, parentId: null, role: 'user', kind: 'start', text: '开始', createdAt: Date.now() });
+  await db.put('nodes', node());
+  await db.kvSet('usageLog', []); await db.kvSet('spend', {});
+}
+
+try {
+  await db.put('connections', connection);
+  await db.kvSet('relay', { on: true, url: 'https://relay.test', token: 'virtual-test-token', region: 'overseas' });
+  await renderSettings(root, {});
+  check(root.textContent.includes('服务器转发（可选）'), '设置页显示转发配置');
+  const edit = [...root.querySelectorAll('button')].find(b => b.textContent === '编辑 / 测试'); edit.click();
+  await waitFor(() => document.querySelector('[role="dialog"]')?.textContent.includes('经服务器转发'));
+  check(document.querySelector('[role="dialog"]').textContent.includes('经服务器转发'), '连接编辑显示转发开关，编辑页可正常加载');
+  [...document.querySelectorAll('.sheet button')].find(b => b.textContent === '取消')?.click();
+
+  await reset(); await mount();
+  await waitFor(async () => (await db.get('nodes', 'a')).status === 'done');
+  let saved = await db.get('nodes', 'a');
+  check(saved.text === '已有前文\n新的一段', '关页后从同一任务恢复，续写前文只拼接一次');
+  check(!saved.relayJob && !saved.relayContext, '完成后清理临时任务信息');
+  check(saved.usageN.input === 12 && saved.usageN.output === 5 && saved.cost.amount === 1, '续写用量与此前金额正确累加');
+  check((await getMonthSpend()).count === 1, '恢复生成只记录一次调用');
+  check(creates === 0 && requests.some(r => r.url.endsWith('/existing-job/stream?from=0')), '恢复没有创建新任务，也不需要原连接密钥');
+  dispose(); await mount();
+  check((await getMonthSpend()).count === 1, '再次打开已完成章节不重复记账');
+
+  await reset(); mode = 'offline'; await mount();
+  await waitFor(() => !dispose.busy());
+  saved = await db.get('nodes', 'a');
+  check(saved.relayJob === 'existing-job' && saved.text === '已有前文\n旧的部分', '断网时保留任务编号与已有正文');
+  check((await getMonthSpend()).count === 0, '等待重连时不提前重复计费');
+  mode = 'complete'; [...root.querySelectorAll('button')].find(b => b.textContent === '接回后台生成').click();
+  await waitFor(async () => (await db.get('nodes', 'a')).status === 'done');
+  check((await db.get('nodes', 'a')).text === '已有前文\n新的一段', '网络恢复后可手动接回完整内容');
+
+  await reset(); mode = 'running'; await mount();
+  await waitFor(() => root.textContent.includes('生成到一半'));
+  dispose(); await waitFor(() => !dispose.busy());
+  check((await db.get('nodes', 'a')).relayJob === 'existing-job', '页面销毁只断开订阅，保留后台任务');
+  check(!requests.some(r => r.method === 'DELETE'), '离开页面没有取消服务器任务');
+  mode = 'complete'; await mount();
+  await waitFor(async () => (await db.get('nodes', 'a')).status === 'done');
+  check((await db.get('nodes', 'a')).text === '已有前文\n新的一段', '重新加载页面能接回离开前的任务');
+
+  await reset(); mode = 'running'; await mount();
+  await waitFor(() => root.textContent.includes('生成到一半'));
+  mode = 'complete'; document.dispatchEvent(new Event('visibilitychange'));
+  await waitFor(async () => (await db.get('nodes', 'a')).status === 'done');
+  check((await db.get('nodes', 'a')).text === '已有前文\n新的一段', '回到前台自动重连同一个任务');
+
+  await reset(); mode = 'running'; await mount();
+  await waitFor(() => root.textContent.includes('生成到一半'));
+  [...root.querySelectorAll('button')].find(b => b.textContent === '停止').click();
+  await waitFor(() => !dispose.busy());
+  check(!(await db.get('nodes', 'a')).relayJob && requests.some(r => r.method === 'DELETE'), '主动停止取消后台任务并清理恢复标记');
+
+  const usage = { input: 10, output: 3, cached: 0, est: false }; const cost = { amount: 0.5, currency: 'CNY' };
+  const before = (await getMonthSpend()).count;
+  await Promise.all([recordUsage({ requestId: 'same-job', usage, cost }), recordUsage({ requestId: 'same-job', usage, cost })]);
+  check((await getMonthSpend()).count === before + 1, '并发重放同一任务，记账事务能去重');
+  check(creates === 0, '所有恢复场景均未重新请求模型');
+
+  dispose(); await waitFor(() => !dispose.busy());
+  await db.delStory(story.id);
+  await db.put('stories', { ...story, headId: null });
+  await db.put('connections', { ...connection, apiKey: 'virtual-model-key' });
+  mode = 'running'; await mount();
+  [...root.querySelectorAll('button')].find(b => b.textContent === '开始').click();
+  await waitFor(() => root.textContent.includes('生成到一半'));
+  const newHead = (await db.get('stories', story.id)).headId;
+  const running = await db.get('nodes', newHead);
+  check(running.relayJob === 'created-job' && running.relayContext.connectionId === connection.id, '正常开始生成时持久化任务编号和原连接');
+  check(!JSON.stringify(running).includes('virtual-model-key'), '章节保存的恢复信息不包含模型密钥');
+  dispose(); await waitFor(() => !dispose.busy());
+  mode = 'complete'; await mount();
+  await waitFor(async () => (await db.get('nodes', newHead)).status === 'done');
+  check((await db.get('nodes', newHead)).text === '新的一段' && creates === 1, '新建生成离开后恢复，全程只有一次上游创建');
+  report.textContent = `通过：${results.length} 项浏览器验收\n` + results.join('\n');
+} catch (error) { report.textContent = results.join('\n') + '\n失败：' + error.stack; }
+finally { window.fetch = realFetch; }
+</script></html>

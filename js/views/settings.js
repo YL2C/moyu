@@ -5,6 +5,7 @@ import { el, uid, toast, sheet, saveFile, pickFile, APP_VERSION } from '../util.
 import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, MODULE_MODES, modulesFromMarkdown, modulesToMarkdown } from '../state.js';
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
 import { parseServiceAccount } from '../vertex.js';
+import { getRelay, saveRelay, testRelay } from '../relay.js';
 import { DEFAULT_RULES } from '../prompt.js';
 import { getMonthSpend, getBudget, setBudget, fmtTokens, CUR, priceLabel } from '../cost.js';
 import { getTemplates, saveTemplates, getBase, saveBase, DEFAULT_BASE, builtinTemplates, newTemplate, SCOPES } from '../fanwai.js';
@@ -81,6 +82,37 @@ export async function render(root, { section }) {
       ));
     }
     wrap.append(el('button', { class: 'btn block', onclick: () => editConn(null) }, '＋ 添加连接'));
+
+    // 转发凭证仅在本机 kv；exportAll 使用白名单，不导出 relay 配置。
+    const relay = await getRelay();
+    const relayAddress = el('input', { type: 'url', placeholder: 'https://你的服务器地址', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
+    relayAddress.value = relay.url || '';
+    const relayToken = el('input', { type: 'password', autocomplete: 'off', placeholder: '服务器口令', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
+    relayToken.value = relay.token || '';
+    const relayOn = el('input', { type: 'checkbox' }); relayOn.checked = !!relay.on;
+    const relayRegion = el('select');
+    for (const [v, label] of [['', '不确定'], ['mainland', '中国大陆'], ['overseas', '中国香港 / 海外']]) relayRegion.append(el('option', { value: v }, label));
+    relayRegion.value = relay.region || '';
+    const readRelay = () => ({ url: relayAddress.value, token: relayToken.value, on: relayOn.checked, region: relayRegion.value });
+    const relayResult = el('div', { class: 'hint' });
+    const relayTest = el('button', { class: 'btn', onclick: async () => {
+      relayTest.disabled = true; relayResult.textContent = '测试中…';
+      try { await testRelay(readRelay()); relayResult.textContent = '✓ HTTPS 和口令都能用。保存后，在需要的连接里打开“经服务器转发”。'; }
+      catch (e) { relayResult.textContent = e.message; }
+      finally { relayTest.disabled = false; }
+    } }, '测试');
+    wrap.append(el('div', { class: 'section-title', text: '服务器转发（可选）' }),
+      el('div', { class: 'card' },
+        el('div', { class: 'field' }, el('label', { text: 'HTTPS 地址' }), relayAddress),
+        el('div', { class: 'field' }, el('label', { text: '转发口令' }), relayToken),
+        el('div', { class: 'field' }, el('label', { text: '服务器地区' }), relayRegion),
+        el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '启用服务器转发'), el('label', { class: 'switch' }, relayOn, el('span'))),
+        el('div', { class: 'hint', text: '切走或关掉网页后，正文仍可在服务器生成；完成后保留 30 分钟。口令不进备份。大陆服务器建议只转发国内可访问的中转站。' }),
+        el('div', { class: 'row' }, relayTest, el('button', { class: 'btn primary', onclick: async () => {
+          try { await saveRelay(readRelay()); relayResult.textContent = '已保存。每个连接可以单独开关转发。'; toast('转发设置已保存'); }
+          catch (e) { relayResult.textContent = e.message; }
+        } }, '保存转发设置')),
+        relayResult));
 
     // ── 默认规则 ──
     wrap.append(el('div', { class: 'section-title', text: '新故事的默认规则' }));
@@ -242,6 +274,7 @@ export async function render(root, { section }) {
   // ───── 连接编辑 ─────
   async function editConn(existing) {
     const conns = await getConnections();
+    const relayConfig = await getRelay();
     const isNew = !existing;
     const c = existing ? { ...existing } : {
       id: uid(), name: '', format: 'auto', baseUrl: '', apiKey: '', model: '', maxTokens: 8000, mt8000: true, temperature: '', stream: true, createdAt: Date.now(),
@@ -265,6 +298,7 @@ export async function render(root, { section }) {
     const maxT = el('input', { type: 'number', min: '256', step: '256' }); maxT.value = c.maxTokens ?? 8000;
     const temp = el('input', { type: 'number', min: '0', max: '2', step: '0.05', placeholder: '留空' }); temp.value = c.temperature ?? '';
     const streamSw = el('input', { type: 'checkbox' }); streamSw.checked = c.stream !== false;
+    const viaRelay = el('input', { type: 'checkbox' }); viaRelay.checked = !!c.viaRelay;
     const priceIn = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '不填' }); priceIn.value = c.priceIn ?? '';
     const priceOut = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '不填' }); priceOut.value = c.priceOut ?? '';
     const priceCache = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '同输入价' }); priceCache.value = c.priceCache ?? '';
@@ -312,6 +346,7 @@ export async function render(root, { section }) {
       baseField.style.display = keyField.style.display = v ? 'none' : '';
       saField.style.display = regionField.style.display = v ? '' : 'none';
       model.placeholder = v ? '例：gemini-3.8-flash' : '例：claude-sonnet-4-6、deepseek-chat';
+      relayWarning.textContent = v && relayConfig.region === 'mainland' ? '大陆服务器连不上 Google，建议直连。' : '先在设置中保存转发服务器。关掉此开关即可恢复直连。';
       if (v) checkSa();
     };
 
@@ -319,7 +354,7 @@ export async function render(root, { section }) {
       ...c, name: name.value.trim(), format: fmt.value, baseUrl: isV() ? '' : base.value.trim(), apiKey: isV() ? saText.value.trim() : key.value.trim(),
       region: region.value.trim() || 'global',
       model: model.value.trim(), maxTokens: Number(maxT.value) || 8000, mt8000: true, temperature: temp.value === '' ? '' : Number(temp.value),
-      stream: streamSw.checked,
+      stream: streamSw.checked, viaRelay: viaRelay.checked,
       priceIn: priceIn.value === '' ? '' : Number(priceIn.value),
       priceOut: priceOut.value === '' ? '' : Number(priceOut.value),
       priceCache: priceCache.value === '' ? '' : Number(priceCache.value),
@@ -392,6 +427,8 @@ export async function render(root, { section }) {
       },
     }, '测试连接');
 
+    const relayWarning = el('small');
+
     s.body.append(
       el('div', { class: 'field' }, el('label', { text: '名称' }), name),
       el('div', { class: 'field' }, el('label', { text: '接口格式' }), fmt,
@@ -418,6 +455,8 @@ export async function render(root, { section }) {
       el('div', { class: 'field' }, el('label', { text: '货币' }), currency),
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '流式输出', el('small', { text: '边写边显示。测试提示流式有问题时再关掉。' })),
         el('label', { class: 'switch' }, streamSw, el('span'))),
+      el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '经服务器转发', relayWarning),
+        el('label', { class: 'switch' }, viaRelay, el('span'))),
       el('div', { style: { marginTop: '12px' } }, testBtn),
       log
     );

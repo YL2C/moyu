@@ -7,6 +7,7 @@
 //  - 所有错误都翻译成中文并附修法，原始返回保留在 detail 里方便排查
 
 import { resolveVertex, parseServiceAccount, vertexBaseUrl, VERTEX_MODELS } from './vertex.js';
+import { getRelay, relayFetch, RelayError } from './relay.js';
 
 export const FORMAT_LABEL = { auto: '自动识别', openai: 'OpenAI 兼容', anthropic: 'Claude 原生', vertex: 'Google Vertex AI（服务账号 JSON）' };
 
@@ -258,14 +259,15 @@ function checkConn(conn) {
  * 返回 { text, finish, usage, truncated, flagged }。
  * 出错时抛 ApiError，已收到的正文在 err.partial 里。
  */
-export async function streamChat(conn, { system, messages, maxTokens, signal, onText = () => {}, onThinking = () => {}, firstByteMs = 150000, idleMs = 90000 }) {
-  checkConn(conn);
-  conn = await effectiveConn(conn);
+export async function streamChat(conn, { system, messages = [], maxTokens, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000 }) {
+  if (!resumeJob) { checkConn(conn); conn = await effectiveConn(conn); }
   const format = guessFormat(conn);
-  const url = normalizeUrl(format, conn.baseUrl);
+  const url = resumeJob ? '' : normalizeUrl(format, conn.baseUrl);
   const wantStream = conn.stream !== false;
   const body = buildBody(format, conn, { system, messages, stream: wantStream, maxTokens });
   const ctrl = linkAbort(signal);
+  const config = resumeJob || (conn.viaRelay && !direct) ? await getRelay() : null;
+  const viaRelay = !!resumeJob || !!(config?.on && conn.viaRelay && !direct);
   let timer = null;
   let timedOut = false;
   const arm = (ms) => { clearTimeout(timer); timer = setTimeout(() => { timedOut = true; ctrl.abort('idle'); }, ms); };
@@ -276,16 +278,20 @@ export async function streamChat(conn, { system, messages, maxTokens, signal, on
   let sawThinking = false;
   const fail = (e) => { if (e instanceof ApiError && !e.partial) e.partial = text; return e; };
   const abortedErr = () => (timedOut
-    ? new ApiError('timeout', '长时间没有响应', { hint: '网络太慢或接口卡住了。已收到的部分会保留，可以续写或重试。', partial: text, url })
+    ? new ApiError(viaRelay ? 'relay_network' : 'timeout', '长时间没有响应', { hint: viaRelay ? '服务器仍会继续生成，回到前台或点“接回后台生成”可重新获取。' : '网络太慢或接口卡住了。已收到的部分会保留，可以续写或重试。', partial: text, url })
     : new ApiError('aborted', '已停止', { partial: text, url }));
 
   arm(firstByteMs);
   let res;
   try {
-    res = await fetch(url, { method: 'POST', headers: headersFor(format, conn, url), body: JSON.stringify(body), signal: ctrl.signal });
+    const init = { method: 'POST', headers: headersFor(format, conn, url), body: JSON.stringify(body), signal: ctrl.signal };
+    res = viaRelay ? await relayFetch(url, init, { config, onJob, resumeJob, relayServer }) : await fetch(url, init);
   } catch (e) {
     clearTimeout(timer);
     if (ctrl.signal.aborted) throw abortedErr();
+    if (e instanceof RelayError) throw new ApiError(e.kind, e.message, e);
+    if (e instanceof ApiError) throw e;
+    if (viaRelay) throw new ApiError('relay_network', '连不上转发服务器', { hint: '任务可能已创建。请先检查网络和转发设置，避免重复请求模型。' });
     throw networkError(url, e);
   }
 
@@ -379,9 +385,10 @@ export async function streamChat(conn, { system, messages, maxTokens, signal, on
     }
   } catch (e) {
     clearTimeout(timer);
+    if (e instanceof RelayError) throw new ApiError(e.kind, e.message, { ...e, partial: text });
     if (e instanceof ApiError) throw fail(e);
     if (ctrl.signal.aborted) throw abortedErr();
-    const ne = new ApiError('network', '连接中途断开了', { url, detail: String(e?.message || e), partial: text, hint: '常见于切走应用、网络切换。已收到的部分已保留，可以点“续写”。' });
+    const ne = new ApiError(viaRelay ? 'relay_network' : 'network', '连接中途断开了', { url, detail: String(e?.message || e), partial: text, hint: viaRelay ? '后台仍在生成，回到前台或点“接回后台生成”可重新获取。' : '常见于切走应用、网络切换。已收到的部分已保留，可以点“续写”。' });
     throw ne;
   }
   clearTimeout(timer);
@@ -444,6 +451,7 @@ const PING = [{ role: 'user', content: '请只回复四个字：连接成功' }]
  * 返回 { ok, format, models }
  */
 export async function testConnection(conn, onStep = () => {}) {
+  conn = { ...conn, viaRelay: false }; // 连接测试继续验证手机直连；转发在设置里单独测试。
   const step = (id, state, text, detail = '') => onStep({ id, state, text, detail });
   if (!conn.apiKey) { step('pre', 'bad', conn.format === 'vertex' ? '还没有粘贴服务账号 JSON' : '还没有填 API 密钥'); return { ok: false }; }
   if (!conn.model) { step('pre', 'bad', '还没有填模型名'); return { ok: false }; }

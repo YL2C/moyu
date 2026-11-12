@@ -92,6 +92,31 @@ export const db = {
     return v === undefined ? fallback : v;
   },
   kvSet: (key, value) => db.put('kv', value, key),
+  // 同一个事务内读改写多个键（记账去重），避免重放或多页并发重复累加。
+  async kvUpdate(keys, update) {
+    try {
+      return await open().then((database) => new Promise((resolve, reject) => {
+        const tx = database.transaction('kv', 'readwrite');
+        const os = tx.objectStore('kv');
+        const values = {}; let pending = keys.length; let result; let failure;
+        for (const key of keys) {
+          const req = os.get(key);
+          req.onsuccess = () => {
+            values[key] = req.result;
+            if (--pending) return;
+            try {
+              const change = update(values);
+              result = change.result;
+              for (const [k, v] of Object.entries(change.values)) os.put(v, k);
+            } catch (e) { failure = e; tx.abort(); }
+          };
+        }
+        tx.oncomplete = () => resolve(result);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(failure || tx.error || new Error('事务被中止'));
+      }));
+    } catch (e) { reportWriteError(e); throw e; }
+  },
 };
 
 /** 向系统申请“持久存储”，降低被系统清理的可能 */
@@ -116,6 +141,10 @@ export async function storageInfo() {
 }
 
 /** 导出：默认不含 API 密钥 */
+function backupNodes(nodes) {
+  return nodes.map(({ relayJob, relayContext, ...node }) => node);
+}
+
 export async function exportAll({ includeKeys = false } = {}) {
   const [stories, nodes, extras, connections, defaultRules, prefs, modules, fwTemplates, fwBase, globalMemo, packs] = await Promise.all([
     db.all('stories'), db.all('nodes'), db.all('extras'), db.all('connections'),
@@ -127,7 +156,7 @@ export async function exportAll({ includeKeys = false } = {}) {
   try { discussions = await (await import('./discuss.js')).exportDiscussions(); } catch {}
   return {
     app: 'moyu', schema: SCHEMA, exportedAt: Date.now(),
-    stories, nodes, extras, modules, packs, fwTemplates, fwBase, globalMemo, discussions,
+    stories, nodes: backupNodes(nodes), extras, modules, packs, fwTemplates, fwBase, globalMemo, discussions,
     connections: connections.map((c) => (includeKeys ? c : { ...c, apiKey: '' })),
     defaultRules, prefs,
   };
@@ -137,7 +166,7 @@ export async function exportStory(storyId) {
   const story = await db.get('stories', storyId);
   const nodes = await db.byStory(storyId);
   const extras = await db.extrasOf(storyId);
-  return { app: 'moyu', schema: SCHEMA, exportedAt: Date.now(), stories: [story], nodes, extras, connections: [] };
+  return { app: 'moyu', schema: SCHEMA, exportedAt: Date.now(), stories: [story], nodes: backupNodes(nodes), extras, connections: [] };
 }
 
 /** 导入：同 id 的故事会被覆盖；连接只补充不存在的（不覆盖本机已有密钥） */

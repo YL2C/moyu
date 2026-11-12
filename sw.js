@@ -1,7 +1,7 @@
 // 墨游 · 离线缓存
 // 只缓存本站的页面文件；API 请求一律不经过缓存。
 // 策略：先联网取最新（4 秒超时），取不到再用缓存——部署新版后刷新一次就能用上。
-const CACHE = 'moyu-v0.6.12';
+const CACHE = 'moyu-v0.6.13';
 const ASSETS = [
   './',
   './index.html',
@@ -12,6 +12,7 @@ const ASSETS = [
   './js/state.js',
   './js/db.js',
   './js/api.js',
+  './js/relay.js',
   './js/prompt.js',
   './js/parse.js',
   './js/cost.js',

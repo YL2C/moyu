@@ -4,6 +4,7 @@ import { db, exportStory } from '../db.js';
 import { el, uid, toast, menu, promptText, sheet, saveFile, autoGrow, insertAtCursor, approxTokens } from '../util.js';
 import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo, watchStory } from '../state.js';
 import { streamWithRetry, ApiError } from '../api.js';
+import { cancelRelayJob } from '../relay.js';
 import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { archiveConn, DEFAULT_EVERY } from './memory.js';
@@ -18,7 +19,7 @@ export async function render(root, { id }) {
 
   // 上次没写完就被打断的（切走应用、刷新页面），标成“中断”保留下来
   for (const n of nodes.values()) {
-    if (n.status === 'streaming') {
+    if (n.status === 'streaming' && !n.relayJob) {
       n.status = n.text?.trim() ? 'partial' : 'error';
       n.error = { kind: 'interrupted', message: '生成被中断了', hint: n.text?.trim() ? '可能是切走了应用或刷新了页面。已收到的部分保留着，可以点“续写”。' : '可能是切走了应用或刷新了页面，可以点“重试”。' };
       db.put('nodes', n).catch(() => {});
@@ -284,6 +285,20 @@ export async function render(root, { id }) {
 
   function toolsFor(n) {
     const tools = el('div', { class: 'tools' });
+    if (n.relayJob) {
+      tools.append(el('button', { class: 'btn small primary', onclick: () => resumePending() }, '接回后台生成'),
+        el('button', { class: 'btn small', onclick: async () => {
+          if (st.streaming) { stop(); return; }
+          try {
+            await cancelRelayJob(n.relayJob, n.relayContext?.server);
+            delete n.relayJob; delete n.relayContext;
+            n.stopped = !!n.text?.trim(); n.status = n.stopped ? 'partial' : 'error';
+            n.error = n.stopped ? null : { kind: 'stopped', message: '已停止', hint: '可以点“重试”。' };
+            await db.put('nodes', n); renderFeed({ keepScroll: true });
+          } catch (e) { toast(e.message, 4000); }
+        } }, '停止后台生成'));
+      return tools;
+    }
     const hasText = !!n.text?.trim();
     if (!hasText && n.status === 'error') {
       tools.append(el('button', { class: 'btn small primary', onclick: () => retry(n) }, '重试'));
@@ -368,6 +383,7 @@ export async function render(root, { id }) {
 
   async function send(kind, text, { parentId, director } = {}) {
     if (st.streaming) return;
+    if (headPath().some((n) => n.relayJob)) { toast('先接回后台生成，或在章节下方停止它'); return; }
     const head = story.headId ? nodes.get(story.headId) : null;
     const u = {
       id: uid(), storyId: story.id, parentId: parentId !== undefined ? parentId : (head ? head.id : null), role: 'user', kind,
@@ -390,21 +406,32 @@ export async function render(root, { id }) {
    */
   // 正在进行的生成数：切到别的页面时，有生成在跑就把这一页留在后台接着写
   let jobs = 0;
+  let reconnectRequested = false;
   const idleCbs = new Set();
   async function generate(...args) {
+    if (jobs) return;
     jobs++;
     try { return await generateInner(...args); }
-    finally { jobs--; if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} }); }
+    finally {
+      jobs--;
+      if (reconnectRequested && !destroyed) { reconnectRequested = false; void resumePending(); }
+      if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} });
+    }
   }
-  async function generateInner(userNode, { reuse = null, continueNode = null, extraDirector = '', rewriteNote = null } = {}) {
+  async function generateInner(userNode, { reuse = null, continueNode = null, extraDirector = '', rewriteNote = null, resumeJob = null } = {}) {
     if (st.streaming) return;
     st.conn = await resolveConnection(story);
-    const conn = st.conn;
+    const saved = resumeJob && reuse?.relayContext;
+    const original = saved ? (await getConnections()).find((c) => c.id === saved.connectionId) : st.conn;
+    const conn = saved ? { ...original, ...saved.connection } : st.conn;
     let a;
     if (continueNode) a = continueNode;
-    else if (reuse) { a = reuse; a.text = ''; }
+    else if (reuse) { a = reuse; if (!resumeJob) a.text = ''; }
     else a = { id: uid(), storyId: story.id, parentId: userNode.id, role: 'assistant', kind: userNode.kind === 'ooc' ? 'ooc' : 'play', text: '', createdAt: Date.now() };
-    const base = continueNode ? (a.text || '') : '';
+    const base = saved ? saved.base || '' : continueNode ? (a.text || '') : '';
+    const previousText = a.text || '';
+    const continuation = saved ? saved.continuation : !!continueNode;
+    const usageKind = saved?.usageKind || (a.kind === 'ooc' ? '出戏' : continueNode ? '续写' : '正文');
     a.status = 'streaming';
     a.error = null; a.stopped = false; a.flagged = false; a.thinking = false;
     a.model = conn?.model || a.model || '';
@@ -432,12 +459,22 @@ export async function render(root, { id }) {
 
     let lastSave = 0;
     let usageRaw = null;
+    let pendingRelay = false;
     const persist = () => db.put('nodes', a).catch(() => {});
     const onHide = () => { if (document.visibilityState === 'hidden') persist(); };
     document.addEventListener('visibilitychange', onHide);
     try {
       const r = await streamWithRetry(conn, {
         system: ctx.system, messages: ctx.messages, signal: ctrl.signal,
+        resumeJob, relayServer: saved?.server || '',
+        onJob: async (jobId, server) => {
+          a.relayJob = jobId;
+          a.relayContext = { server, connectionId: conn.id, base, continuation, usageKind,
+            inChars: ctx.info.totalChars + (continueNode ? base.length : 0),
+            connection: Object.fromEntries(['format', 'model', 'stream', 'priceMode', 'pricePerCall', 'priceIn', 'priceOut', 'priceCache', 'currency'].map((k) => [k, conn[k]])) };
+          try { await db.put('nodes', a); }
+          catch { throw new ApiError('storage', '无法保存后台任务', { hint: '请先检查设备存储空间，再重试。' }); }
+        },
         onText: (_d, full) => {
           a.text = base + full; a.thinking = false;
           updateLive(a);
@@ -456,9 +493,14 @@ export async function render(root, { id }) {
       a.flagged = !!r.flagged;
     } catch (e) {
       const err = e instanceof ApiError ? e.toJSON() : { kind: 'unknown', message: String(e?.message || e) };
-      a.text = base + (e?.partial || '');
+      const received = base + (e?.partial || '');
+      a.text = a.relayJob && previousText.length > received.length ? previousText : received;
       const hasText = !!a.text.trim();
-      if (err.kind === 'aborted') {
+      pendingRelay = !!a.relayJob && (['relay_network', 'relay_auth', 'relay_config'].includes(err.kind) || (err.kind === 'aborted' && ['leave', 'reconnect'].includes(ctrl.signal.reason)));
+      if (pendingRelay) {
+        a.status = 'streaming';
+        a.error = { ...err, message: '后台生成待接回', hint: '服务器仍会继续生成。恢复网络后点“接回后台生成”；完成后 30 分钟内可以取回。' };
+      } else if (err.kind === 'aborted') {
         a.stopped = hasText;
         a.status = hasText ? 'partial' : 'error';
         a.error = hasText ? null : { kind: 'stopped', message: '已停止', hint: '还没写出内容就停下了，可以点“重试”。' };
@@ -473,17 +515,19 @@ export async function render(root, { id }) {
       st.streaming = null;
       // 用量与花费：这一次请求写出了内容才记账
       const outChars = Math.max(0, (a.text || '').length - base.length);
-      if (outChars > 0 || usageRaw) {
-        const inChars = ctx.info.totalChars + (continueNode ? base.length : 0);
+      if (!pendingRelay && (outChars > 0 || usageRaw)) {
+        const inChars = a.relayContext?.inChars ?? ctx.info.totalChars + (continueNode ? base.length : 0);
         const u = normalizeUsage(usageRaw, { inChars, outChars });
         const c = computeCost(u, conn);
         // 续写/从某段重写：把这次的花费累加到同一条上
-        if (continueNode && a.usageN) {
+        if (continuation && a.usageN) {
           a.usageN = { input: a.usageN.input + u.input, cached: (a.usageN.cached || 0) + u.cached, output: a.usageN.output + u.output, est: a.usageN.est || u.est };
           a.cost = c && a.cost && a.cost.currency === c.currency ? { ...c, amount: a.cost.amount + c.amount, est: a.cost.est || c.est } : (c || a.cost || null);
         } else { a.usageN = u; a.cost = c; }
-        recordUsage({ kind: a.kind === 'ooc' ? '出戏' : continueNode ? '续写' : '正文', storyId: story.id, model: conn.model, usage: u, cost: c });
+        await recordUsage({ kind: usageKind, storyId: story.id, model: conn?.model || a.model, usage: u, cost: c,
+          requestId: a.relayJob ? (a.relayContext?.server || '') + '/' + a.relayJob : null });
       }
+      if (!pendingRelay) { delete a.relayJob; delete a.relayContext; }
       touch(a);
       await persist();
       if (a.kind !== 'ooc' && a.text?.trim()) {
@@ -494,7 +538,7 @@ export async function render(root, { id }) {
       story.updatedAt = Date.now();
       await saveStory();
       if (!destroyed) renderFeed({ keepScroll: true });
-      if (a.kind !== 'ooc' && a.text?.trim() && a.status !== 'error') autoArchive(false);
+      if (!pendingRelay && a.kind !== 'ooc' && a.text?.trim() && a.status !== 'error') autoArchive(false);
     }
   }
 
@@ -527,6 +571,13 @@ export async function render(root, { id }) {
   }
 
   function stop() { st.streaming?.ctrl.abort('user'); }
+
+  function resumePending() {
+    if (destroyed || jobs || st.streaming) return;
+    const node = headPath().findLast((n) => n.relayJob);
+    const user = node && nodes.get(node.parentId);
+    if (node && user) return generate(user, { reuse: node, resumeJob: node.relayJob });
+  }
 
   const laterChapters = (n) => chapterCount(pathTo(leafOf(n).id)) - chapterCount(pathTo(n.id));
 
@@ -1007,14 +1058,23 @@ export async function render(root, { id }) {
     nodesDirty = true;
   };
   window.addEventListener('moyu:put', onPut);
+  const onVisible = () => {
+    if (document.visibilityState !== 'visible' || destroyed) return;
+    const node = st.streaming && nodes.get(st.streaming.id);
+    if (node?.relayJob) { reconnectRequested = true; st.streaming.ctrl.abort('reconnect'); }
+    else void resumePending();
+  };
+  document.addEventListener('visibilitychange', onVisible);
   renderFeed();
   requestAnimationFrame(fit);
+  void resumePending();
   const destroy = () => {
     destroyed = true;
     clearInterval(archTimer);
     window.removeEventListener('moyu:checkpoint', onCheckpoint);
     window.removeEventListener('moyu:cards', onCards);
     window.removeEventListener('moyu:put', onPut);
+    document.removeEventListener('visibilitychange', onVisible);
     unwatch();
     if (st.streaming) st.streaming.ctrl.abort('leave');
   };
@@ -1028,6 +1088,7 @@ export async function render(root, { id }) {
     if (nodesDirty || !st.streaming) { nodesDirty = false; renderFeed({ keepScroll: true }); }
     updateComposer();
     requestAnimationFrame(fit);
+    void resumePending();
   };
   return destroy;
 }
