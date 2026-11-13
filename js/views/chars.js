@@ -88,14 +88,25 @@ export async function render(root, { id }) {
     const p = story.protagonist || {};
     const current = protagonistState(p, pathTo(nodes, story.headId));
     const empty = !p.name && !p.gender && !p.note;
+    const foldKey = 'moyu-yl2c.protagonist.fold.' + story.id;
+    const summary = el('summary');
+    const details = el('details', { class: 'protagonist-state' }, summary,
+      ...Object.entries(current).map(([key, entry]) => memo(PROTAGONIST_FIELDS[key], entry.value)),
+      Object.keys(current).length ? null : el('div', { class: 'hint', text: '还没有整理当前状态，可以用下方按钮从剧情中生成建议。' }));
+    try { details.open = localStorage.getItem(foldKey) === 'open'; } catch {}
+    const updateFold = () => {
+      summary.textContent = details.open ? '收起当前状态与关系' : `展开当前状态与关系 · ${Object.keys(current).length} 项`;
+    };
+    details.addEventListener('toggle', () => { updateFold(); try { localStorage.setItem(foldKey, details.open ? 'open' : 'closed'); } catch {} });
+    updateFold();
     return el('div', { class: 'npc-card', 'data-name': '主角' },
-      el('div', { class: 'npc-head', onclick: () => editProtagonist() },
+      el('div', { class: 'npc-head', onclick: () => { details.open = !details.open; } },
         el('span', { class: 'npc-name', text: p.name || '主角（你）' }),
         el('span', { class: 'badge', text: '主角' + (p.gender ? ' · ' + p.gender : '') }),
         el('span', { style: { flex: 1 } }),
         el('button', { class: 'btn small ghost', onclick: (e) => { e.stopPropagation(); editProtagonist(); } }, '编辑')),
-      el('div', { class: 'npc-desc clamp', text: empty ? '还没写。可以手动补充初始资料，或根据当前剧情整理。' : (p.note || '（只填了名字和性别）') }),
-      ...Object.entries(current).map(([key, entry]) => memo(PROTAGONIST_FIELDS[key], entry.value)),
+      el('div', { class: 'npc-desc clamp', text: (p.note || current.identity?.value || (empty ? '还没写。可以手动补充初始资料，或根据当前剧情整理。' : '（只填了名字和性别）')).slice(0, 100) }),
+      details,
       el('div', { class: 'row', style: { marginTop: '10px' } },
         el('button', { class: 'btn small', onclick: () => updateProtagonist() }, '根据当前剧情更新'),
         p.updateUndo ? el('button', { class: 'btn small ghost', onclick: async () => {

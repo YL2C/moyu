@@ -218,7 +218,7 @@ export async function render(root, { id }) {
     const wrap = el('div', { class: 'turn', 'data-id': n.id });
     if (n.kind === 'ooc') {
       const box = el('div', { class: 'gm ooc' });
-      for (const p of paragraphs(n.text)) box.append(el('p', {}, inlineText(p, getPrefs().emphasis !== false)));
+      for (const p of paragraphs(n.text)) box.append(el('p', {}, inlineText(p, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false)));
       if (live && !n.text) box.append(el('div', { class: 'thinking', text: n.thinking ? '思考中' : '回复中' }));
       if (!live && n.text?.trim()) box.append(el('div', { class: 'row end' }, versionCtl(n), moreBtn(() => replyMenu(n, { isLast }))));
       wrap.append(box);
@@ -242,7 +242,7 @@ export async function render(root, { id }) {
       paras.forEach((t, i) => g.append(el('p', {
         class: [live && i === paras.length - 1 ? 'cursor' : '', picking ? 'pick' : ''].filter(Boolean).join(' ') || null,
         onclick: picking ? () => rewriteFrom(n, i) : null,
-      }, inlineText(t, getPrefs().emphasis !== false))));
+      }, inlineText(t, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false))));
       if (live && !n.text) g.append(el('div', { class: 'thinking', text: n.thinking ? '模型思考中' : '正在构思' }));
       if (story.danmu !== false && p.danmu.length && !picking) {
         const d = el('details', { class: 'danmu' }, el('summary', { text: `弹幕 · ${p.danmu.length}` }));
@@ -255,7 +255,7 @@ export async function render(root, { id }) {
         p.options.slice(0, CHOICE_LABELS.length).forEach((o, i) => box.append(el('button', {
           'data-choice': CHOICE_LABELS[i], 'aria-pressed': String(choiceInput(ta.value).labels.includes(CHOICE_LABELS[i])),
           class: choiceInput(ta.value).labels.includes(CHOICE_LABELS[i]) ? 'selected' : '',
-          onclick: () => { st.ooc = false; st.choiceSource = n.id; ta.value = toggleChoice(ta.value, CHOICE_LABELS[i]); fit(); updateComposer(); syncChoices(); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); },
+          onclick: () => { st.ooc = false; st.choiceSource = n.id; ta.value = toggleChoice(ta.value, CHOICE_LABELS[i]); fit(); updateComposer(); syncChoices(); },
         }, el('span', { class: 'k', text: CHOICE_LABELS[i] }), o)));
         g.append(box);
       }

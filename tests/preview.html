@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>墨游交互预览</title>
-<link rel="stylesheet" href="../css/app.css?v=0.6.15-personal.1">
+<link rel="stylesheet" href="../css/app.css?v=0.6.15-personal.2">
 <style>
 html,body{height:auto;overflow:auto}body{padding:16px}#switches{display:flex;flex-wrap:wrap;gap:8px;margin:0 auto 12px;max-width:430px}#preview{max-width:430px;height:760px;margin:auto;border:1px solid var(--line);border-radius:16px;overflow:hidden;position:relative}#preview .view{height:100%}#note{max-width:430px;margin:10px auto;font-size:12px;color:var(--text3)}
 </style>
@@ -21,7 +21,7 @@ db.byStory=async id=>(await db.all('nodes')).filter(n=>n.storyId===id);db.extras
 db.kvGet=async(k,fallback)=>table('kv').has(k)?structuredClone(table('kv').get(k)):fallback;db.kvSet=(k,v)=>db.put('kv',v,k);
 db.kvUpdate=async(keys,update)=>{const values={};for(const key of keys)values[key]=await db.kvGet(key,undefined);const change=update(values);for(const [key,value] of Object.entries(change.values))await db.kvSet(key,value);return change.result;};
 const {pack,mods}=markdownPack('## 场景\n通过具体动作推进关系。\n## 对白\n人物各有口吻。','日常文风.md');
-const story={id:'preview-story',title:'片刻之间',world:'成年人的架空日常故事。',rules:'保持人物连贯。',protagonist:{name:'林舟',gender:'男',note:'大学毕业，刚入职设计公司。'},cards:[],headId:'preview-answer',modules:Object.fromEntries(mods.map(m=>[m.id,true])),localModules:[],packs:[],options:true,danmu:false,memEvery:0};
+const story={id:'preview-story',title:'片刻之间',world:'成年人的架空日常故事。',rules:'保持人物连贯。',protagonist:{name:'林舟',gender:'男',note:'大学毕业，刚入职设计公司。',stateEntries:[{field:'identity',value:'设计公司职员，正在参与第一个正式项目。',sourceNodeId:'preview-answer'},{field:'status',value:'刚完成搬家，正在熟悉新住所与通勤路线。',sourceNodeId:'preview-answer'},{field:'relations',value:'与旧友重新开始来往，约好明天继续谈。',sourceNodeId:'preview-answer'}]},cards:[],headId:'preview-answer',modules:Object.fromEntries(mods.map(m=>[m.id,true])),localModules:[],packs:[],options:true,danmu:false,memEvery:0};
 const choices='\n\n【选项】\nA. 打开信封，先读他写了什么。\nB. 把信收好，问他明天有没有时间。\nC. 请他坐下，倒两杯刚煮好的茶。\nD. 直接问他，今天为什么特意过来。';
 await db.put('stories',story);await db.put('nodes',{id:'preview-start',storyId:story.id,parentId:null,role:'user',kind:'start',text:'开始',createdAt:1});
 await db.put('nodes',{id:story.headId,storyId:story.id,parentId:'preview-start',role:'assistant',kind:'play',status:'done',text:'# 门口来信\n\n门铃响的时候，水刚烧开。你走到门口，看见他站在楼道里，手里握着一封没有封口的信。\n\n“我答应过你，**明天一定回来**。”他把信递过来，目光却没有离开你的脸。信纸露出一个角，上面写着==原来的地址==。'+choices,createdAt:2});

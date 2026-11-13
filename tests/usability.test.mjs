@@ -63,6 +63,7 @@ test('游玩真实按钮多选与发送，输入栏采用居中对齐', async ()
   try {
     const buttons=root.querySelectorAll('.options button'); buttons[0].click(); buttons[1].click();
     const ta=root.querySelector('textarea'); assert.equal(ta.value,'A+B');
+    assert.notEqual(document.activeElement,ta,'点选多选不自动聚焦输入框或唤起键盘');
     assert.equal(buttons[0].getAttribute('aria-pressed'),'true');
     ta.value+='（把信放进包里）';ta.dispatchEvent(new Event('input'));
     assert.equal(getComputedStyle(root.querySelector('.input-shell')).alignItems,'center');
@@ -192,8 +193,41 @@ test('主角卡实际整理、审阅保存、撤销，正文上下文读取当�
   }finally{dispose();}
 });
 
+test('主角状态默认收起、可记住展开状态，编辑不会触发折叠或改变资料',async()=>{
+  const {story}=await seedStory();
+  story.protagonist.stateEntries=[{field:'status',value:'已经毕业，正在适应新工作。',sourceNodeId:'a1'}];
+  await db.put('stories',story);
+  let dispose=await chars.render(root,{id:story.id});
+  try{
+    const fold=root.querySelector('details.protagonist-state');assert.equal(fold.open,false);
+    assert.ok(fold.textContent.includes('已经毕业，正在适应新工作。'));
+    fold.open=true;fold.dispatchEvent(new Event('toggle'));
+    dispose();root.replaceChildren();dispose=await chars.render(root,{id:story.id});
+    assert.equal(root.querySelector('details.protagonist-state').open,true);
+    button('编辑',root.querySelector('[data-name="主角"]')).click();
+    assert.ok(document.querySelector('[role=dialog]'));
+    assert.equal(root.querySelector('details.protagonist-state').open,true);
+    assert.deepEqual((await db.get('stories',story.id)).protagonist.stateEntries,story.protagonist.stateEntries);
+    assert.equal(requests.length,0);
+    button('取消',document.querySelector('[role=dialog]')).click();
+  }finally{dispose();}
+});
+
 test('关键文字加粗与强调色仅创建文本节点，关闭后去标记并阻止HTML执行',()=>{
   const output=document.createElement('div');output.append(inlineText('他答应**明天回来**，留下==一封信==。<img src=x onerror=alert(1)>'));
   assert.equal(output.querySelector('strong').textContent,'明天回来');assert.equal(output.querySelector('.text-highlight').textContent,'一封信');assert.equal(output.querySelector('img'),null);
   output.replaceChildren(inlineText('**承诺**与==线索==',false));assert.equal(output.textContent,'承诺与线索');assert.equal(output.children.length,0);
+});
+
+test('引号内台词柔和配色，与关键词强调独立且不执行HTML',()=>{
+  const output=document.createElement('div');
+  output.append(inlineText('他问：“你会**明天回来**吗？带着==那封信==。”<script>bad()</script>'));
+  const dialogue=output.querySelector('.dialogue-text');
+  assert.ok(dialogue);assert.equal(dialogue.querySelector('strong').textContent,'明天回来');
+  assert.equal(dialogue.querySelector('.text-highlight').textContent,'那封信');assert.equal(output.querySelector('script'),null);
+  output.replaceChildren(inlineText('“**回来**。”',false,true));
+  assert.ok(output.querySelector('.dialogue-text'));assert.equal(output.querySelector('strong'),null);
+  output.replaceChildren(inlineText('“**回来**。”',true,false));
+  assert.equal(output.querySelector('.dialogue-text'),null);assert.ok(output.querySelector('strong'));
+  output.replaceChildren(inlineText('“还没有说完'));assert.equal(output.textContent,'“还没有说完');
 });
