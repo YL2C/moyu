@@ -59,18 +59,39 @@ export async function unzip(buf) {
 }
 
 /** PNG 里的文字块（酒馆角色卡把 JSON 用 base64 存在 chara / ccv3 里） */
-function pngText(u8) {
-  if (u8.length < 8 || u8[0] !== 0x89 || u8[1] !== 0x50 || u8[2] !== 0x4e || u8[3] !== 0x47) return null;
+export async function pngText(u8) {
+  if (u8.length < 8 || ![137,80,78,71,13,10,26,10].every((b, i) => u8[i] === b)) return null;
   const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   const out = {};
   let off = 8;
   while (off + 12 <= u8.length) {
     const len = dv.getUint32(off);
+    if (len > u8.length - off - 12) throw new Error('PNG 数据不完整');
     const type = String.fromCharCode(u8[off + 4], u8[off + 5], u8[off + 6], u8[off + 7]);
-    if (type === 'tEXt') {
+    if (['tEXt', 'iTXt', 'zTXt'].includes(type)) {
       const d = u8.subarray(off + 8, off + 8 + len);
       const z = d.indexOf(0);
-      if (z > 0) out[td('latin1').decode(d.subarray(0, z))] = td('latin1').decode(d.subarray(z + 1));
+      const key = z > 0 ? td('latin1').decode(d.subarray(0, z)) : '';
+      if (key === 'chara' || key === 'ccv3') {
+        let bytes = d.subarray(z + 1), compressed = false;
+        if (type === 'zTXt') { if (bytes[0] !== 0) throw new Error('不支持的PNG压缩方法'); compressed = true; bytes = bytes.subarray(1); }
+        if (type === 'iTXt') {
+          const flag = bytes[0], method = bytes[1];
+          if (flag > 1 || method !== 0) throw new Error('无效的PNG文字块');
+          bytes = bytes.subarray(2);
+          const lang = bytes.indexOf(0); if (lang < 0) throw new Error('无效的PNG文字块'); bytes = bytes.subarray(lang + 1);
+          const translated = bytes.indexOf(0); if (translated < 0) throw new Error('无效的PNG文字块'); bytes = bytes.subarray(translated + 1);
+          compressed = flag === 1;
+        }
+        if (compressed) {
+          if (typeof DecompressionStream === 'undefined') throw new Error('当前浏览器不能读取压缩文字块，请改用JSON角色卡');
+          const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+          const reader = stream.getReader(), chunks = []; let size = 0;
+          for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 20 * 1024 * 1024) { await reader.cancel(); throw new Error('角色卡文字过大'); } chunks.push(value); }
+          bytes = new Uint8Array(size); let p = 0; for (const chunk of chunks) { bytes.set(chunk, p); p += chunk.length; }
+        }
+        out[key] = td(type === 'iTXt' ? 'utf-8' : 'latin1').decode(bytes);
+      }
     }
     if (type === 'IEND') break;
     off += 12 + len;
@@ -100,10 +121,11 @@ export async function readTavernFile(file) {
       return;
     }
     if (lower.endsWith('.png')) {
-      const t = pngText(data);
-      const raw = t && (t.ccv3 || t.chara);
-      if (!raw) { skipped.push({ file: name, why: '图片里没有角色卡数据' }); return; }
-      try { items.push({ file: name, json: JSON.parse(b64utf8(raw)) }); } catch { skipped.push({ file: name, why: '角色卡数据读不出来' }); }
+      const t = await pngText(data);
+      if (!t || (!t.ccv3 && !t.chara)) { skipped.push({ file: name, why: '图片里没有角色卡数据，请使用原始PNG文件' }); return; }
+      let parsed;
+      for (const raw of [t.ccv3, t.chara].filter(Boolean)) { try { parsed = JSON.parse(b64utf8(raw)); break; } catch {} }
+      if (parsed) items.push({ file: name, json: parsed }); else skipped.push({ file: name, why: '角色卡数据读不出来' });
       return;
     }
     if (lower.endsWith('.json') || !/\.\w+$/.test(lower)) {
@@ -207,12 +229,13 @@ export function worldbookToModules(wb, pack, ctx) {
 /** 角色卡（v1 / v2 / v3）统一成一个对象 */
 export function readChara(j) {
   const d = j.spec || (j.data && j.data.name) ? (j.data || {}) : j;
+  const entries = Array.isArray(d.character_book?.entries) ? d.character_book.entries : Object.values(d.character_book?.entries || {});
   return {
     name: String(d.name || '').trim() || '未命名角色',
     description: d.description || d.char_persona || '', personality: d.personality || '', scenario: d.scenario || '',
     first_mes: d.first_mes || d.char_greeting || '', mes_example: d.mes_example || d.example_dialogue || '',
-    system_prompt: d.system_prompt || '', post: d.post_history_instructions || '',
-    book: d.character_book && (d.character_book.entries || []).length ? d.character_book : null,
+    system_prompt: d.system_prompt || '', post: [d.post_history_instructions, d.extensions?.depth_prompt?.prompt].filter(Boolean).join('\n\n'),
+    book: entries.length ? { ...d.character_book, entries } : null,
   };
 }
 

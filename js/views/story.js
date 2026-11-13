@@ -6,6 +6,7 @@ import { getConnections, connLabel, getModules, MODULE_MODES, go, setCurrentStor
 import { DEFAULT_RULES } from '../prompt.js';
 import { getPacks, deleteStoryPack, KIND_LABEL } from '../tavern.js';
 import { packToggle, importFlow } from './packs-ui.js';
+import { rulePanel } from './rules-ui.js';
 
 function sw(checked, onchange) {
   const input = el('input', { type: 'checkbox', onchange: () => onchange(input.checked) });
@@ -85,21 +86,10 @@ export async function render(root, { id, tab = 'setting' }) {
     story.localModules = story.localModules || [];
     story.packs = story.packs || [];
     body.append(el('div', { class: 'section-title', text: '启用的规则模块' }));
-    if (!mods.length && !globalPacks.length) {
-      body.append(el('div', { class: 'card hint', style: { marginTop: 0 } }, '还没有规则模块。模块是可以在多个故事之间复用的规则块，比如“文风”“弹幕写法”“成人场景”；也可以在设置里导入酒馆的预设、世界书。',
-        el('div', { class: 'row', style: { marginTop: '8px' } }, el('button', { class: 'btn small', onclick: () => go('settings/modules') }, '去添加模块'))));
-    } else {
-      const box = el('div', { class: 'card' });
-      for (const m of mods) {
-        box.append(el('div', { class: 'switch-row' },
-          el('div', { class: 'lbl' }, m.name, el('small', { text: `${MODULE_MODES[m.mode] || MODULE_MODES.always}${m.mode === 'keyword' && m.keywords ? '：' + m.keywords : ''} · ${m.text.length} 字` })),
-          sw(!!story.modules[m.id], (v) => { story.modules[m.id] = v; saveSoon(); })));
-      }
-      for (const p of globalPacks) box.append(packToggle(p, all.filter((m) => m.pack === p.id), story.modules, saveSoon));
-      body.append(box,
-        el('div', { class: 'hint' }, '“手动开关”的模块启用后，要在游玩页右上角“⋯”里打开才会发送，比如进入成人场景前再开。📦 是从酒馆导入的整包，可以整包开关，也可以逐条开。'),
-        el('div', { class: 'row', style: { marginTop: '8px' } }, el('button', { class: 'btn small ghost', onclick: () => go('settings/modules') }, '管理规则模块')));
-    }
+    const globalBox = rulePanel({ mods: all, packs: globalPacks, enabled: story.modules, onChange: saveSoon });
+    body.append(globalBox,
+      el('div', { class: 'hint', text: '开关只对当前故事生效。情境模块仍需在游玩页菜单中打开。' }),
+      el('button', { class: 'btn small', onclick: () => go('settings/modules') }, '管理分组和批量删除'));
 
     // 只给这个故事导入的（酒馆预设、世界书、角色卡）
     body.append(el('div', { class: 'section-title', text: '这个故事自己导入的' }));
@@ -122,6 +112,16 @@ export async function render(root, { id, tab = 'setting' }) {
     own.append(el('div', { class: 'row', style: { marginTop: '8px' } },
       el('button', { class: 'btn small primary', onclick: async () => { if (await importFlow(story)) { await saveNow(); body.replaceChildren(); drawRules(); } } }, '导入酒馆文件')));
     body.append(own);
+    if (story.localModules.length) body.append(rulePanel({ mods: story.localModules, packs: story.packs, enabled: story.modules, onChange: saveSoon, onDelete: async (ids) => {
+      if (!confirm(`删除本故事所选 ${ids.length} 条局部规则？角色卡保留。`)) return;
+      story.moduleDeleteUndo = { mods: story.localModules.filter(m => ids.includes(m.id)), enabled: Object.fromEntries(ids.map(id => [id, story.modules[id]])) };
+      story.localModules = story.localModules.filter(m => !ids.includes(m.id));
+      ids.forEach(id => delete story.modules[id]); await saveNow(); redraw();
+    }, onUndo: async () => {
+      const undo = story.moduleDeleteUndo; if (!undo) { toast('没有可以撤销的删除'); return; }
+      story.localModules.push(...undo.mods.filter(m => !story.localModules.some(x => x.id === m.id)));
+      Object.assign(story.modules, undo.enabled); delete story.moduleDeleteUndo; await saveNow(); redraw();
+    } }));
   }
 
   function redraw() {

@@ -2,7 +2,7 @@
 // 只缓存本站的页面文件；API 请求一律不经过缓存。
 // 先向服务器核验最新文件，取不到再用离线缓存；安装时绕过 HTTP 旧缓存。
 const CACHE_PREFIX = 'moyu-yl2c-personal-';
-const CACHE = CACHE_PREFIX + '0.6.14-personal.4';
+const CACHE = CACHE_PREFIX + '0.6.15-personal.1';
 const ASSETS = [
   './',
   './index.html',
@@ -13,6 +13,10 @@ const ASSETS = [
   './js/state.js',
   './js/db.js',
   './js/personal.js',
+  './js/inline.js',
+  './js/rules.js',
+  './js/attachments.js',
+  './js/protagonist.js',
   './js/api.js',
   './js/relay.js',
   './js/prompt.js',
@@ -25,6 +29,8 @@ const ASSETS = [
   './js/vertex.js',
   './js/discuss.js',
   './js/views/discuss.js',
+  './js/views/attachment-ui.js',
+  './js/views/rules-ui.js',
   './js/views/library.js',
   './js/views/story-edit.js',
   './js/views/story.js',

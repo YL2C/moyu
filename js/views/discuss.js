@@ -1,11 +1,14 @@
 // 墨游 · 讨论页：列表 + 单个讨论
 
 import { db } from '../db.js';
-import { el, toast, sheet, menu, promptText, autoGrow, ago } from '../util.js';
-import { go, getConnections, resolveConnection, connLabel, getGlobalMemo, setGlobalMemo } from '../state.js';
+import { el, toast, sheet, menu, promptText, autoGrow, ago, pickRawFile } from '../util.js';
+import { go, getConnections, resolveConnection, connLabel, getGlobalMemo, setGlobalMemo, getPrefs } from '../state.js';
+import { inlineText } from '../inline.js';
 import { streamWithRetry, ApiError } from '../api.js';
 import { normalizeUsage, computeCost, fmtMoney, recordUsage } from '../cost.js';
 import { openStoryEditor } from './story-edit.js';
+import { readAttachment } from '../attachments.js';
+import { attachmentCard } from './attachment-ui.js';
 import {
   listDiscussions, getDiscussion, saveDiscussion, deleteDiscussion, newDiscussion,
   buildDiscussContext, chatMessages, changesPrompt, parseChanges, describeChange, applyChanges,
@@ -82,6 +85,23 @@ async function renderChat(root, id) {
   await pickConn();
   let ctrl = null;
   let destroyed = false;
+  d.pendingAttachments = d.pendingAttachments || [];
+  const pendingFiles = el('div', { class: 'pending-attachments' });
+  const drawPending = () => pendingFiles.replaceChildren(...d.pendingAttachments.map(a => attachmentCard(a, {
+    storyId: d.storyId, onChange: () => saveDiscussion(d).catch(e => toast('附件保存失败：' + e.message)),
+    onRemove: async () => { d.pendingAttachments = d.pendingAttachments.filter(x => x.id !== a.id); await saveDiscussion(d); drawPending(); },
+  })));
+  const attachBtn = el('button', { class: 'chip', onclick: async () => {
+    const file = await pickRawFile('.png,.json,.txt,.md'); if (!file) return;
+    attachBtn.disabled = true;
+    try {
+      const attachment = await readAttachment(file);
+      d.pendingAttachments.push(attachment);
+      try { await saveDiscussion(d); } catch (e) { d.pendingAttachments.pop(); throw e; }
+      drawPending(); toast('已在本机拆解，未调用API');
+    } catch (e) { toast('附件读取失败：' + e.message, 5000); }
+    finally { attachBtn.disabled = false; }
+  } }, '📎 上传并拆卡');
 
   const titleEl = el('div', { class: 'title' });
   const chip = el('button', { class: 'model-chip', onclick: () => chooseConn() });
@@ -93,9 +113,11 @@ async function renderChat(root, id) {
   const chipNew = el('button', { class: 'chip', onclick: () => makeNewStory() }, '＋ 生成新故事');
   const chipCh = el('button', { class: 'chip', onclick: () => chooseChapters() });
   const composer = el('div', { class: 'composer' },
-    el('div', { class: 'bar' }, chipChanges, d.storyId ? chipCh : null, chipNew),
+    pendingFiles,
+    el('div', { class: 'bar' }, attachBtn, chipChanges, d.storyId ? chipCh : null, chipNew),
     el('div', { class: 'inrow' }, ta, sendBtn));
   autoGrow(ta);
+  drawPending();
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSend(); } });
 
   root.append(el('div', { class: 'view' },
@@ -130,9 +152,11 @@ async function renderChat(root, id) {
           toast('已撤销');
         } }, '撤销这次写回') : null);
     }
-    const body = el('div', { class: 'disc-text', text: m.content || (m.streaming ? '…' : '') });
+    const body = el('div', { class: 'disc-text' }, inlineText(m.content || (m.streaming ? '…' : ''), getPrefs().emphasis !== false));
     const meta = [m.cost ? fmtMoney(m.cost) : '', m.error || ''].filter(Boolean).join(' · ');
-    return el('div', { class: 'disc-msg ' + (m.role === 'user' ? 'me' : 'ai') + (m.error ? ' err' : '') }, body, meta ? el('div', { class: 'disc-meta', text: meta }) : null);
+    return el('div', { class: 'disc-msg ' + (m.role === 'user' ? 'me' : 'ai') + (m.error ? ' err' : '') }, body,
+      ...(m.attachments || []).map(a => attachmentCard(a, { storyId: d.storyId, onChange: () => saveDiscussion(d).catch(e => toast(e.message)) })),
+      meta ? el('div', { class: 'disc-meta', text: meta }) : null);
   }
 
   function draw(stick = true) {
@@ -166,18 +190,25 @@ async function renderChat(root, id) {
   let jobs = 0;
   const idleCbs = new Set();
   async function onSend() {
-    if (ctrl) return;
+    if (ctrl || jobs) return;
     jobs++;
     try { return await onSendInner(); }
     finally { jobs--; if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} }); }
   }
   async function onSendInner() {
-    const text = ta.value.trim();
+    const text = ta.value.trim() || (d.pendingAttachments.length ? '请根据我勾选的附件内容进行讨论。' : '');
     if (!text) return;
     if (!conn) { toast('先在设置里添加一个连接'); return; }
+    const user = { role: 'user', content: text, attachments: d.pendingAttachments };
+    if (chatMessages({ messages: [...d.messages, user] }).reduce((n,m) => n + m.content.length, 0) > 200000) {
+      toast('讨论资料超过20万字，请少选附件内容或关闭旧附件携带', 5000); return;
+    }
+    const previous = d.pendingAttachments;
+    d.messages.push(user); d.pendingAttachments = [];
+    try { await saveDiscussion(d); } catch (e) { d.messages.pop(); d.pendingAttachments = previous; toast('保存失败，请重试', 4000); return; }
     ta.value = '';
     ta.dispatchEvent(new Event('input'));
-    d.messages.push({ role: 'user', content: text });
+    drawPending();
     if (d.messages.filter((m) => m.role === 'user').length === 1 && (!d.title || d.title === storyTitle)) d.title = text.slice(0, 18);
     const a = { role: 'assistant', content: '', streaming: true };
     d.messages.push(a);
@@ -190,7 +221,7 @@ async function renderChat(root, id) {
       const r = await callModel(system, msgs, Number(conn.maxTokens) || 8000, (full) => {
         a.content = full;
         const node = feed.lastChild?.querySelector('.disc-text');
-        if (node) node.textContent = full;
+        if (node) node.replaceChildren(inlineText(full, getPrefs().emphasis !== false));
         if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120) scroller.scrollTop = scroller.scrollHeight;
         if (Date.now() - last > 1500) { last = Date.now(); saveDiscussion(d).catch(() => {}); }
       });

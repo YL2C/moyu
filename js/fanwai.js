@@ -5,6 +5,7 @@ import { db } from './db.js';
 import { uid } from './util.js';
 import { forContext, parseReply } from './parse.js';
 import { cardText, splitNames, protagonistText } from './prompt.js';
+import { EMPHASIS_GUIDE } from './inline.js';
 
 export const SCOPES = {
   follow: '跟随形式',
@@ -99,11 +100,12 @@ export function buildExtraContext(story, opts) {
   const add = (label, text) => { if (text?.trim()) parts.push({ label, text: text.trim() }); };
   add('开头', '你在为一部文字互动小说写番外。番外是独立于正史的创作，写完不推进主线。');
   add('番外通用要求', '【番外通用要求】\n' + base);
+  add('文字排版', EMPHASIS_GUIDE);
   add(`形式 · ${template?.name || '自定义'}`, '【这篇的形式与写法】\n' + (template?.text?.trim() || '按下面玩家的要求来写。'));
   add('知情范围', '【知情范围】\n' + scopeText);
   for (const m of modules) add(`规则模块 · ${m.name}`, `【规则模块·${m.name}】\n${m.text.trim()}`);
   add('世界设定', story.world?.trim() ? '【世界设定】\n' + story.world.trim() : '');
-  add('主角', protagonistText(story));
+  add('主角', protagonistText(story, upto));
   for (const c of cards) add(`角色卡 · ${c.name}`, cardText(c));
   add('时间点', anchorNo > 0
     ? `【时间点】这篇番外发生在正史第 ${anchorNo} 章之后。第 ${anchorNo} 章之后的正史还没有发生，不要写到。`

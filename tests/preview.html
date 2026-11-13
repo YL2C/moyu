@@ -1,0 +1,38 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>墨游交互预览</title>
+<link rel="stylesheet" href="../css/app.css?v=0.6.15-personal.1">
+<style>
+html,body{height:auto;overflow:auto}body{padding:16px}#switches{display:flex;flex-wrap:wrap;gap:8px;margin:0 auto 12px;max-width:430px}#preview{max-width:430px;height:760px;margin:auto;border:1px solid var(--line);border-radius:16px;overflow:hidden;position:relative}#preview .view{height:100%}#note{max-width:430px;margin:10px auto;font-size:12px;color:var(--text3)}
+</style>
+<nav id="switches"></nav><div id="preview"></div><p id="note">仅使用内存里的虚构测试资料，不读取或写入你的真实故事。</p><div id="toast"></div>
+<script type="module">
+import { db } from '../js/db.js';
+import { render as play } from '../js/views/play.js';
+import { render as settings } from '../js/views/settings.js';
+import { render as discuss } from '../js/views/discuss.js';
+import { render as chars } from '../js/views/chars.js';
+import { render as extras } from '../js/views/extras.js';
+import { el } from '../js/util.js';
+import { markdownPack } from '../js/rules.js';
+const tables=new Map();const table=s=>{if(!tables.has(s))tables.set(s,new Map());return tables.get(s);};
+db.get=async(s,k)=>structuredClone(table(s).get(k));db.all=async s=>structuredClone([...table(s).values()]);
+db.put=async(s,v,k)=>{table(s).set(k??v.id,structuredClone(v));return k??v.id;};
+db.putMany=async(s,vs)=>{for(const v of vs)await db.put(s,v);};db.del=async(s,k)=>table(s).delete(k);
+db.byStory=async id=>(await db.all('nodes')).filter(n=>n.storyId===id);db.extrasOf=async id=>(await db.all('extras')).filter(n=>n.storyId===id);
+db.kvGet=async(k,fallback)=>table('kv').has(k)?structuredClone(table('kv').get(k)):fallback;db.kvSet=(k,v)=>db.put('kv',v,k);
+db.kvUpdate=async(keys,update)=>{const values={};for(const key of keys)values[key]=await db.kvGet(key,undefined);const change=update(values);for(const [key,value] of Object.entries(change.values))await db.kvSet(key,value);return change.result;};
+const {pack,mods}=markdownPack('## 场景\n通过具体动作推进关系。\n## 对白\n人物各有口吻。','日常文风.md');
+const story={id:'preview-story',title:'片刻之间',world:'成年人的架空日常故事。',rules:'保持人物连贯。',protagonist:{name:'林舟',gender:'男',note:'大学毕业，刚入职设计公司。'},cards:[],headId:'preview-answer',modules:Object.fromEntries(mods.map(m=>[m.id,true])),localModules:[],packs:[],options:true,danmu:false,memEvery:0};
+const choices='\n\n【选项】\nA. 打开信封，先读他写了什么。\nB. 把信收好，问他明天有没有时间。\nC. 请他坐下，倒两杯刚煮好的茶。\nD. 直接问他，今天为什么特意过来。';
+await db.put('stories',story);await db.put('nodes',{id:'preview-start',storyId:story.id,parentId:null,role:'user',kind:'start',text:'开始',createdAt:1});
+await db.put('nodes',{id:story.headId,storyId:story.id,parentId:'preview-start',role:'assistant',kind:'play',status:'done',text:'# 门口来信\n\n门铃响的时候，水刚烧开。你走到门口，看见他站在楼道里，手里握着一封没有封口的信。\n\n“我答应过你，**明天一定回来**。”他把信递过来，目光却没有离开你的脸。信纸露出一个角，上面写着==原来的地址==。'+choices,createdAt:2});
+await db.put('connections',{id:'preview-conn',name:'演示连接',format:'openai',baseUrl:'https://preview.invalid/v1',apiKey:'virtual-demo-key',model:'demo',stream:false});
+await db.kvSet('modules',mods);await db.kvSet('packs',[pack]);await db.kvSet('relay',{on:false});
+await db.kvSet('disc.preview-disc',{id:'preview-disc',title:'讨论附件',storyId:story.id,messages:[],chapters:0});
+await db.put('extras',{id:'preview-extra',storyId:story.id,tplName:'小说体',tplText:'日常场景',request:'写门口重逢',anchorId:story.headId,anchorNo:1,length:'mid',cur:0,versions:[{text:'# 他留下的信\n\n他把伞搁在门口，先低头看了一眼你的拖鞋。',status:'done'}]});
+window.fetch=async()=>new Response(JSON.stringify({choices:[{message:{content:'# 新的片刻\n\n他在桌边坐下，**把明天留给你**。'+choices},finish_reason:'stop'}]}),{headers:{'Content-Type':'application/json'}});
+const root=document.querySelector('#preview');let dispose;
+const views=[['游玩',play,{id:story.id}],['设置',settings,{section:'modules'}],['讨论',discuss,{id:'preview-disc'}],['主角卡',chars,{id:story.id}],['番外',extras,{id:story.id,extraId:'preview-extra'}]];
+async function show(render,params){dispose?.();root.replaceChildren();dispose=await render(root,params);}
+for(const [label,render,params] of views)document.querySelector('#switches').append(el('button',{class:'btn small',onclick:()=>show(render,params)},label));
+await show(play,{id:story.id});
+</script></html>
