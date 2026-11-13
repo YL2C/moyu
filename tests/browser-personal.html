@@ -1,0 +1,63 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>个人版验收</title>
+<link rel="stylesheet" href="../css/app.css">
+<style>body{height:auto;overflow:auto}#report{white-space:pre-wrap;padding:16px}#fixture{height:720px;position:relative}#fixture .view{height:100%}</style>
+<pre id="report">正在验证…</pre><div id="fixture"></div><div id="toast"></div>
+<script type="module">
+import { db } from '../js/db.js';
+import { render } from '../js/views/play.js';
+import { openStoryEditor } from '../js/views/story-edit.js';
+import { setCurrentStory } from '../js/state.js';
+const report = document.querySelector('#report'), root = document.querySelector('#fixture');
+if (!['localhost','127.0.0.1'].includes(location.hostname) || location.port !== '8976') throw new Error('仅允许独立本机测试端口');
+const results = [], requests = [];
+const check = (ok, text) => { if (!ok) throw new Error(text); results.push('✓ ' + text); report.textContent = results.join('\n'); };
+const wait = async fn => { for (let i=0;i<150;i++) { if (await fn()) return; await new Promise(r=>setTimeout(r,20)); } throw new Error('等待超时'); };
+const button = text => [...root.querySelectorAll('button')].find(b=>b.textContent===text);
+const options = '【选项】\nA. 查看地图\nB. 留在原地\nC. 询问路人\nD. 收好信';
+const story = { id:'personal-browser-test',title:'个人版验收',headId:'personal-a',options:true,danmu:true,modules:{},cards:[],memEvery:0 };
+const answer = { id:'personal-a',storyId:story.id,parentId:'personal-u',role:'assistant',kind:'play',status:'done',text:'# 路口来信\n\n你站在路口，手里是一封信。\n\n【弹幕】\n读者：信里写了什么？\n\n'+options };
+let dispose;
+const fetchReal = window.fetch;
+window.fetch = async (url, init) => {
+  if (!String(url).startsWith('https://personal.test')) return fetchReal(url, init);
+  const body = JSON.parse(init.body); requests.push(body);
+  return new Response(JSON.stringify({choices:[{message:{content:body.messages.at(-1).content.includes('请只为这一章') ? options : '# 新的来信\n\n路人点了点头。\n\n'+options},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:10}}),{headers:{'Content-Type':'application/json'}});
+};
+async function mount() { dispose?.(); root.replaceChildren(); dispose = await render(root,{id:story.id}); }
+try {
+  await db.put('connections',{id:'personal-conn',format:'openai',model:'test',apiKey:'virtual-test-key',baseUrl:'https://personal.test/v1',stream:false,mt8000:true});
+  await db.kvSet('relay',{on:false});
+  await db.put('stories',story);
+  await db.put('nodes',{id:'personal-u',storyId:story.id,parentId:null,role:'user',kind:'start',text:'开始'});
+  await db.put('nodes',answer);
+  await mount();
+  check([...root.querySelectorAll('.options .k')].map(e=>e.textContent).join('')==='ABCD','显示 ABCD 四个选项');
+  root.querySelector('.options button:last-child').click();
+  check(root.querySelector('textarea').value==='（收好信）','选择 D 后以括号动作填入输入框');
+  check(root.querySelector('textarea').placeholder.includes('括号外直接写台词'),'输入提示与玩家习惯一致');
+  root.querySelector('[role=switch][aria-label=弹幕]').click();
+  await wait(async ()=>(await db.get('stories',story.id)).danmu===false);
+  await wait(()=>!root.querySelector('.danmu'));
+  check(!root.querySelector('.danmu'),'关闭弹幕立即隐藏评论');
+  check((await db.get('nodes',answer.id)).text.includes('读者：'),'关闭弹幕保留已生成的内容');
+  await mount();
+  check(root.querySelector('[role=switch]').getAttribute('aria-checked')==='false'&&!root.querySelector('.danmu'),'重新打开后保留弹幕关闭状态');
+  root.querySelector('textarea').value='（收好信）我跟你去。'; button('发送').click();
+  await wait(()=>!dispose.busy()&&requests.length>0);
+  check(requests.at(-1).messages.some(m=>m.role==='system'&&m.content.includes('【玩家输入约定】')&&!m.content.includes('【弹幕】')),'实际生成发送括号约定且不要求弹幕');
+  check(requests.at(-1).messages.some(m=>m.role==='user'&&m.content.startsWith('（收好信）我跟你去。')),'动作和台词原样发送');
+  dispose(); await db.put('stories',{...story,danmu:false}); await db.put('nodes',{...answer,text:'# 路口来信\n\n你站在路口。'}); await mount();
+  button('这一章没写选项 · 补四个').click();
+  await wait(async ()=>(await db.get('nodes',answer.id)).text.includes('D. 收好信'));
+  check(requests.at(-1).messages.at(-1).content.includes('只输出这五行'),'补选项请求及保存都包含 D');
+  dispose(); root.replaceChildren();
+  const editing = openStoryEditor(null); await wait(()=>document.querySelector('[role=dialog]'));
+  check([...document.querySelectorAll('[role=dialog] textarea')].some(t=>t.value.includes('输入是最低履约')&&t.value.includes('未选且未保留')), '新故事使用世界书精简主干');
+  check(!document.querySelector('[role=dialog]').textContent.includes('顾律')&&!document.querySelector('input[placeholder="例：顾律"]'),'新故事移除固定人物示例');
+  [...document.querySelectorAll('[role=dialog] button')].find(b=>b.textContent==='取消').click(); await editing;
+  localStorage.setItem('moyu.curStory','other-app-story'); setCurrentStory('personal-story');
+  check(localStorage.getItem('moyu.curStory')==='other-app-story','个人版不改写其他应用的当前故事');
+  report.textContent += '\n\n全部 '+results.length+' 项通过。';
+} catch(e) { report.textContent += '\nFAIL: '+e.stack; }
+finally { dispose?.(); window.fetch=fetchReal; }
+</script>

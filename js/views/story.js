@@ -55,7 +55,7 @@ export async function render(root, { id, tab = 'setting' }) {
     const world = el('textarea', { class: 'tall', placeholder: '世界观、主角是谁、开局处境……角色的详细人设建议写进底部“角色”里的角色卡。', oninput: () => { story.world = world.value; saveSoon(); } });
     world.value = story.world || '';
     world.style.minHeight = '40vh';
-    const opening = el('textarea', { placeholder: '可以不填。例：从新婚夜他“醒过来”的那一刻开始。', oninput: () => { story.opening = opening.value; saveSoon(); } });
+    const opening = el('textarea', { placeholder: '可以不填。描述开场的时间、地点和正在发生的事。', oninput: () => { story.opening = opening.value; saveSoon(); } });
     opening.value = story.opening || '';
     body.append(
       el('div', { class: 'field' }, el('label', { text: '故事名' }), title),
@@ -64,7 +64,7 @@ export async function render(root, { id, tab = 'setting' }) {
       el('div', { class: 'field' }, el('label', { text: '开场（可选）' }), opening),
       el('div', { class: 'card' },
         el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '弹幕', el('small', { text: '读者实况评论，显示在正文下面' })), sw(story.danmu !== false, (v) => { story.danmu = v; saveSoon(); })),
-        el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '参考选项', el('small', { text: '每轮给 3 个方向不同的行动建议' })), sw(story.options !== false, (v) => { story.options = v; saveSoon(); }))),
+        el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '参考选项', el('small', { text: '每轮给 A/B/C/D 四个方向不同的行动建议' })), sw(story.options !== false, (v) => { story.options = v; saveSoon(); }))),
       el('div', { class: 'hint', text: '改动会自动保存，下一轮生效。' })
     );
   }

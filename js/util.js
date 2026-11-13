@@ -1,6 +1,6 @@
 // 墨游 · 小工具
 
-export const APP_VERSION = '0.6.14';
+export const APP_VERSION = '0.6.14-personal.1';
 
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);

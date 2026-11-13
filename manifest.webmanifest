@@ -1,6 +1,6 @@
 {
-  "name": "墨游",
-  "short_name": "墨游",
+  "name": "墨游个人版",
+  "short_name": "墨游个人版",
   "description": "本地优先的 AI 文字互动小说",
   "start_url": "./",
   "scope": "./",

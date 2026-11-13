@@ -2,6 +2,7 @@
 
 import { db } from './db.js';
 import { DEFAULT_RULES } from './prompt.js';
+import { CURRENT_STORY_KEY } from './personal.js';
 
 export const DEFAULT_PREFS = { fontSize: 17, font: 'serif', indent: true, danmuOpen: true };
 let prefs = { ...DEFAULT_PREFS };
@@ -61,11 +62,11 @@ export function connLabel(c) {
 
 // 当前故事：底部菜单的“游玩 / 角色 / 番外”指向它
 let currentStory = null;
-try { currentStory = localStorage.getItem('moyu.curStory') || null; } catch {}
+try { currentStory = localStorage.getItem(CURRENT_STORY_KEY) || null; } catch {}
 export function getCurrentStory() { return currentStory; }
 export function setCurrentStory(id) {
   currentStory = id || null;
-  try { if (id) localStorage.setItem('moyu.curStory', id); else localStorage.removeItem('moyu.curStory'); } catch {}
+  try { if (id) localStorage.setItem(CURRENT_STORY_KEY, id); else localStorage.removeItem(CURRENT_STORY_KEY); } catch {}
 }
 
 // 游玩页自己管的字段：别的页面只从它那里同步这些，免得把自己正在编辑、还没存的内容冲掉

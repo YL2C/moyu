@@ -83,7 +83,7 @@ export async function render(root) {
 
   root.append(el('div', { class: 'view' },
     el('div', { class: 'topbar' },
-      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', alignItems: 'center' } }, '墨游')
+      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', alignItems: 'center' } }, '墨游个人版')
     ),
     el('div', { class: 'scroll' }, wrap)
   ));

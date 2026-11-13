@@ -32,7 +32,7 @@ export function openStoryEditor(existing, prefill = null) {
     const conns = await getConnections();
     const s = sheet({ title: isNew ? '新故事' : '故事设定', onClose: () => resolve(saved) });
 
-    const title = el('input', { type: 'text', placeholder: '例：霜骨' });
+    const title = el('input', { type: 'text', placeholder: '填写故事名' });
     title.value = story.title || '';
 
     const connSel = el('select');
@@ -46,17 +46,17 @@ export function openStoryEditor(existing, prefill = null) {
     const rules = el('textarea', { class: 'tall' });
     rules.value = story.rules ?? '';
 
-    const opening = el('textarea', { placeholder: '可以不填。例：从新婚夜他“醒过来”的那一刻开始。' });
+    const opening = el('textarea', { placeholder: '可以不填。描述开场的时间、地点和正在发生的事。' });
     opening.value = story.opening || '';
 
     const pro = story.protagonist || {};
-    const pName = el('input', { type: 'text', placeholder: '例：顾律' }); pName.value = pro.name || '';
+    const pName = el('input', { type: 'text', placeholder: '填写主角名字' }); pName.value = pro.name || '';
     const pGender = el('select');
     for (const g of ['', '女', '男', '其他']) pGender.append(el('option', { value: g }, g || '不指定'));
     pGender.value = pro.gender || '';
 
     const dm = switchRow('弹幕', '读者实况评论，显示在正文下面', story.danmu !== false);
-    const op = switchRow('参考选项', '每轮给 3 个方向不同的行动建议', story.options !== false);
+    const op = switchRow('参考选项', '每轮给 A/B/C/D 四个方向不同的行动建议', story.options !== false);
 
     s.body.append(
       el('div', { class: 'field' }, el('label', { text: '故事名' }), title),

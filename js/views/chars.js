@@ -96,7 +96,7 @@ export async function render(root, { id }) {
   function editProtagonist() {
     const p = { ...(story.protagonist || {}) };
     const s = sheet({ title: '主角（你）' });
-    const name = el('input', { type: 'text', placeholder: '例：顾律' }); name.value = p.name || '';
+    const name = el('input', { type: 'text', placeholder: '填写主角名字' }); name.value = p.name || '';
     const gender = el('select');
     for (const g of ['', '女', '男', '其他']) gender.append(el('option', { value: g }, g || '不指定'));
     gender.value = p.gender || '';

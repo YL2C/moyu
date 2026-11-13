@@ -1,7 +1,8 @@
 // 墨游 · 离线缓存
 // 只缓存本站的页面文件；API 请求一律不经过缓存。
 // 策略：先联网取最新（4 秒超时），取不到再用缓存——部署新版后刷新一次就能用上。
-const CACHE = 'moyu-v0.6.14';
+const CACHE_PREFIX = 'moyu-yl2c-personal-';
+const CACHE = CACHE_PREFIX + '0.6.14-personal.1';
 const ASSETS = [
   './',
   './index.html',
@@ -11,6 +12,7 @@ const ASSETS = [
   './js/util.js',
   './js/state.js',
   './js/db.js',
+  './js/personal.js',
   './js/api.js',
   './js/relay.js',
   './js/prompt.js',
@@ -45,7 +47,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith(CACHE_PREFIX) && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -69,7 +71,7 @@ self.addEventListener('fetch', (e) => {
         return res;
       })
       .catch(() =>
-        caches.match(req, { ignoreSearch: true }).then((r) => r || caches.match('./index.html'))
+        caches.open(CACHE).then(async (c) => (await c.match(req, { ignoreSearch: true })) || c.match('./index.html'))
       )
   );
 });
