@@ -48,7 +48,7 @@
 
 1. 在 GitHub 新建一个仓库，例如 `moyu`。
 2. 把这个文件夹里的**所有文件**上传到仓库根目录，保持原来的目录结构（`css/`、`js/`、`icons/` 都要在）。
-3. 打开仓库的 Settings → Pages，Source 选 `Deploy from a branch`，分支选 `main`、目录选 `/ (root)`，保存。
+3. 打开仓库的 Settings → Pages，Source 选 `Deploy from a branch`，个人版分支选 `codex/personal`、目录选 `/ (root)`，保存。`main` 留作原版同步镜像。
 4. 等一两分钟，打开 `https://你的用户名.github.io/moyu/`。
 5. 在 iPhone 的 Safari 里点"分享"→"添加到主屏幕"。**以后都从主屏图标进入**：Safari 里打开和主屏图标打开，是两份互不相通的数据。
 
