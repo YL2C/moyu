@@ -246,6 +246,7 @@ a { color: var(--accent); }
   padding: 10px 12px; font-size: 14.5px; line-height: 1.55; cursor: pointer; color: var(--text);
 }
 .options button:active { background: var(--accent-soft); }
+.options button.selected { border-color: var(--accent); background: var(--accent-soft); }
 .options button .k { color: var(--accent); font-weight: 600; margin-right: 6px; }
 
 /* 回复工具条 */
@@ -287,27 +288,48 @@ a { color: var(--accent); }
 .status.ooc { color: var(--text2); background: var(--bg2); border: 1px dashed var(--text3); }
 .status .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .status button { flex: none; border: 0; background: transparent; color: inherit; font-size: 14px; padding: 4px 8px; cursor: pointer; }
-.composer .inrow { display: flex; gap: 8px; align-items: flex-end; max-width: 720px; margin: 0 auto; }
+.composer .inrow { display: flex; gap: 8px; align-items: center; max-width: 720px; margin: 0 auto; }
 .composer .bar { max-width: 720px; margin-left: auto; margin-right: auto; }
 .composer textarea {
-  flex: 1; min-width: 0; min-height: 42px; max-height: 38vh; resize: none; border: 1px solid var(--line); background: var(--card);
-  border-radius: 12px; padding: 10px 12px; font-size: 16px; line-height: 1.5; outline: none;
+  flex: 1; min-width: 0; min-height: 44px; max-height: 38vh; resize: none; border: 1px solid var(--line); background: var(--card);
+  border-radius: 12px; padding: 9px 12px; font-size: 16px; line-height: 24px; outline: none;
 }
 .composer textarea:focus { border-color: var(--accent); }
 .composer textarea.ooc { border-style: dashed; }
 .composer textarea::placeholder { font-size: 13px; color: var(--text3); opacity: 1; }
 .composer .input-shell {
-  display: flex; align-items: flex-end; flex: 1; min-width: 0;
+  display: flex; align-items: center; flex: 1; min-width: 0;
   border: 1px solid var(--line); border-radius: 12px; background: var(--card);
 }
 .composer .input-shell:focus-within { border-color: var(--accent); }
 .composer .input-shell:has(textarea.ooc) { border-style: dashed; }
-.composer .input-shell textarea { order: 0; border: 0; background: transparent; padding-left: 12px; padding-right: 4px; }
+.composer .input-shell textarea { order: 0; border: 0; min-height: 42px; background: transparent; padding-left: 12px; padding-right: 4px; }
 .bracket-btn {
   order: 1; flex: none; width: 40px; height: 42px; padding: 0; border: 0; border-radius: 12px;
   background: transparent; color: var(--text2); font-size: 15px; cursor: pointer; touch-action: manipulation;
 }
 .bracket-btn:active { background: var(--accent-soft); }
+.text-highlight { color: var(--accent); font-weight: 600; }
+.gm strong, .disc-text strong { font-weight: 700; }
+.settings-section { margin: 10px 0; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.settings-section > summary { cursor: pointer; font-weight: 600; color: var(--text); }
+.settings-section[open] > summary { margin-bottom: 12px; }
+.settings-section .card { margin: 8px 0; }
+.batch-bar { flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.rule-pack { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin: 8px 0; }
+.rule-pack > summary { cursor: pointer; font-weight: 600; }
+.rule-group-controls { justify-content: space-between; margin: 8px 0; }
+.rule-manager label, .attachment-card label { display: inline-flex; align-items: center; gap: 6px; }
+.rule-manager .switch-row { gap: 8px; }
+.rule-manager .switch-row > input { flex: none; }
+.attachment-card { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 6px 0; background: var(--card); font-size: 13px; overflow-wrap: anywhere; }
+.attachment-card summary { cursor: pointer; }
+.attachment-card .row { flex-wrap: wrap; }
+.attachment-field { border-top: 1px solid var(--line); padding: 8px 0; }
+.attachment-field summary { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.attachment-include { margin: 8px 0; }
+.pending-attachments:not(:empty) { max-height: 26vh; overflow: auto; margin-bottom: 8px; }
+.disc-msg .attachment-card { min-width: 0; max-width: 100%; }
 .send {
   flex: none; height: 42px; min-width: 58px; border: 0; border-radius: 12px; background: var(--accent); color: #fff;
   font-size: 15px; padding: 0 14px; cursor: pointer;

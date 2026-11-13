@@ -1,6 +1,6 @@
 // 墨游 · 小工具
 
-export const APP_VERSION = '0.6.14-personal.4';
+export const APP_VERSION = '0.6.15-personal.1';
 
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -120,7 +120,7 @@ export function promptText({ title, value = '', placeholder = '', hint = '', okT
 
 /** 保存文件：iOS 上优先走分享面板（可存到“文件”或隔空投送），其他情况直接下载 */
 export async function saveFile(filename, text, mime = 'application/json') {
-  const blob = new Blob([text], { type: mime + ';charset=utf-8' });
+  const blob = new Blob([text], { type: mime + (typeof text === 'string' ? ';charset=utf-8' : '') });
   try {
     const file = new File([blob], filename, { type: mime });
     if (navigator.canShare && navigator.canShare({ files: [file] }) && /iPhone|iPad|iPod/.test(navigator.userAgent)) {
@@ -159,6 +159,7 @@ export function pickRawFile(accept = '*/*') {
   return new Promise((resolve) => {
     const inp = el('input', { type: 'file', accept, style: { display: 'none' } });
     inp.addEventListener('change', () => { const f = inp.files && inp.files[0]; inp.remove(); resolve(f || null); });
+    inp.addEventListener('cancel', () => { inp.remove(); resolve(null); });
     document.body.append(inp);
     inp.click();
   });
@@ -168,7 +169,9 @@ export function autoGrow(ta, max = 0.38) {
   const fit = () => {
     ta.style.height = 'auto';
     const limit = Math.round(window.innerHeight * max);
-    ta.style.height = Math.min(ta.scrollHeight + 2, limit) + 'px';
+    const style = getComputedStyle(ta);
+    const border = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+    ta.style.height = Math.min(Math.max(parseFloat(style.minHeight) || 44, ta.scrollHeight + border), limit) + 'px';
   };
   ta.addEventListener('input', fit);
   fit();

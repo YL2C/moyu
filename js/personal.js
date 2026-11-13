@@ -39,9 +39,21 @@ export function optionInput(text) {
 // 不另外保存隐藏的选择，删除或改写字母后不会带上旧选项。
 export function expandOptionInput(text, options = []) {
   const value = String(text || '').trim();
-  const match = value.match(/^([A-D]+)(?=$|[^A-Za-z])/i);
-  if (!match) return value;
-  const selected = [...new Set(match[1].toUpperCase())].map((key) => options[CHOICE_LABELS.indexOf(key)]);
+  const parsed = choiceInput(value);
+  if (!parsed.labels.length) return value;
+  const selected = parsed.labels.map((key) => options[CHOICE_LABELS.indexOf(key)]);
   if (selected.some((option) => !option)) return value;
-  return [...selected.map(optionInput), value.slice(match[0].length).trim()].filter(Boolean).join('\n');
+  return [...selected.map(optionInput), parsed.extra.trim()].filter(Boolean).join('\n');
+}
+
+export function choiceInput(text) {
+  const value = String(text || '').trimStart();
+  const match = value.match(/^([A-D](?:\s*\+\s*[A-D]|[A-D])*)(?=$|[^A-Za-z+])/i);
+  return match ? { labels: [...new Set(match[1].toUpperCase().match(/[A-D]/g))], extra: value.slice(match[0].length).trimStart() } : { labels: [], extra: value };
+}
+
+export function toggleChoice(text, label) {
+  const { labels, extra } = choiceInput(text);
+  const next = labels.includes(label) ? labels.filter((key) => key !== label) : [...labels, label];
+  return next.join('+') + (next.length && extra ? ' ' : '') + extra;
 }

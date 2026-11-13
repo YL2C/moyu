@@ -9,7 +9,8 @@ import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, late
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { archiveConn, DEFAULT_EVERY } from './memory.js';
 import { parseReply, paragraphs } from '../parse.js';
-import { CHOICE_LABELS, expandOptionInput } from '../personal.js';
+import { CHOICE_LABELS, expandOptionInput, choiceInput, toggleChoice } from '../personal.js';
+import { inlineText } from '../inline.js';
 import { openExportDialog } from '../exporter.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage, getMonthSpend, getBudget, hasPrice, priceMode, CUR, getUsageLog } from '../cost.js';
 
@@ -35,6 +36,7 @@ export async function render(root, { id }) {
     globalMemo: await getGlobalMemo(),
     archiving: null,   // 后台整理前情 { ctrl, text }
     archiveError: null,
+    choiceSource: null,
   };
   story.manualOn = story.manualOn || {};
   const manualMods = () => [...st.modules, ...(story.localModules || [])].filter((m) => m.mode === 'manual' && story.modules?.[m.id]);
@@ -95,6 +97,14 @@ export async function render(root, { id }) {
     el('div', { class: 'inrow' }, el('div', { class: 'input-shell' }, ta, chipQuote), sendBtn)
   );
   const fit = autoGrow(ta);
+  const syncChoices = () => {
+    const selected = st.ooc ? [] : choiceInput(ta.value).labels;
+    feed.querySelectorAll('.options button[data-choice]').forEach((button) => {
+      const on = selected.includes(button.dataset.choice);
+      button.classList.toggle('selected', on); button.setAttribute('aria-pressed', String(on));
+    });
+  };
+  ta.addEventListener('input', syncChoices);
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSend(); } });
 
   root.append(el('div', { class: 'view' },
@@ -208,7 +218,7 @@ export async function render(root, { id }) {
     const wrap = el('div', { class: 'turn', 'data-id': n.id });
     if (n.kind === 'ooc') {
       const box = el('div', { class: 'gm ooc' });
-      for (const p of paragraphs(n.text)) box.append(el('p', { text: p }));
+      for (const p of paragraphs(n.text)) box.append(el('p', {}, inlineText(p, getPrefs().emphasis !== false)));
       if (live && !n.text) box.append(el('div', { class: 'thinking', text: n.thinking ? '思考中' : '回复中' }));
       if (!live && n.text?.trim()) box.append(el('div', { class: 'row end' }, versionCtl(n), moreBtn(() => replyMenu(n, { isLast }))));
       wrap.append(box);
@@ -230,10 +240,9 @@ export async function render(root, { id }) {
       if (p.title) g.append(el('h2', { text: p.title }));
       const paras = paragraphs(p.body);
       paras.forEach((t, i) => g.append(el('p', {
-        text: t,
         class: [live && i === paras.length - 1 ? 'cursor' : '', picking ? 'pick' : ''].filter(Boolean).join(' ') || null,
         onclick: picking ? () => rewriteFrom(n, i) : null,
-      })));
+      }, inlineText(t, getPrefs().emphasis !== false))));
       if (live && !n.text) g.append(el('div', { class: 'thinking', text: n.thinking ? '模型思考中' : '正在构思' }));
       if (story.danmu !== false && p.danmu.length && !picking) {
         const d = el('details', { class: 'danmu' }, el('summary', { text: `弹幕 · ${p.danmu.length}` }));
@@ -244,7 +253,9 @@ export async function render(root, { id }) {
       if (isLast && !live && !picking && story.options !== false && p.options.length) {
         const box = el('div', { class: 'options' });
         p.options.slice(0, CHOICE_LABELS.length).forEach((o, i) => box.append(el('button', {
-          onclick: () => { st.ooc = false; ta.value = CHOICE_LABELS[i]; fit(); updateComposer(); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); },
+          'data-choice': CHOICE_LABELS[i], 'aria-pressed': String(choiceInput(ta.value).labels.includes(CHOICE_LABELS[i])),
+          class: choiceInput(ta.value).labels.includes(CHOICE_LABELS[i]) ? 'selected' : '',
+          onclick: () => { st.ooc = false; st.choiceSource = n.id; ta.value = toggleChoice(ta.value, CHOICE_LABELS[i]); fit(); updateComposer(); syncChoices(); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); },
         }, el('span', { class: 'k', text: CHOICE_LABELS[i] }), o)));
         g.append(box);
       }
@@ -333,6 +344,9 @@ export async function render(root, { id }) {
   }
 
   function renderFeed({ keepScroll = false, focusId = null } = {}) {
+    if (st.choiceSource && st.choiceSource !== story.headId) {
+      ta.value = choiceInput(ta.value).extra; st.choiceSource = null; fit();
+    }
     const stick = !focusId && (!keepScroll || nearBottom());
     const path = headPath();
     feed.replaceChildren();

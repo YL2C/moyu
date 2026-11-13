@@ -2,7 +2,8 @@
 
 import { db } from '../db.js';
 import { el, uid, toast, menu, sheet, promptText, ago, approxTokens } from '../util.js';
-import { resolveConnection, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
+import { resolveConnection, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS, getPrefs } from '../state.js';
+import { inlineText } from '../inline.js';
 import { streamWithRetry, ApiError } from '../api.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage } from '../cost.js';
 import { getTemplates, getBase, buildExtraContext, chaptersOf, extraBlocks, SCOPES, LENGTHS, lengthOf } from '../fanwai.js';
@@ -208,11 +209,11 @@ async function renderReader(root, story, nodes, extraId) {
       el('div', { class: 'muted', text: metaLine(x) }),
       x.request ? el('div', { style: { marginTop: '4px' }, text: '要求：' + x.request }) : null));
     const g = el('div', { class: 'gm' });
-    const live = !!st.streaming;
+    const live = !!st.streaming || jobs > 0;
     if (v?.text) {
       const { title, blocks } = extraBlocks(v.text);
       if (title) g.append(el('h2', { text: title, style: { marginTop: '14px' } }));
-      blocks.forEach((b, i) => g.append(el('p', { class: [b.includes('\n') ? 'fw' : '', live && i === blocks.length - 1 ? 'cursor' : ''].filter(Boolean).join(' ') || null, text: b })));
+      blocks.forEach((b, i) => g.append(el('p', { class: [b.includes('\n') ? 'fw' : '', live && i === blocks.length - 1 ? 'cursor' : ''].filter(Boolean).join(' ') || null }, inlineText(b, getPrefs().emphasis !== false))));
     } else if (live) {
       g.append(el('div', { class: 'thinking', style: { marginTop: '14px' }, text: v?.thinking ? '模型思考中' : '正在构思' }));
     }
@@ -233,13 +234,17 @@ async function renderReader(root, story, nodes, extraId) {
         tools.append(el('span', { class: 'ver' }, prev, `${i + 1}/${x.versions.length}`, next));
       }
       tools.append(...[
-        el('button', { class: 'btn small', onclick: () => generate('new') }, v ? '重写' : '开始写'),
+        el('button', { class: 'btn small', onclick: () => generate('new') }, v ? '重新生成一个版本' : '开始写'),
         v ? el('button', { class: 'btn small', onclick: async () => {
-          const r = await promptText({ title: '换个要求重写', value: x.request, placeholder: '这次想看什么？', okText: '重写' });
+          const r = await promptText({ title: '换个要求重写', value: v?.request ?? x.request, placeholder: '这次想看什么？', okText: '重写' });
           if (r == null) return;
           x.request = r.trim(); await save(); generate('new');
         } }, '换个要求') : null,
-        v?.text?.trim() ? el('button', { class: 'btn small primary', onclick: () => generate('continue') }, '接着写') : null,
+        v?.text?.trim() ? el('button', { class: 'btn small primary', onclick: () => generate('continue') }, '接着当前版本写') : null,
+        v?.text?.trim() ? el('button', { class: 'btn small', onclick: async () => {
+          const note = await promptText({ title: '接着当前版本写', placeholder: '例如：继续写第二天；让他接着回答，不要收尾', okText: '续写' });
+          if (note !== null) generate('continue', note.trim());
+        } }, '补充续写要求') : null,
       ].filter(Boolean));
       if (v?.cost || v?.usageN) {
         tools.append(el('button', {
@@ -259,39 +264,43 @@ async function renderReader(root, story, nodes, extraId) {
     return box;
   }
 
-  async function buildCtx() {
+  async function buildCtx(request = x.request) {
     const modules = x.withModules ? [...(await getModules()), ...(story.localModules || [])].filter((m) => m.mode !== 'manual' && m.mode !== 'keyword' && story.modules?.[m.id]) : [];
     const base = await getBase();
     const path = x.anchorId ? pathTo(nodes, x.anchorId) : [];
     const chapters = chaptersOf(path);
     return buildExtraContext(story, {
       chapters, anchorNo: chapters.length, recentN: x.recentN, pinned: x.pinned || [],
-      template: { name: x.tplName, text: x.tplText, scope: x.tplScope }, request: x.request, scope: x.scope, pov: x.pov,
+      template: { name: x.tplName, text: x.tplText, scope: x.tplScope }, request, scope: x.scope, pov: x.pov,
       length: x.length, modules, base,
     });
   }
 
   let jobs = 0;
   const idleCbs = new Set();
-  async function generate(mode) {
-    if (st.streaming) return;
+  async function generate(mode, note = '') {
+    if (st.streaming || jobs) return;
     jobs++;
-    try { return await generateInner(mode); }
-    finally { jobs--; if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} }); }
+    draw();
+    try { return await generateInner(mode, note); }
+    catch (e) { toast('生成失败：' + (e?.message || e), 4000); }
+    finally { jobs--; if (!destroyed) draw(); if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} }); }
   }
-  async function generateInner(mode) {
+  async function generateInner(mode, note) {
+    // 先固定当前版本，异步读取连接和素材时不能串到另一个版本。
+    let v = mode === 'continue' ? curVersion(x) : null;
+    if (mode === 'continue' && !v?.text?.trim()) return;
     const conn = await resolveConnection(story);
-    const ctx = await buildCtx();
+    if (!conn) { toast('先在设置里添加连接'); return; }
+    const ctx = v?.context || await buildCtx(v?.request ?? x.request);
     st.lastCtx = ctx;
-    let v;
     let base = '';
     const messages = [...ctx.messages];
     if (mode === 'continue') {
-      v = curVersion(x);
       base = v.text || '';
-      messages.push({ role: 'assistant', content: base }, { role: 'user', content: '（接着上面的内容往下写，直接续写，不要重复已经写过的部分，不要加开场白。）' });
+      messages.push({ role: 'assistant', content: base }, { role: 'user', content: '（接着当前版本末尾往下写。已写内容保留，不重复，不另起标题；即使上一段已有收束，也按新进展继续。）' + (note ? '\n【本次续写要求】\n' + note : '') });
     } else {
-      v = { text: '', createdAt: Date.now() };
+      v = { id: uid(), text: '', createdAt: Date.now(), request: x.request, context: ctx };
       x.versions = x.versions || [];
       x.versions.push(v);
       x.cur = x.versions.length - 1;
@@ -306,7 +315,7 @@ async function renderReader(root, story, nodes, extraId) {
     let lastSave = 0;
     try {
       const r = await streamWithRetry(conn, {
-        system: ctx.system, messages, signal: ctrl.signal, maxTokens: Math.max(Number(conn?.maxTokens) || 4000, Math.ceil(lengthOf(x.length)[1] * 2) + 1500),
+        system: ctx.system, messages, signal: ctrl.signal, maxTokens: Number(conn.maxTokens) || Math.min(8000, Math.ceil(lengthOf(x.length)[1] * 2) + 1500),
         onText: (_d, full) => {
           v.text = base + full; v.thinking = false;
           if (!st.frame) st.frame = requestAnimationFrame(() => { st.frame = 0; if (!destroyed) draw({ stick: true }); });
@@ -319,7 +328,7 @@ async function renderReader(root, story, nodes, extraId) {
       usageRaw = r.usage || null;
     } catch (e) {
       const err = e instanceof ApiError ? e.toJSON() : { message: String(e?.message || e) };
-      v.text = base + (e?.partial || '');
+      v.text = base + (e?.partial ?? (v.text || '').slice(base.length));
       const has = !!v.text.trim();
       if (err.kind === 'aborted') { v.stopped = has; v.status = has ? 'partial' : 'error'; v.error = has ? null : { message: '已停止', hint: '还没写出内容就停下了，可以点“重写”。' }; }
       else { v.status = has ? 'partial' : 'error'; v.error = err; }

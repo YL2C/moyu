@@ -46,7 +46,7 @@ try {
   check(root.querySelector('textarea').value==='','发送成功后清空输入框');
   root.querySelector('.options button:first-child').click();
   root.querySelector('.options button:nth-child(2)').click();
-  check(root.querySelector('textarea').value==='B','改选后输入框只显示新的字母');
+  check(root.querySelector('textarea').value==='A+B','多选后输入框用加号连接字母');
   root.querySelector('textarea').value='（我自己决定）'; button('发送').click();
   await wait(()=>!dispose.busy()&&requests.length>1);
   check(requests.at(-1).messages.at(-1).content.startsWith('（我自己决定）')&&!requests.at(-1).messages.at(-1).content.includes('留在原地'),'删除字母后不会发送之前选中的选项');
