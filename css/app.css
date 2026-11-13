@@ -302,9 +302,9 @@ a { color: var(--accent); }
 }
 .composer .input-shell:focus-within { border-color: var(--accent); }
 .composer .input-shell:has(textarea.ooc) { border-style: dashed; }
-.composer .input-shell textarea { border: 0; background: transparent; padding-right: 4px; }
+.composer .input-shell textarea { order: 0; border: 0; background: transparent; padding-left: 12px; padding-right: 4px; }
 .bracket-btn {
-  flex: none; width: 40px; height: 42px; padding: 0; border: 0; border-radius: 12px;
+  order: 1; flex: none; width: 40px; height: 42px; padding: 0; border: 0; border-radius: 12px;
   background: transparent; color: var(--text2); font-size: 15px; cursor: pointer; touch-action: manipulation;
 }
 .bracket-btn:active { background: var(--accent-soft); }

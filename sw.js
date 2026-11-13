@@ -1,8 +1,8 @@
 // 墨游 · 离线缓存
 // 只缓存本站的页面文件；API 请求一律不经过缓存。
-// 策略：先联网取最新（4 秒超时），取不到再用缓存——部署新版后刷新一次就能用上。
+// 先向服务器核验最新文件，取不到再用离线缓存；安装时绕过 HTTP 旧缓存。
 const CACHE_PREFIX = 'moyu-yl2c-personal-';
-const CACHE = CACHE_PREFIX + '0.6.14-personal.3';
+const CACHE = CACHE_PREFIX + '0.6.14-personal.4';
 const ASSETS = [
   './',
   './index.html',
@@ -41,7 +41,9 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE)
+    .then((c) => c.addAll(ASSETS.map((path) => new Request(new URL(path, self.location.href), { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -62,7 +64,7 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return; // 不碰 API 和其他网站
   e.respondWith(
-    Promise.race([fetch(req), timeout(4000)])
+    Promise.race([fetch(req, { cache: 'no-cache' }), timeout(4000)])
       .then((res) => {
         if (res && res.ok) {
           const copy = res.clone();

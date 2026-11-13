@@ -2,6 +2,7 @@
 
 import { ensurePersist } from './db.js';
 import { loadPrefs } from './state.js';
+import { toast } from './util.js';
 import * as library from './views/library.js';
 import * as play from './views/play.js';
 import * as settings from './views/settings.js';
@@ -185,9 +186,57 @@ async function start() {
   ensurePersist();
   const local = ['localhost', '127.0.0.1'].includes(location.hostname);
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || local)) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
   }
 }
+
+// 主屏幕版没有浏览器刷新按钮，提供明确入口。只在没有生成和未发送输入时刷新。
+let refreshing = false;
+window.addEventListener('moyu:refresh', async () => {
+  if (refreshing) return;
+  if (current?.api?.busy?.() || [...parked.values()].some((entry) => entry.api?.busy?.())) {
+    toast('正在生成内容，完成后再刷新'); return;
+  }
+  if (current?.el.querySelector('.composer textarea')?.value.trim()) {
+    toast('输入框里还有未发送的内容，请先发送或复制，再刷新', 4000); return;
+  }
+  refreshing = true;
+  toast('正在检查更新…');
+  try {
+    if ('serviceWorker' in navigator) {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (registration) {
+        await registration.update();
+        const worker = registration.installing || registration.waiting;
+        if (worker && worker.state !== 'activated') {
+          await new Promise((resolve, reject) => {
+            const finish = (error) => {
+              clearTimeout(timer); worker.removeEventListener('statechange', check);
+              error ? reject(error) : resolve();
+            };
+            const check = () => {
+              if (worker.state === 'activated') finish();
+              else if (worker.state === 'redundant') finish(new Error('新版下载失败，请稍后重试'));
+            };
+            const timer = setTimeout(() => finish(new Error('更新超时，请稍后重试')), 15000);
+            worker.addEventListener('statechange', check); check();
+          });
+        }
+      }
+    }
+    if (current?.api?.busy?.() || [...parked.values()].some((entry) => entry.api?.busy?.()) ||
+      current?.el.querySelector('.composer textarea')?.value.trim()) {
+      refreshing = false;
+      toast('有正在生成或未发送的内容，处理完成后再刷新', 4000); return;
+    }
+    const url = new URL(location.href);
+    url.searchParams.set('refresh', Date.now().toString(36));
+    location.replace(url.href);
+  } catch (e) {
+    refreshing = false;
+    toast(e?.message || '检查更新失败，请检查网络后重试', 4000);
+  }
+});
 
 start().catch((e) => {
   root.innerHTML = '';

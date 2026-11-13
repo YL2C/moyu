@@ -37,6 +37,7 @@ try {
   check(root.querySelector('textarea').placeholder==='自由输入…','游玩提示为自由输入…');
   check(getComputedStyle(root.querySelector('textarea'),'::placeholder').fontSize==='13px','灰色提示字号缩小到 13px');
   check(root.querySelector('.input-shell').lastElementChild.getAttribute('aria-label')==='插入动作或心理括号','括号按钮在输入框内右侧');
+  check(getComputedStyle(root.querySelector('.bracket-btn')).order==='1','样式固定括号在输入文字右侧');
   root.querySelector('[aria-label="插入动作或心理括号"]').click();
   check(root.querySelector('textarea').value==='D（）'&&root.querySelector('textarea').selectionStart===2,'插入括号后光标位于括号中');
   root.querySelector('textarea').value='D（把信装进口袋）我跟你去。'; button('发送').click();

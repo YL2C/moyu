@@ -267,7 +267,9 @@ export async function render(root, { section }) {
       `墨游 ${APP_VERSION}`, el('br'),
       '所有故事和密钥只存在这台设备的这个浏览器里，不经过任何服务器（除了你填的 API 地址）。',
       el('br'),
-      'iPhone 上，Safari 里打开和主屏图标打开是两份不同的数据。加到主屏后，请一直从图标进入。'
+      'iPhone 上，Safari 里打开和主屏图标打开是两份不同的数据。加到主屏后，请一直从图标进入。',
+      el('div', { class: 'row', style: { marginTop: '10px' } },
+        el('button', { class: 'btn small', onclick: () => window.dispatchEvent(new Event('moyu:refresh')) }, '检查更新并刷新'))
     ));
   }
 

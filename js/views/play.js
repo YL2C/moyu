@@ -915,6 +915,7 @@ export async function render(root, { id }) {
       { key: 'ctx', label: '查看发给模型的内容', hint: '排查“为什么他又不像他了”' },
       { key: 'transcript', label: '导出游玩记录', hint: 'JSON 或纯文本；可选带弹幕、选项、番外' },
       { key: 'export', label: '备份这个故事', hint: '完整存档（含所有分支），可以导回墨游；不含密钥' },
+      { key: 'refresh', label: '检查更新并刷新' },
     ]);
     if (!k) return;
     if (k.startsWith('mod:')) {
@@ -931,6 +932,7 @@ export async function render(root, { id }) {
     else if (k === 'cost') showCost();
     else if (k === 'ctx') showContext();
     else if (k === 'transcript') openExportDialog(story.id, story.title);
+    else if (k === 'refresh') window.dispatchEvent(new Event('moyu:refresh'));
     else if (k === 'export') {
       const data = await exportStory(story.id);
       const d = new Date();
