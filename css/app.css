@@ -8,6 +8,7 @@
   --text3: #9a9288;
   --line: #e2dcd2;
   --accent: #a87d3f;
+  --dialogue: #657681;
   --accent-soft: rgba(168, 125, 63, .12);
   --danger: #b4513b;
   --danger-soft: rgba(180, 81, 59, .10);
@@ -29,6 +30,7 @@
     --text3: #7a7369;
     --line: #34303a;
     --accent: #c9a46a;
+    --dialogue: #a6b5c0;
     --accent-soft: rgba(201, 164, 106, .14);
     --danger: #e07a62;
     --danger-soft: rgba(224, 122, 98, .12);
@@ -310,6 +312,7 @@ a { color: var(--accent); }
 }
 .bracket-btn:active { background: var(--accent-soft); }
 .text-highlight { color: var(--accent); font-weight: 600; }
+.dialogue-text { color: var(--dialogue); }
 .gm strong, .disc-text strong { font-weight: 700; }
 .settings-section { margin: 10px 0; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
 .settings-section > summary { cursor: pointer; font-weight: 600; color: var(--text); }
@@ -330,6 +333,8 @@ a { color: var(--accent); }
 .attachment-include { margin: 8px 0; }
 .pending-attachments:not(:empty) { max-height: 26vh; overflow: auto; margin-bottom: 8px; }
 .disc-msg .attachment-card { min-width: 0; max-width: 100%; }
+.protagonist-state { margin-top: 10px; }
+.protagonist-state > summary { cursor: pointer; color: var(--accent); font-size: 13px; padding: 8px 0; }
 .send {
   flex: none; height: 42px; min-width: 58px; border: 0; border-radius: 12px; background: var(--accent); color: #fff;
   font-size: 15px; padding: 0 14px; cursor: pointer;

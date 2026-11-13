@@ -152,7 +152,7 @@ async function renderChat(root, id) {
           toast('已撤销');
         } }, '撤销这次写回') : null);
     }
-    const body = el('div', { class: 'disc-text' }, inlineText(m.content || (m.streaming ? '…' : ''), getPrefs().emphasis !== false));
+    const body = el('div', { class: 'disc-text' }, inlineText(m.content || (m.streaming ? '…' : ''), getPrefs().emphasis !== false, getPrefs().dialogueColor !== false));
     const meta = [m.cost ? fmtMoney(m.cost) : '', m.error || ''].filter(Boolean).join(' · ');
     return el('div', { class: 'disc-msg ' + (m.role === 'user' ? 'me' : 'ai') + (m.error ? ' err' : '') }, body,
       ...(m.attachments || []).map(a => attachmentCard(a, { storyId: d.storyId, onChange: () => saveDiscussion(d).catch(e => toast(e.message)) })),
@@ -221,7 +221,7 @@ async function renderChat(root, id) {
       const r = await callModel(system, msgs, Number(conn.maxTokens) || 8000, (full) => {
         a.content = full;
         const node = feed.lastChild?.querySelector('.disc-text');
-        if (node) node.replaceChildren(inlineText(full, getPrefs().emphasis !== false));
+        if (node) node.replaceChildren(inlineText(full, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false));
         if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120) scroller.scrollTop = scroller.scrollHeight;
         if (Date.now() - last > 1500) { last = Date.now(); saveDiscussion(d).catch(() => {}); }
       });

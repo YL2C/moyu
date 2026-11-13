@@ -213,7 +213,7 @@ async function renderReader(root, story, nodes, extraId) {
     if (v?.text) {
       const { title, blocks } = extraBlocks(v.text);
       if (title) g.append(el('h2', { text: title, style: { marginTop: '14px' } }));
-      blocks.forEach((b, i) => g.append(el('p', { class: [b.includes('\n') ? 'fw' : '', live && i === blocks.length - 1 ? 'cursor' : ''].filter(Boolean).join(' ') || null }, inlineText(b, getPrefs().emphasis !== false))));
+      blocks.forEach((b, i) => g.append(el('p', { class: [b.includes('\n') ? 'fw' : '', live && i === blocks.length - 1 ? 'cursor' : ''].filter(Boolean).join(' ') || null }, inlineText(b, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false))));
     } else if (live) {
       g.append(el('div', { class: 'thinking', style: { marginTop: '14px' }, text: v?.thinking ? '模型思考中' : '正在构思' }));
     }
