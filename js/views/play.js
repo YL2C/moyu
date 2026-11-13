@@ -9,7 +9,7 @@ import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, late
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { archiveConn, DEFAULT_EVERY } from './memory.js';
 import { parseReply, paragraphs } from '../parse.js';
-import { CHOICE_LABELS, optionInput } from '../personal.js';
+import { CHOICE_LABELS, expandOptionInput } from '../personal.js';
 import { openExportDialog } from '../exporter.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage, getMonthSpend, getBudget, hasPrice, priceMode, CUR, getUsageLog } from '../cost.js';
 
@@ -74,7 +74,7 @@ export async function render(root, { id }) {
   const scroller = el('div', { class: 'scroll' }, feed);
   const ta = el('textarea', { rows: '1', enterkeyhint: 'enter' });
   const sendBtn = el('button', { class: 'send', onclick: () => onSend() });
-  const chipQuote = el('button', { class: 'chip', 'aria-label': '插入动作或心理括号', onclick: () => insertAtCursor(ta, '（', '）') }, '（ ）');
+  const chipQuote = el('button', { class: 'bracket-btn', 'aria-label': '插入动作或心理括号', onmousedown: (e) => e.preventDefault(), onclick: () => insertAtCursor(ta, '（', '）') }, '（ ）');
   const chipDanmu = el('button', { class: 'chip', role: 'switch', 'aria-label': '弹幕', onclick: async () => {
     const before = story.danmu;
     chipDanmu.disabled = true;
@@ -91,8 +91,8 @@ export async function render(root, { id }) {
   const statusRow = el('div', { class: 'status-row' });
   const composer = el('div', { class: 'composer' },
     statusRow,
-    el('div', { class: 'bar' }, chipQuote, chipDanmu, el('span', { class: 'spacer' }), chipCont),
-    el('div', { class: 'inrow' }, ta, sendBtn)
+    el('div', { class: 'bar' }, chipDanmu, el('span', { class: 'spacer' }), chipCont),
+    el('div', { class: 'inrow' }, el('div', { class: 'input-shell' }, chipQuote, ta), sendBtn)
   );
   const fit = autoGrow(ta);
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSend(); } });
@@ -143,9 +143,7 @@ export async function render(root, { id }) {
         el('button', { 'aria-label': '关掉情境', onclick: () => { story.manualOn[m.id] = false; saveStory(); updateComposer(); } }, '✕'))),
     ].filter(Boolean));
     ta.classList.toggle('ooc', st.ooc);
-    ta.placeholder = !started
-      ? '开场要求（可以不填）'
-      : st.ooc ? '出戏：和 GM 场外说话，不推进剧情' : '（）内写动作、心理或剧情，括号外直接写台词';
+    ta.placeholder = '自由输入…';
     chipCont.style.display = started ? '' : 'none';
     chipCont.disabled = busy;
     chipCont.style.opacity = busy ? .45 : 1;
@@ -246,7 +244,7 @@ export async function render(root, { id }) {
       if (isLast && !live && !picking && story.options !== false && p.options.length) {
         const box = el('div', { class: 'options' });
         p.options.slice(0, CHOICE_LABELS.length).forEach((o, i) => box.append(el('button', {
-          onclick: () => { st.ooc = false; ta.value = optionInput(o); fit(); updateComposer(); ta.focus(); },
+          onclick: () => { st.ooc = false; ta.value = CHOICE_LABELS[i]; fit(); updateComposer(); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); },
         }, el('span', { class: 'k', text: CHOICE_LABELS[i] }), o)));
         g.append(box);
       }
@@ -390,7 +388,9 @@ export async function render(root, { id }) {
     if (st.streaming) { stop(); return; }
     const started = headPath().length > 0;
     if (!started) { await send('start', ta.value); return; }
-    const text = ta.value;
+    const head = nodes.get(story.headId);
+    const options = story.options !== false && head?.role === 'assistant' && !isOoc(head) ? parseReply(head.text || '').options : [];
+    const text = st.ooc ? ta.value : expandOptionInput(ta.value, options);
     if (!text.trim()) { toast(st.ooc ? '写点要说的话' : '写点什么，或者点“继续”'); return; }
     await send(st.ooc ? 'ooc' : 'play', text);
   }

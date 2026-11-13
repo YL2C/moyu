@@ -29,8 +29,19 @@ export const PERSONAL_RULES = `【主持与玩家】
 - 当轮明确修正优先，结合适用范围核对当前世界设定、人物卡、权威存档及其后实际发生的正史；新状态不改写过去，候选、保留和已发生严格区分。不同世界、正史与番外隔离，现实经历不自动写进角色。
 - 重要旧事定向核对可访问资料；不编造引用、查阅或保存结果。纠错只回滚错误及直接后果，保留其余有效事实与主持主动性。续接记录当前场景、未完的已选内容、明确保留项、认知差、承诺与修正，未选作废项不当未来待办。`;
 
-// 参考选项是行动建议，填进输入框时标成描述，避免被当成台词。
+// 参考选项是行动建议，发送给模型时标成描述，避免被当成台词。
 export function optionInput(text) {
   const value = String(text || '').trim();
   return /^（[\s\S]*）$/.test(value) || /^\([\s\S]*\)$/.test(value) ? value : `（${value}）`;
+}
+
+// 输入框只显示选项字母；发送时按当前章节展开，再附上玩家补充。
+// 不另外保存隐藏的选择，删除或改写字母后不会带上旧选项。
+export function expandOptionInput(text, options = []) {
+  const value = String(text || '').trim();
+  const match = value.match(/^([A-D]+)(?=$|[^A-Za-z])/i);
+  if (!match) return value;
+  const selected = [...new Set(match[1].toUpperCase())].map((key) => options[CHOICE_LABELS.indexOf(key)]);
+  if (selected.some((option) => !option)) return value;
+  return [...selected.map(optionInput), value.slice(match[0].length).trim()].filter(Boolean).join('\n');
 }

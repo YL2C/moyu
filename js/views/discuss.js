@@ -87,7 +87,7 @@ async function renderChat(root, id) {
   const chip = el('button', { class: 'model-chip', onclick: () => chooseConn() });
   const feed = el('div', { class: 'feed disc-feed' });
   const scroller = el('div', { class: 'scroll' }, feed);
-  const ta = el('textarea', { rows: 1, placeholder: d.storyId ? '比如：程岘最近太软了，他不会主动道歉……' : '比如：以后所有故事男主都不要动不动红眼眶' });
+  const ta = el('textarea', { rows: 1, placeholder: '自由输入…' });
   const sendBtn = el('button', { class: 'send', onclick: () => (ctrl ? ctrl.abort() : onSend()) }, '发送');
   const chipChanges = el('button', { class: 'chip', onclick: () => makeChanges() }, '✍️ 整理成修改');
   const chipNew = el('button', { class: 'chip', onclick: () => makeNewStory() }, '＋ 生成新故事');

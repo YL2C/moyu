@@ -290,11 +290,24 @@ a { color: var(--accent); }
 .composer .inrow { display: flex; gap: 8px; align-items: flex-end; max-width: 720px; margin: 0 auto; }
 .composer .bar { max-width: 720px; margin-left: auto; margin-right: auto; }
 .composer textarea {
-  flex: 1; min-height: 42px; max-height: 38vh; resize: none; border: 1px solid var(--line); background: var(--card);
+  flex: 1; min-width: 0; min-height: 42px; max-height: 38vh; resize: none; border: 1px solid var(--line); background: var(--card);
   border-radius: 12px; padding: 10px 12px; font-size: 16px; line-height: 1.5; outline: none;
 }
 .composer textarea:focus { border-color: var(--accent); }
 .composer textarea.ooc { border-style: dashed; }
+.composer textarea::placeholder { font-size: 13px; color: var(--text3); opacity: 1; }
+.composer .input-shell {
+  display: flex; align-items: flex-end; flex: 1; min-width: 0;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--card);
+}
+.composer .input-shell:focus-within { border-color: var(--accent); }
+.composer .input-shell:has(textarea.ooc) { border-style: dashed; }
+.composer .input-shell textarea { border: 0; background: transparent; padding-left: 4px; }
+.bracket-btn {
+  flex: none; width: 40px; height: 42px; padding: 0; border: 0; border-radius: 12px;
+  background: transparent; color: var(--text2); font-size: 15px; cursor: pointer; touch-action: manipulation;
+}
+.bracket-btn:active { background: var(--accent-soft); }
 .send {
   flex: none; height: 42px; min-width: 58px; border: 0; border-radius: 12px; background: var(--accent); color: #fff;
   font-size: 15px; padding: 0 14px; cursor: pointer;
