@@ -92,7 +92,7 @@ export async function render(root, { id }) {
   const composer = el('div', { class: 'composer' },
     statusRow,
     el('div', { class: 'bar' }, chipDanmu, el('span', { class: 'spacer' }), chipCont),
-    el('div', { class: 'inrow' }, el('div', { class: 'input-shell' }, chipQuote, ta), sendBtn)
+    el('div', { class: 'inrow' }, el('div', { class: 'input-shell' }, ta, chipQuote), sendBtn)
   );
   const fit = autoGrow(ta);
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSend(); } });

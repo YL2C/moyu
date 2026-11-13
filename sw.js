@@ -2,7 +2,7 @@
 // 只缓存本站的页面文件；API 请求一律不经过缓存。
 // 策略：先联网取最新（4 秒超时），取不到再用缓存——部署新版后刷新一次就能用上。
 const CACHE_PREFIX = 'moyu-yl2c-personal-';
-const CACHE = CACHE_PREFIX + '0.6.14-personal.2';
+const CACHE = CACHE_PREFIX + '0.6.14-personal.3';
 const ASSETS = [
   './',
   './index.html',

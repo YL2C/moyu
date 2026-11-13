@@ -44,7 +44,7 @@ test('个人版升级只清理自己的旧缓存，离线查找不读取其他�
   vm.runInNewContext(source, {
     self: { addEventListener: (type, fn) => handlers[type] = fn, clients: { claim: async () => {} }, location: { origin: 'https://yl2c.github.io' } },
     caches: {
-      keys: async () => ['moyu-v0.6.14', 'yl2c-cache', 'moyu-yl2c-personal-old', 'moyu-yl2c-personal-0.6.14-personal.1', 'moyu-yl2c-personal-0.6.14-personal.2'],
+      keys: async () => ['moyu-v0.6.14', 'yl2c-cache', 'moyu-yl2c-personal-old', 'moyu-yl2c-personal-0.6.14-personal.1', 'moyu-yl2c-personal-0.6.14-personal.2', 'moyu-yl2c-personal-0.6.14-personal.3'],
       delete: async key => deleted.push(key),
       open: async key => { opened.push(key); return { match: async req => req === './index.html' ? 'personal-index' : undefined }; },
     },
@@ -52,8 +52,8 @@ test('个人版升级只清理自己的旧缓存，离线查找不读取其他�
   });
   let finished;
   handlers.activate({ waitUntil: p => finished = p }); await finished;
-  assert.deepEqual(deleted, ['moyu-yl2c-personal-old', 'moyu-yl2c-personal-0.6.14-personal.1']);
+  assert.deepEqual(deleted, ['moyu-yl2c-personal-old', 'moyu-yl2c-personal-0.6.14-personal.1', 'moyu-yl2c-personal-0.6.14-personal.2']);
   handlers.fetch({ request: { method: 'GET', url: 'https://yl2c.github.io/moyu/' }, respondWith: p => finished = p });
   assert.equal(await finished, 'personal-index');
-  assert.deepEqual(opened, ['moyu-yl2c-personal-0.6.14-personal.2']);
+  assert.deepEqual(opened, ['moyu-yl2c-personal-0.6.14-personal.3']);
 });
