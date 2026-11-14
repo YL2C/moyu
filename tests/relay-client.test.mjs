@@ -115,12 +115,15 @@ test('全部备份与单故事备份不含转发口令', async (t) => {
   const original = { all: db.all, byStory: db.byStory, get: db.get, extrasOf: db.extrasOf };
   setup(t, async () => { throw new Error('no requests'); });
   const pending = { id: 'node', text: '已有正文', relayJob: 'temporary-job', relayContext: { server: config.url } };
-  db.all = async (store) => store === 'nodes' ? [pending] : []; db.byStory = async () => [pending]; db.get = async () => ({ id: 'story' }); db.extrasOf = async () => [];
+  db.all = async (store) => store === 'nodes' ? [pending] : store === 'extras' ? [{id:'extra',versions:[pending]}] : []; db.byStory = async () => [pending]; db.get = async () => ({ id: 'story' }); db.extrasOf = async () => [{id:'extra',versions:[pending]}];
   t.after(() => Object.assign(db, original));
   for (const backup of [await exportAll(), await exportAll({ includeKeys: true }), await exportStory('story')]) {
     assert.equal(JSON.stringify(backup).includes('relay-secret'), false);
     assert.equal('relay' in backup, false);
     assert.equal('relayJob' in backup.nodes[0], false);
     assert.equal(backup.nodes[0].text, '已有正文');
+    assert.equal('relayJob' in backup.extras[0].versions[0],false);
+    assert.equal('relayContext' in backup.extras[0].versions[0],false);
+    assert.equal(backup.extras[0].versions[0].text,'已有正文');
   }
 });

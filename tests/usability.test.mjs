@@ -40,7 +40,8 @@ async function seedStory() {
 }
 beforeEach(async () => {
   for(const store of ['stories','nodes','extras','connections']) for(const item of await db.all(store)) await db.del(store,item.id);
-  for(const key of ['modules','packs','disc.index','relay','defaultConnId','globalMemo','modules.undo','fwTemplates','fwBase']) await db.kvSet(key,null);
+  for(const key of ['modules','packs','disc.index','relay','defaultConnId','globalMemo','modules.undo','fwTemplates','fwBase','usageLog','spend']) await db.kvSet(key,null);
+  Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
   localStorage.clear(); document.body.innerHTML='<div id="fixture"></div><div id="toast"></div>'; root=document.querySelector('#fixture');
   requests=[]; responses=[];
   await db.put('connections',{id:'qa-conn',format:'openai',name:'测试连接',baseUrl:'https://model.qa.example/v1',apiKey:'virtual-key',model:'test',stream:false,maxTokens:2048});
@@ -230,4 +231,137 @@ test('引号内台词柔和配色，与关键词强调独立且不执行HTML',()
   output.replaceChildren(inlineText('“**回来**。”',true,false));
   assert.equal(output.querySelector('.dialogue-text'),null);assert.ok(output.querySelector('strong'));
   output.replaceChildren(inlineText('“还没有说完'));assert.equal(output.textContent,'“还没有说完');
+});
+
+
+async function seedRelayExtra({pending=true, versions=[]}={}) {
+  const {story}=await seedStory();
+  const conn=await db.get('connections','qa-conn');await db.put('connections',{...conn,viaRelay:true,stream:true});
+  await db.kvSet('relay',{on:true,url:'https://relay.qa.example',token:'virtual-relay-secret'});
+  await db.put('extras',{id:'relay-extra',storyId:story.id,tplName:'日记体',request:'写一天的日记',anchorId:'a1',anchorNo:1,length:'mid',cur:0,pending,versions});
+  return story;
+}
+function extraRelayMock(stream) {
+  const calls=[];
+  globalThis.fetch=async(url,init={})=>{
+    calls.push({url,method:init.method});
+    if(url.endsWith('/jobs'))return new Response(JSON.stringify({id:'extra-task'}),{status:201});
+    if(init.method==='DELETE')return new Response('{}');
+    if(url.includes('/stream?'))return stream(init,calls);
+    return new Response(JSON.stringify({state:'done'}));
+  };
+  return calls;
+}
+function extraSSE(text,{signal,hang=false}={}) {
+  const data='data: '+JSON.stringify({choices:[{delta:{content:text},finish_reason:hang?null:'stop'}],usage:hang?undefined:{prompt_tokens:20,completion_tokens:8}})+'\n\n';
+  const body=hang?new ReadableStream({start(c){c.enqueue(new TextEncoder().encode(data));signal.addEventListener('abort',()=>c.error(new DOMException('aborted','AbortError')),{once:true});}}):data+'data: [DONE]\n\n';
+  return new Response(body,{headers:{'X-Upstream-Status':'200','X-Upstream-Content-Type':'text/event-stream','X-Job-State':hang?'running':'done'}});
+}
+
+test('番外先保存后台任务，断线后重进自动接回；不重建任务、不依赖原连接密钥',async()=>{
+  const story=await seedRelayExtra();let fail=true;
+  const calls=extraRelayMock(async()=>{
+    const saved=(await db.get('extras','relay-extra')).versions[0];
+    assert.equal(saved.relayJob,'extra-task');assert.equal(saved.relayContext.connection.model,'test');
+    assert.ok(!JSON.stringify(saved.relayContext).includes('virtual-key'));
+    if(fail)throw new TypeError('offline');return extraSSE('重新接回的完整日记。');
+  });
+  let dispose=await extras.render(root,{id:story.id,extraId:'relay-extra'});
+  try{
+    await wait(()=>!dispose.busy()&&button('接回后台生成'));
+    assert.equal(button('重新生成一个版本'),undefined);
+    assert.equal(((await db.kvGet('usageLog',[]))||[]).length,0);
+    dispose();root.replaceChildren();fail=false;
+    await db.del('connections','qa-conn');
+    dispose=await extras.render(root,{id:story.id,extraId:'relay-extra'});
+    await wait(()=>!dispose.busy());
+    const saved=await db.get('extras','relay-extra');
+    assert.equal(saved.versions.length,1);assert.equal(saved.versions[0].text,'重新接回的完整日记。');
+    assert.equal(saved.versions[0].status,'done');assert.equal(saved.versions[0].relayJob,undefined);
+    assert.equal(calls.filter(c=>c.method==='POST').length,1);assert.equal(calls.filter(c=>c.method==='DELETE').length,0);
+    assert.equal(((await db.kvGet('usageLog',[]))||[]).length,1);
+  }finally{dispose();}
+});
+
+test('番外续写返回前台重连保留原文，重放不重复追加，切走不停止后台任务',async()=>{
+  const context={system:'设定',messages:[{role:'user',content:'日记要求'}],info:{totalChars:10,parts:[],chapters:[],cards:[]}};
+  const story=await seedRelayExtra({pending:false,versions:[{text:'原本的日记。',status:'done',context,usageN:{input:5,output:4,cached:0}}]});
+  let streams=0;
+  const calls=extraRelayMock(init=>extraSSE(++streams===1?'续写片段':'续写片段，完整结尾。',{signal:init.signal,hang:streams===1}));
+  const dispose=await extras.render(root,{id:story.id,extraId:'relay-extra'});
+  try{
+    button('接着当前版本写').click();await wait(()=>root.textContent.includes('续写片段'));
+    assert.equal(dispose.busy(),true);
+    document.dispatchEvent(new Event('visibilitychange'));
+    await wait(()=>!dispose.busy());
+    const v=(await db.get('extras','relay-extra')).versions[0];
+    assert.equal(v.text,'原本的日记。续写片段，完整结尾。');assert.equal(v.usageN.input,25);assert.equal(v.usageN.output,12);
+    assert.equal(calls.filter(c=>c.method==='POST').length,1);assert.equal(calls.filter(c=>c.method==='DELETE').length,0);
+    assert.equal(streams,2);
+  }finally{dispose();}
+});
+
+test('番外手动接回、恢复网络不重复创建，任务过期保留已收正文',async()=>{
+  const story=await seedRelayExtra({pending:false,versions:[{text:'已经收到的番外片段。',status:'streaming',relayJob:'extra-task',relayContext:{server:'https://relay.qa.example',base:'',mode:'new',inChars:5,connection:{format:'openai',model:'test',stream:true}}}]});let phase='auth';
+  const calls=extraRelayMock(()=>phase==='auth'?new Response('{}',{status:401}):new Response('{}',{status:404}));
+  const dispose=await extras.render(root,{id:story.id,extraId:'relay-extra'});
+  try{
+    await wait(()=>!dispose.busy()&&button('接回后台生成'));
+    const reconnectButton=button('接回后台生成');reconnectButton.click();reconnectButton.click();
+    await wait(()=>!dispose.busy());
+    assert.equal(calls.filter(c=>c.url.includes('/stream?')).length,2);
+    phase='expired';window.dispatchEvent(new Event('online'));await wait(()=>!dispose.busy());
+    const v=(await db.get('extras','relay-extra')).versions[0];
+    assert.equal(v.error.kind,'relay_expired');assert.equal(v.relayJob,undefined);
+    assert.ok(button('重新生成一个版本'));
+    assert.equal(v.text,'已经收到的番外片段。');
+    assert.equal(calls.filter(c=>c.method==='POST').length,0);
+  }finally{dispose();}
+});
+
+test('番外主动停止会停止原后台任务，旧版无编号任务给出真实提示',async()=>{
+  const story=await seedRelayExtra();
+  const calls=extraRelayMock(()=>new Response('{}',{status:401}));
+  let dispose=await extras.render(root,{id:story.id,extraId:'relay-extra'});
+  try{
+    await wait(()=>!dispose.busy()&&button('停止后台生成'));
+    button('停止后台生成').click();await wait(()=>!dispose.busy());
+    assert.equal(calls.filter(c=>c.method==='DELETE').length,1);
+    assert.equal((await db.get('extras','relay-extra')).versions[0].relayJob,undefined);
+    dispose();root.replaceChildren();
+    await db.put('extras',{id:'legacy-extra',storyId:story.id,cur:0,versions:[{text:'已收到的旧番外',status:'error',error:{kind:'relay_network',message:'长时间没有响应',hint:'点接回后台生成'}}]});
+    dispose=await extras.render(root,{id:story.id,extraId:'legacy-extra'});
+    assert.ok(root.textContent.includes('没有保存后台任务编号'));
+    assert.ok(root.textContent.includes('已收到的旧番外'));assert.ok(button('接着当前版本写'));
+  }finally{dispose();}
+});
+
+
+test('番外断线可自动重试接回，自动重试仅订阅原任务',async()=>{
+  const story=await seedRelayExtra();let streams=0;
+  const calls=extraRelayMock(()=>{if(++streams===1)throw new TypeError('temporary offline');return extraSSE('网络恢复后的日记。');});
+  const dispose=await extras.render(root,{id:story.id,extraId:'relay-extra'});
+  try{
+    await wait(()=>root.textContent.includes('网络恢复后的日记。')&&!dispose.busy());
+    assert.equal(streams,2);assert.equal(calls.filter(c=>c.method==='POST').length,1);
+  }finally{dispose();}
+});
+
+test('番外正在生成时离开再重进保留同一版本；主动停止只取消原任务',async()=>{
+  const story=await seedRelayExtra();let streams=0;
+  const calls=extraRelayMock(init=>extraSSE(++streams===1?'已经收到的片段':'已经收到的片段，接回后内容。',{signal:init.signal,hang:true}));
+  let dispose=await extras.render(root,{id:story.id,extraId:'relay-extra'});
+  try{
+    await wait(()=>root.textContent.includes('已经收到的片段'));
+    dispose();await wait(()=>!dispose.busy());
+    assert.equal(calls.filter(c=>c.method==='DELETE').length,0);
+    assert.equal((await db.get('extras','relay-extra')).versions[0].relayJob,'extra-task');
+    root.replaceChildren();dispose=await extras.render(root,{id:story.id,extraId:'relay-extra'});
+    await wait(()=>root.textContent.includes('接回后内容'));
+    button('停止').click();await wait(()=>!dispose.busy());
+    const saved=await db.get('extras','relay-extra');
+    assert.equal(saved.versions.length,1);assert.equal(saved.versions[0].text,'已经收到的片段，接回后内容。');
+    assert.equal(saved.versions[0].status,'partial');assert.equal(saved.versions[0].relayJob,undefined);
+    assert.equal(calls.filter(c=>c.method==='POST').length,1);assert.equal(calls.filter(c=>c.method==='DELETE').length,1);
+  }finally{dispose();}
 });
