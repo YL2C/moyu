@@ -40,7 +40,7 @@ async function seedStory() {
 }
 beforeEach(async () => {
   for(const store of ['stories','nodes','extras','connections']) for(const item of await db.all(store)) await db.del(store,item.id);
-  for(const key of ['modules','packs','disc.index','relay','defaultConnId','globalMemo','modules.undo','fwTemplates','fwBase','fwPlaybooksV1','usageLog','spend']) await db.kvSet(key,null);
+  for(const key of ['modules','packs','disc.index','relay','defaultConnId','globalMemo','modules.undo','fwTemplates','fwBase','fwPlaybooksV1','extraConnectionId','usageLog','spend']) await db.kvSet(key,null);
   Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
   localStorage.clear(); document.body.innerHTML='<div id="fixture"></div><div id="toast"></div>'; root=document.querySelector('#fixture');
   requests=[]; responses=[];
@@ -427,4 +427,90 @@ test('番外实际创建可选自定义子类，生成五类布局，原文切�
     assert.equal(requests[0].body.messages[0].content,requests[1].body.messages[0].content);
     assert.ok((await db.get('extras',x.id)).versions[0].text.endsWith('【/】'));
   }finally{dispose();}
+});
+
+async function openExtraForm(story,template) {
+  root.replaceChildren();await extras.render(root,{id:story.id});button('✦ 写一篇番外').click();
+  await wait(()=>!!document.querySelector('[role=dialog] select'));
+  const dialog=document.querySelector('[role=dialog]'),select=dialog.querySelector('select');
+  select.value=template;select.dispatchEvent(new Event('change'));return dialog;
+}
+
+test('聊天与报告无子类菜单；记录主人、报告对象和报告人各自保存，选中角色卡进入上下文',async()=>{
+  const {story}=await seedStory();story.cards=[{id:'c1',name:'许秋',initial:'出版社编辑',personality:'讲话直截了当'}];await db.put('stories',story);
+  const chat=await openExtraForm(story,'playbook-chat');
+  assert.equal([...chat.querySelectorAll('details')].find(d=>d.firstElementChild.textContent.includes('子类')).hidden,true);
+  const owner=chat.querySelector('[aria-label="查看谁的记录"]');
+  assert.ok([...owner.options].some(o=>o.text.includes('主角（你）')));assert.ok([...owner.options].some(o=>o.text==='不同人'));
+  owner.value='__self';owner.dispatchEvent(new Event('change'));button('开始写',chat).click();
+  await wait(async()=>(await db.extrasOf(story.id)).length===1);
+  const first=(await db.extrasOf(story.id))[0];assert.equal(first.cast.owner.kind,'self');assert.equal(first.pov,'林舟');assert.equal(first.variant,'');
+  const report=await openExtraForm(story,'playbook-report');
+  assert.equal([...report.querySelectorAll('details')].find(d=>d.firstElementChild.textContent.includes('子类')).hidden,true);
+  report.querySelector('[aria-label="观察对象"]').value='card-0';
+  const writer=report.querySelector('[aria-label="报告人"]');writer.value='__named';writer.dispatchEvent(new Event('change'));
+  report.querySelector('[aria-label="报告人姓名"]').value='夏晚';
+  button('开始写',report).click();await wait(async()=>(await db.extrasOf(story.id)).length===2);
+  const second=(await db.extrasOf(story.id)).find(x=>x.id!==first.id);
+  assert.equal(second.cast.owner.name,'许秋');assert.equal(second.cast.reporter.name,'夏晚');
+  responses.push('【报告】\n标题｜观察记录\n总评｜他给你留出了时间。\n【/】');
+  root.replaceChildren();const dispose=await extras.render(root,{id:story.id,extraId:second.id});
+  try{await wait(()=>!dispose.busy());const system=requests[0].body.messages[0].content;
+    assert.ok(system.includes('许秋'));assert.ok(system.includes('出版社编辑'));assert.ok(system.includes('夏晚'));
+    assert.ok(system.includes('完整报告'));assert.ok(root.querySelector('.ex-report-document'));assert.ok(root.textContent.includes('报告人：夏晚'));
+  }finally{dispose();}
+});
+
+test('恋综随行人支持角色多选和手填，所有选中的人物都进入生成快照',async()=>{
+  const {story}=await seedStory();story.cards=[{id:'c1',name:'许秋',initial:'出版社编辑'},{id:'c2',name:'陆明',initial:'热爱露营'}];await db.put('stories',story);
+  const dialog=await openExtraForm(story,'playbook-show');
+  assert.equal(dialog.querySelector('[aria-label="视角角色"]').closest('.field').hidden,true);
+  dialog.querySelector('[aria-label="随行人：许秋"]').checked=true;dialog.querySelector('[aria-label="随行人：陆明"]').checked=true;
+  dialog.querySelector('[aria-label="其他随行人"]').value='夏晚、许秋';
+  button('开始写',dialog).click();await wait(async()=>(await db.extrasOf(story.id)).length===1);
+  const x=(await db.extrasOf(story.id))[0];assert.deepEqual(x.cast.companions.map(p=>p.name),['许秋','陆明','夏晚']);assert.equal(x.cast.owner,undefined);
+  const {buildExtraContext}=await import('../js/fanwai.js');
+  const ctx=buildExtraContext(story,{chapters:[],anchorNo:0,template:{name:x.tplName,text:x.tplText,layout:x.layout},cast:x.cast});
+  assert.ok(ctx.system.includes('出版社编辑'));assert.ok(ctx.system.includes('热爱露营'));assert.ok(ctx.system.includes('夏晚'));assert.ok(ctx.system.includes('主角默认参与'));
+});
+
+test('番外独立API贯穿新建重写续写，显式切换后生效，删除连接不回退正文API',async()=>{
+  const {story}=await seedStory();story.connectionId='qa-conn';await db.put('stories',story);
+  await db.put('connections',{id:'extra-api',name:'番外专用',format:'openai',baseUrl:'https://extra.qa.example/v1',apiKey:'virtual-extra-key',model:'extra-test',stream:false});
+  const dialog=await openExtraForm(story,'playbook-chat');dialog.querySelector('[aria-label="番外 API"]').value='extra-api';
+  button('开始写',dialog).click();await wait(async()=>(await db.extrasOf(story.id)).length===1);
+  const x=(await db.extrasOf(story.id))[0];assert.equal(x.connectionId,'extra-api');assert.equal(await db.kvGet('extraConnectionId',''),'extra-api');
+  responses.push('第一篇文字','接着写的文字','重新生成的文字');root.replaceChildren();const dispose=await extras.render(root,{id:story.id,extraId:x.id});
+  try{
+    await wait(()=>!dispose.busy());button('接着当前版本写').click();await wait(()=>!dispose.busy()&&requests.length===2);
+    button('重新生成一个版本').click();await wait(()=>!dispose.busy()&&requests.length===3);
+    assert.ok(requests.every(r=>r.url==='https://extra.qa.example/v1/chat/completions'));
+    const saved=await db.get('extras',x.id);assert.ok(saved.versions.every(v=>v.connectionId==='extra-api'));
+    await db.del('connections','extra-api');button('接着当前版本写').click();await wait(()=>!dispose.busy());assert.equal(requests.length,3);
+    root.querySelector('[aria-label="选择番外 API"]').click();await wait(()=>!!document.querySelector('.menu-list button'));
+    document.querySelector('.menu-list button').click();await wait(async()=>(await db.get('extras',x.id)).connectionId==='qa-conn');
+    button('接着当前版本写').click();await wait(()=>!dispose.busy()&&requests.length===4);
+    assert.equal(requests[3].url,'https://model.qa.example/v1/chat/completions');assert.equal((await db.get('stories',story.id)).connectionId,'qa-conn');
+  }finally{dispose();}
+});
+
+test('连续聊天消息不重复昵称，节目弹幕静态换行，报告是统一文档布局',async()=>{
+  const {renderExtraLayout}=await import('../js/extra-layout.js');
+  const chat=renderExtraLayout('【聊天】\n会话｜测试\n我｜林舟｜第一句\n我｜林舟｜第二句\n他｜许秋｜回答\n【/】');
+  assert.equal(chat.querySelectorAll('.ex-message .ex-time').length,2);assert.equal(chat.querySelectorAll('.consecutive').length,1);
+  const show=renderExtraLayout('【节目】\n弹幕｜观众一｜第一条\n弹幕｜观众二｜第二条\n【/】');root.append(show);
+  assert.equal(show.querySelector('.ex-danmu').getAttribute('aria-label'),'节目弹幕');
+  // 样式来自本测试进程加载的实际CSS。
+  assert.equal(getComputedStyle(show.querySelector('.ex-danmu')).overflow,'visible');
+  const report=renderExtraLayout('【报告】\n标题｜报告\n总评｜完整的总评\n现场｜新的现场\n处方｜下次见。\n【/】',{reportMode:true});
+  assert.ok(report.classList.contains('ex-report-document'));assert.ok(report.textContent.includes('新的现场'));
+});
+
+test('保存过的玩法模板只补一次新版要求，用户改写的内容保留',async()=>{
+  const {getTemplates,saveTemplates}=await import('../js/fanwai.js');
+  await db.kvSet('fwPlaybooksV1',true);
+  await db.kvSet('fwTemplates',[{id:'playbook-chat',name:'他的聊天记录',scope:'all',text:'我自己补充的口吻要求'}]);
+  const list=await getTemplates();assert.equal(list.length,1);assert.ok(list[0].text.startsWith('我自己补充的口吻要求'));assert.ok(list[0].text.includes('新版记录要求'));
+  const text=list[0].text;assert.equal((await getTemplates())[0].text,text);
+  list[0].text='我又重新编辑了';await saveTemplates(list);assert.equal((await getTemplates())[0].text,'我又重新编辑了');
 });

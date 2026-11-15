@@ -2,7 +2,7 @@ import { el } from './util.js';
 import { inlineText } from './inline.js';
 
 const TYPES = new Set(['论坛','聊天','报告','节目','同人','场景']);
-const ROW_KEYS = new Set(['标题','分区','标签','楼主','补充','热评','系统','会话','时间','他','我','语音','已读','档案','案例','指数','批注','诊断','处方','规则','环节','字幕','观察室','采访','弹幕','作者','简介','数据','正文']);
+const ROW_KEYS = new Set(['标题','分区','标签','楼主','补充','热评','系统','会话','时间','他','我','语音','已读','档案','案例','指数','批注','诊断','处方','规则','环节','字幕','观察室','采访','弹幕','作者','简介','数据','正文','报告人','总评','表现','现场','结语','章节']);
 export function parseExtraLayout(text) {
   const lines = String(text || '').replace(/\r/g, '').split('\n');
   if (/^#{1,4}\s+/.test(lines[0] || '')) lines.shift();
@@ -35,8 +35,8 @@ export function parseExtraLayout(text) {
   flush(); return blocks;
 }
 
-export function renderExtraLayout(text, { emphasis = true, dialogueColor = true } = {}) {
-  const out = el('div', {class:'extra-layout'});
+export function renderExtraLayout(text, { emphasis = true, dialogueColor = true, reportMode = false } = {}) {
+  const out = el('div', {class:'extra-layout'+(reportMode?' ex-report-document':'')});
   const rich = text => inlineText(String(text || ''), emphasis, dialogueColor);
   const body = (text, className='ex-body') => el('div',{class:className},rich(text));
   const badge = (text, cls='') => el('span',{class:'ex-badge '+cls,text});
@@ -76,13 +76,16 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true 
       }
     } else if(block.type==='聊天') {
       box.append(el('div',{class:'ex-chat-head',text:get(rows,'会话')||'聊天记录'}));
+      let lastSender = '';
       for(const [key,...f] of rows){
         if(key==='会话')continue;
-        if(['时间','系统','已读'].includes(key)){box.append(body(f.join('｜'),'ex-system'));continue;}
+        if(['时间','系统','已读'].includes(key)){box.append(body(f.join('｜'),'ex-system'));lastSender='';continue;}
         let side=key,nick=f[0],text=f.slice(1).join('｜');
         if(key==='语音'){[side,nick,...text]=f;text='语音 '+(text[0]||'')+' · '+text.slice(1).join('｜');}
         if(!['我','他'].includes(side)||!nick){box.append(body([key,...f].join('｜')));continue;}
-        box.append(el('div',{class:'ex-message'+(side==='我'?' mine':'')},el('div',{class:'ex-time',text:nick}),body(text,'ex-bubble')));
+        const same = lastSender === side+'|'+nick;
+        box.append(el('div',{class:'ex-message'+(side==='我'?' mine':'')+(same?' consecutive':'')},same?null:el('div',{class:'ex-time',text:nick}),body(text,'ex-bubble')));
+        lastSender = side+'|'+nick;
       }
     } else if(block.type==='报告') {
       heading(box,rows,'RELATIONSHIP OBSERVATION · 关系观察');
@@ -107,7 +110,7 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true 
         if(['字幕','观察室','采访'].includes(key))box.append(el('aside',{class:'ex-callout'},badge(key),body(f.join(' · '))));
         else box.append(el('div',{class:'ex-segment'},el('div',{class:'ex-eyebrow',text:key}),body(f.join(' · '))));
       }
-      if(comments.length)box.append(el('div',{class:'ex-danmu',tabindex:'0','aria-label':'节目弹幕，可横向滚动'},...comments.map(t=>el('span',{text:t}))));
+      if(comments.length)box.append(el('div',{class:'ex-danmu','aria-label':'节目弹幕'},...comments.map(t=>el('span',{text:t}))));
     } else {
       heading(box,rows,'FANWORK · 同人发布');
       if(get(rows,'作者'))box.append(el('div',{class:'ex-byline',text:'作者 '+get(rows,'作者')}));

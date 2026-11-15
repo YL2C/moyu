@@ -6,7 +6,8 @@ import { uid } from './util.js';
 import { forContext, parseReply } from './parse.js';
 import { cardText, splitNames, protagonistText } from './prompt.js';
 import { EMPHASIS_GUIDE } from './inline.js';
-import { PLAYBOOKS, PLAYBOOK_COMMON, LAYOUT_GUIDE, layoutOf } from './extra-playbooks.js';
+import { castNames, castText } from './extra-options.js';
+import { PLAYBOOKS, PLAYBOOK_COMMON, LAYOUT_GUIDE, layoutOf, PLAYBOOK_UPDATES, playbookOf } from './extra-playbooks.js';
 
 export const SCOPES = {
   follow: '跟随形式',
@@ -41,16 +42,25 @@ const BUILTIN = [
 ];
 
 export function builtinTemplates() {
-  return [...BUILTIN.map(([name, scope, text], i) => ({ id: 'builtin-' + i, name, scope, text, note: '', layout: layoutOf({name}) })), ...PLAYBOOKS.map(p => ({...p, note:''}))];
+  return [...BUILTIN.map(([name, scope, text], i) => ({ id: 'builtin-' + i, name, scope, text, note: '', layout: layoutOf({name}) })), ...PLAYBOOKS.map(p => ({...p, text:p.text+'\n'+(PLAYBOOK_UPDATES[p.layout] || ''), playbookRevision:2, note:''}))];
 }
 
 export async function getTemplates() {
   const v = await db.kvGet('fwTemplates', null);
   if (!Array.isArray(v)) return builtinTemplates();
+  let changed = false;
   if (!(await db.kvGet('fwPlaybooksV1', false))) {
-    for (const p of PLAYBOOKS) if (!v.some(t => t.id === p.id || t.name === p.name)) v.push({...p, note:''});
-    await saveTemplates(v);
+    for (const p of PLAYBOOKS) if (!v.some(t => t.id === p.id || t.name === p.name)) {v.push({...p, note:''});changed=true;}
   }
+  for (const t of v) {
+    const p=playbookOf(t), update=p && PLAYBOOK_UPDATES[p.layout];
+    if(p && t.playbookRevision !== 2) {
+      // 保留用户改过的正文，只补充新版要求；后续再编辑不会被重复追加。
+      if(update && !t.text.includes(update)) t.text+='\n'+update;
+      t.playbookRevision=2;changed=true;
+    }
+  }
+  if(changed) await saveTemplates(v);
   return v;
 }
 export async function saveTemplates(list) { await db.kvSet('fwTemplates', list); return db.kvSet('fwPlaybooksV1', true); }
@@ -94,8 +104,8 @@ export function buildExtraContext(story, opts) {
   const material = picked.map((c) => `【第${c.no}章${c.title ? ' · ' + c.title : ''}】${pinnedSet.has(c.no) ? '（指定素材）' : ''}\n${c.said ? '（主角：' + c.said.trim() + '）\n' : ''}${c.text}`).join('\n\n');
 
   // 角色卡：常驻的、视角角色、素材里被提到的
-  const scan = material + '\n' + request + '\n' + pov;
-  const cards = (story.cards || []).filter((c) => c.name?.trim() && (c.core || c.name === pov || splitNames(c).some((n) => (n === c.name || n.length >= 2) && scan.includes(n))));
+  const scan = material + '\n' + request + '\n' + pov + '\n' + castNames(opts.cast).join('\n');
+  const cards = (story.cards || []).filter((c) => c.name?.trim() && (opts.cast?.owner?.kind === 'mixed' || c.core || c.name === pov || splitNames(c).some((n) => (n === c.name || n.length >= 2) && scan.includes(n))));
 
   const scopeText = scope === 'public'
     ? '写这篇的人（网友、路人、旁人）只知道公开发生、旁人能看到或听说的事：公开场合的言行、传闻、照片、热搜之类。私下的对话、内心想法、亲密细节一律不知道，只能猜，而且可以猜错。'
@@ -115,6 +125,8 @@ export function buildExtraContext(story, opts) {
       '角色档案使用下方主角与角色卡，关系阶段、最近3件具体事件及未回收细节从下方最近章节提取；没有依据的口头禅、癖好与底线不补成事实。语气依据人设和本次要求选择。\n'+
       (snapshotChapters.length ? snapshotChapters.map(c => `事件来源 第${c.no}章（${c.id}）：${c.title || '未命名'}，主角当轮行动：${c.said || '无'}；具体事件见下方本章原文。`).join('\n') : '正史还未开始，没有可评分的历史事件。报告应标记资料不足，其他玩法可依据人设原创非正史小事。'));
     add('材料排版', LAYOUT_GUIDE);
+    if (PLAYBOOK_UPDATES[layout] && !template?.text?.includes(PLAYBOOK_UPDATES[layout])) add('当前玩法要求', PLAYBOOK_UPDATES[layout]);
+    add('本次人物选择',castText(opts.cast,layout));
     if (opts.variant) add('本次子类', '【本次玩法选择】\n' + opts.variant + '\n未指定的维度自行变化；指定子类不限制框架内的自由扩展。');
   }
   add(`形式 · ${template?.name || '自定义'}`, '【这篇的形式与写法】\n' + (template?.text?.trim() || '按下面玩家的要求来写。'));
@@ -132,7 +144,7 @@ export function buildExtraContext(story, opts) {
   return {
     system,
     messages: [{ role: 'user', content: user }],
-    info: { parts: parts.map((p) => ({ label: p.label, chars: p.text.length, text: p.text })), totalChars: system.length + user.length, chapters: picked.map((c) => c.no), cards: cards.map((c) => c.name), scope, layout, snapshotChapters: snapshotChapters.map(c=>c.no), variant: opts.variant || '' },
+    info: { parts: parts.map((p) => ({ label: p.label, chars: p.text.length, text: p.text })), totalChars: system.length + user.length, chapters: picked.map((c) => c.no), cards: cards.map((c) => c.name), scope, layout, snapshotChapters: snapshotChapters.map(c=>c.no), variant: opts.variant || '', cast:opts.cast || null },
   };
 }
 

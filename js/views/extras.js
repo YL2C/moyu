@@ -2,9 +2,10 @@
 
 import { db } from '../db.js';
 import { el, uid, toast, menu, sheet, promptText, ago, approxTokens } from '../util.js';
-import { resolveConnection, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS, getPrefs } from '../state.js';
+import { getConnections, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS, getPrefs } from '../state.js';
 import { inlineText } from '../inline.js';
 import { streamWithRetry, ApiError, guessFormat } from '../api.js';
+import { extraConnection, connectionSelect, personPicker, companionPicker, castSummary } from '../extra-options.js';
 import { renderExtraLayout } from '../extra-layout.js';
 import { playbookOf, layoutOf, FIC_AXES } from '../extra-playbooks.js';
 import { cancelRelayJob } from '../relay.js';
@@ -34,7 +35,7 @@ function extraTitle(x) {
   return t || x.tplName || '番外';
 }
 function metaLine(x) {
-  return [x.tplName || '自定义', x.anchorNo > 0 ? `第 ${x.anchorNo} 章之后` : '正史开始前', SCOPE_SHORT[x.scopeUsed] || '', x.pov ? '视角：' + x.pov : ''].filter(Boolean).join(' · ');
+  return [x.tplName || '自定义', x.anchorNo > 0 ? `第 ${x.anchorNo} 章之后` : '正史开始前', SCOPE_SHORT[x.scopeUsed] || '', !x.cast && x.pov ? '视角：' + x.pov : ''].filter(Boolean).join(' · ');
 }
 
 export async function render(root, { id, extraId }) {
@@ -98,7 +99,6 @@ async function newExtra(story, nodes) {
   const modules = [...(await getModules()), ...(story.localModules || [])];
   const enabledAlways = modules.filter((m) => m.mode !== 'manual' && m.mode !== 'keyword' && story.modules?.[m.id]);
   const chapters = chaptersOf(pathTo(nodes, story.headId));
-  const cards = (story.cards || []).filter((c) => c.name?.trim());
   const s = sheet({ title: '写一篇番外' });
 
   const tplSel = el('select');
@@ -107,10 +107,10 @@ async function newExtra(story, nodes) {
   const subtypeBox = el('details', {class:'card'});
   const subtypeFields = [];
   const req = el('textarea', { style: { minHeight: '80px' } });
-  const povSel = el('select');
-  povSel.append(el('option', { value: '' }, '不指定'));
-  cards.forEach((c) => povSel.append(el('option', { value: c.name }, c.name)));
-  const povFree = el('input', { type: 'text', placeholder: '没建卡的角色，直接写名字' });
+  const owner = personPicker(story,'视角角色');
+  const reporter = personPicker(story,'报告人',{mixed:false});
+  const companions = companionPicker(story);
+  const apiSelect = await connectionSelect();
   const anchorSel = el('select');
   anchorSel.append(el('option', { value: String(chapters.length) }, chapters.length ? `当前进度（第 ${chapters.length} 章之后）` : '正史还没开始'));
   [...chapters].reverse().slice(1).forEach((c) => anchorSel.append(el('option', { value: String(c.no) }, `第 ${c.no} 章之后${c.title ? ' · ' + c.title : ''}`)));
@@ -143,8 +143,15 @@ async function newExtra(story, nodes) {
     subtypeBox.replaceChildren(el('summary', {text:'子类与风格 · 默认随机',style:{cursor:'pointer'}}));
     subtypeFields.length = 0;
     const p = playbookOf(t);
-    subtypeBox.hidden = !p;
-    if (p) {
+    const layout = layoutOf(t);
+    owner.el.hidden = layout === 'show';
+    owner.title.textContent = layout === 'chat' ? '查看谁的记录' : layout === 'report' ? '观察对象' : '视角角色';
+    owner.select.setAttribute('aria-label',owner.title.textContent);
+    owner.free.setAttribute('aria-label',owner.title.textContent+'姓名');
+    reporter.el.hidden = layout !== 'report';
+    companions.el.hidden = layout !== 'show';
+    subtypeBox.hidden = !p || ['chat','report'].includes(layout);
+    if (p && !subtypeBox.hidden) {
       const axes = { [p.layout === 'fic' ? '题材' : '子类']: p.choices, ...(p.layout==='fic' ? FIC_AXES : {}) };
       for (const [label, choices] of Object.entries(axes)) {
         const select = el('select', {'aria-label':label});
@@ -164,7 +171,8 @@ async function newExtra(story, nodes) {
     el('div', { class: 'field' }, el('label', { text: '形式' }), tplSel, tplHint),
     subtypeBox,
     el('div', { class: 'field' }, el('label', { text: '要求（可留空）' }), req),
-    el('div', { class: 'field' }, el('label', { text: '视角角色（日记、采访这类要选）' }), povSel, el('div', { style: { height: '6px' } }), povFree),
+    owner.el, reporter.el, companions.el,
+    el('div',{class:'field'},el('label',{text:'番外 API'}),apiSelect,el('div',{class:'hint',text:'单独选择并记住，不跟随正文 API。'})),
     el('div', { class: 'field' }, el('label', { text: '时间点' }), anchorSel, el('div', { class: 'hint', text: '时间点之后的正史一律不发给模型，番外就不会提前写到。' })),
     el('div', { class: 'field' }, el('label', { text: '带上时间点前最近几章的原文' }), recent, el('div', { class: 'hint', text: '让模型熟悉人物口吻和最近发生的事。更早的剧情可以在下面单独指定。' })),
     chapters.length ? el('details', { class: 'card', style: { padding: '10px 12px' } }, el('summary', { style: { cursor: 'pointer' }, text: '额外指定章节作素材（可选）' }), pinBox) : null,
@@ -179,13 +187,19 @@ async function newExtra(story, nodes) {
       onclick: async () => {
         const t = templates.find((x) => x.id === tplSel.value) || null;
         if (!t && !req.value.trim()) { toast('自定义番外要写一下想看什么'); return; }
+        if (!apiSelect.value) { toast('请选择番外 API；没有连接时先去设置添加'); return; }
+        const layout = layoutOf(t);
+        const cast = {owner:owner.value(),reporter:reporter.value(),companions:companions.value()};
+        if (layout === 'show') { delete cast.owner; delete cast.reporter; }
+        else { delete cast.companions; if(layout!=='report') delete cast.reporter; }
+        if ([cast.owner,cast.reporter].some(p=>p?.kind==='named'&&!p.name)) {toast('请填写人物姓名');return;}
         const anchorNo = Number(anchorSel.value) || 0;
         const anchorCh = chapters.find((c) => c.no === anchorNo);
         const x = {
           id: uid(), storyId: story.id, createdAt: Date.now(), updatedAt: Date.now(),
           tplName: t ? t.name : '自定义', tplText: t ? t.text : '', tplScope: t ? t.scope : 'all',
           layout: layoutOf(t), variant: subtypeFields.filter(f=>f.input.value.trim()).map(f=>f.label+'：'+f.input.value.trim()).join('\n'),
-          request: req.value.trim(), pov: (povFree.value.trim() || povSel.value || '').trim(),
+          request: req.value.trim(), cast, pov: layout === 'show' ? '' : cast.owner?.name || '', connectionId:apiSelect.value,
           scope: scopeSel.value, anchorId: anchorCh ? anchorCh.id : null, anchorNo,
           recentN: Math.max(0, Math.min(20, Number(recent.value) || 0)),
           pinned: pinChecks.filter((c) => c.checked).map((c) => Number(c.value)),
@@ -194,6 +208,7 @@ async function newExtra(story, nodes) {
         };
         x.scopeUsed = x.scope !== 'follow' ? x.scope : x.tplScope;
         await db.put('extras', x);
+        await db.kvSet('extraConnectionId', apiSelect.value);
         s.close();
         go(`extra/${encodeURIComponent(story.id)}/${encodeURIComponent(x.id)}`);
       },
@@ -215,12 +230,16 @@ async function renderReader(root, story, nodes, extraId) {
   const st = { streaming: null, lastCtx: null, frame: 0, raw: null };
   let destroyed = false;
   const titleEl = el('div', { class: 'title' });
+  const apiButton = el('button',{class:'btn small extra-api-btn',onclick:()=>chooseApi(),'aria-label':'选择番外 API'},'番外 API');
+  let connections = await getConnections();
+  const defaultApi = await extraConnection(x.connectionId);
+  if (!x.connectionId && defaultApi) x.connectionId = defaultApi.id;
   const content = el('div', { class: 'feed' });
   const scroller = el('div', { class: 'scroll' }, content);
   root.append(el('div', { class: 'view' },
     el('div', { class: 'topbar' },
       el('button', { class: 'icon-btn', 'aria-label': '返回', onclick: () => go(`extra/${encodeURIComponent(story.id)}`) }, '‹'),
-      titleEl,
+      titleEl, apiButton,
       el('button', { class: 'icon-btn', 'aria-label': '更多', onclick: () => moreMenu() }, '⋯')),
     scroller));
 
@@ -230,12 +249,16 @@ async function renderReader(root, story, nodes, extraId) {
   function draw({ stick = false } = {}) {
     const keep = stick && nearBottom();
     const v = curVersion(x);
+    const api = connections.find(c=>c.id === (v?.connectionId || x.connectionId));
+    apiButton.textContent = api ? connLabel(api) : '选择番外 API';
+    apiButton.disabled = !!st.streaming || jobs>0 || !!pendingVersion();
     titleEl.replaceChildren(extraTitle(x), el('div', { class: 'sub', text: '番外 · 不进正史' }));
     content.replaceChildren();
     content.append(el('div', { class: 'card', style: { fontFamily: 'var(--ui-font)', fontSize: '13.5px', marginTop: '8px' } },
       el('div', { class: 'muted', text: metaLine(x) }),
       x.request ? el('div', { style: { marginTop: '4px' }, text: '要求：' + x.request }) : null,
-      x.variant ? el('div',{class:'hint',text:x.variant.replace(/\n/g,' · ')}) : null));
+      x.variant ? el('div',{class:'hint',text:x.variant.replace(/\n/g,' · ')}) : null,
+      x.cast ? el('div',{class:'hint',text:castSummary(v?.cast || x.cast,v?.layout || x.layout)}) : null));
     const g = el('div', { class: 'gm' });
     const live = !!st.streaming || jobs > 0;
     if (v?.text) {
@@ -247,7 +270,7 @@ async function renderReader(root, story, nodes, extraId) {
       if (raw) g.append(el('div',{class:'extra-raw',text:v.text}));
       else {
         if (title) g.append(el('h2', { text: title, style: { marginTop: '14px' } }));
-        if (v.layout || /【(?:论坛|聊天|报告|节目|同人|场景)】/.test(v.text)) g.append(renderExtraLayout(v.text,{emphasis:getPrefs().emphasis!==false,dialogueColor:getPrefs().dialogueColor!==false}));
+        if (v.layout || /【(?:论坛|聊天|报告|节目|同人|场景)】/.test(v.text)) g.append(renderExtraLayout(v.text,{emphasis:getPrefs().emphasis!==false,dialogueColor:getPrefs().dialogueColor!==false,reportMode:(v.layout || x.layout)==='report'}));
         else blocks.forEach((b, i) => g.append(el('p', { class: [b.includes('\n') ? 'fw' : '', live && i === blocks.length - 1 ? 'cursor' : ''].filter(Boolean).join(' ') || null }, inlineText(b, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false))));
       }
     } else if (live) {
@@ -303,6 +326,17 @@ async function renderReader(root, story, nodes, extraId) {
     return box;
   }
 
+  async function chooseApi() {
+    if (jobs || st.streaming || pendingVersion()) return;
+    connections = await getConnections();
+    if (!connections.length) {toast('先在设置中添加 API 连接');return;}
+    const selected = await menu('选择番外 API',connections.map(c=>({key:c.id,label:connLabel(c),hint:c.model || ''})));
+    if (!selected || jobs || st.streaming || pendingVersion()) return;
+    x.connectionId = selected;
+    const v = curVersion(x); if(v) v.connectionId = selected;
+    await db.kvSet('extraConnectionId',selected); await save(); draw();
+  }
+
   async function buildCtx(request = x.request) {
     const modules = x.withModules ? [...(await getModules()), ...(story.localModules || [])].filter((m) => m.mode !== 'manual' && m.mode !== 'keyword' && story.modules?.[m.id]) : [];
     const base = await getBase();
@@ -310,7 +344,7 @@ async function renderReader(root, story, nodes, extraId) {
     const chapters = chaptersOf(path);
     return buildExtraContext(story, {
       chapters, anchorNo: chapters.length, recentN: x.recentN, pinned: x.pinned || [],
-      template: { name: x.tplName, text: x.tplText, scope: x.tplScope, layout:x.layout }, variant:x.variant, request, scope: x.scope, pov: x.pov,
+      template: { name: x.tplName, text: x.tplText, scope: x.tplScope, layout:x.layout }, variant:x.variant, cast:x.cast, request, scope: x.scope, pov: x.pov,
       length: x.length, modules, base,
     });
   }
@@ -366,8 +400,8 @@ async function renderReader(root, story, nodes, extraId) {
     if (mode === 'continue' && !v?.text?.trim()) return;
     const saved = resuming ? v.relayContext : null;
     const resumeJob = resuming ? v.relayJob : null;
-    const conn = resuming ? saved?.connection : await resolveConnection(story);
-    if (!conn) { toast('先在设置里添加连接'); return; }
+    const conn = resuming ? saved?.connection : await extraConnection(v?.connectionId || x.connectionId);
+    if (!conn) { toast('这篇番外的 API 未选择或已被删除，请点右上角选择番外 API'); return; }
     const ctx = v?.context || await buildCtx(v?.request ?? x.request);
     st.lastCtx = ctx;
     let base = saved?.base || '';
@@ -378,12 +412,13 @@ async function renderReader(root, story, nodes, extraId) {
       base = v.text || '';
       messages.push({ role: 'assistant', content: base }, { role: 'user', content: '（接着当前版本末尾往下写。已写内容保留，不重复，不另起标题；即使上一段已有收束，也按新进展继续。）' + (note ? '\n【本次续写要求】\n' + note : '') });
     } else if (!resuming) {
-      v = { id: uid(), text: '', createdAt: Date.now(), request: x.request, context: ctx, layout:ctx.info.layout || '', layoutVersion:1, variant:x.variant || '' };
+      v = { id: uid(), text: '', createdAt: Date.now(), request: x.request, context: ctx, layout:ctx.info.layout || '', layoutVersion:1, variant:x.variant || '', cast:x.cast, connectionId:conn.id };
       st.raw = null;
       x.versions = x.versions || [];
       x.versions.push(v);
       x.cur = x.versions.length - 1;
     }
+    if (!resuming) v.connectionId = conn.id;
     v.status = 'streaming'; v.error = null; v.stopped = false; v.thinking = false; v.model = conn?.model || '';
     delete x.pending;
     await save();

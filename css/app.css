@@ -459,3 +459,27 @@ a { color: var(--accent); }
 .extra-raw { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--read-font); font-size: var(--read-size); line-height: 1.9; margin: 20px 0; }
 .extra-view-toggle { display: flex; gap: 6px; margin: 16px 0 0; }
 @media (max-width: 380px) { .ex-block { padding: 15px; } .ex-thread { margin-left: -15px; margin-right: -15px; margin-bottom: -15px; } .ex-post { padding: 15px; } .ex-chat-head { margin-left: -15px; margin-right: -15px; } }
+
+/* 更紧凑的文字记录与完整报告。 */
+.extra-api-btn { max-width: 110px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.extra-companions { display: flex; flex-wrap: wrap; gap: 7px 14px; margin: 8px 0; }
+.extra-companion { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+.extra-companion input { accent-color: var(--accent); width: 16px; height: 16px; }
+.extra-layout .ex-chat { border-radius: 11px; padding: 0 12px 10px; margin: 14px 0; }
+.ex-chat .ex-chat-head { margin: 0 -12px 8px; padding: 8px 12px; font-size: 13px; }
+.ex-chat .ex-message { margin: 7px 0 0; }
+.ex-chat .ex-message.consecutive { margin-top: 3px; }
+.ex-chat .ex-time { margin: 0 0 3px; font-size: 10px; line-height: 1.5; }
+.ex-chat .ex-bubble { padding: 6px 9px; max-width: 87%; font-size: 14px; line-height: 1.6; border-radius: 3px 10px 10px; }
+.ex-chat .ex-message.mine .ex-bubble { border-radius: 10px 3px 10px 10px; }
+.ex-chat .ex-system { margin: 7px 0; line-height: 1.5; }
+.ex-danmu { display: grid; gap: 7px; overflow: visible; padding-bottom: 0; }
+.ex-danmu span { white-space: normal; overflow-wrap: anywhere; border-radius: 7px; padding: 6px 10px; line-height: 1.65; }
+.ex-report-document { border: 1px solid var(--line); border-top: 3px solid var(--accent); background: var(--card); border-radius: 12px; padding: 18px; margin: 20px 0; }
+.ex-report-document .ex-report { border: 0; border-radius: 0; background: transparent; padding: 0; margin: 0; }
+.ex-report-document .ex-case { padding: 10px 0; }
+.ex-report-document .ex-index { padding: 11px 0; }
+.ex-report-document .ex-index progress { height: 4px; margin: 8px 0; }
+.ex-report-document .ex-callout { margin: 10px 0; padding: 8px 10px; background: transparent; border-left: 2px solid var(--line); border-radius: 0; }
+.ex-report-document .ex-prescription { border-color: var(--accent); background: var(--accent-soft); }
+.ex-report-document .ex-scene { margin: 15px 0; font-size: 15px; }
