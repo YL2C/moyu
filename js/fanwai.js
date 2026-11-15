@@ -7,7 +7,7 @@ import { forContext, parseReply } from './parse.js';
 import { cardText, splitNames, protagonistText } from './prompt.js';
 import { EMPHASIS_GUIDE } from './inline.js';
 import { castNames, castText } from './extra-options.js';
-import { PLAYBOOKS, PLAYBOOK_COMMON, LAYOUT_GUIDE, layoutOf, PLAYBOOK_UPDATES, PLAYBOOK_RELATIONS, playbookOf } from './extra-playbooks.js';
+import { PLAYBOOKS, PLAYBOOK_COMMON, LAYOUT_GUIDE, layoutOf, PLAYBOOK_UPDATES, PLAYBOOK_RELATIONS, PLAYBOOK_EDITORIAL, extraEditorial, refreshPlaybookText, playbookOf } from './extra-playbooks.js';
 
 export const SCOPES = {
   follow: '跟随形式',
@@ -42,7 +42,7 @@ const BUILTIN = [
 ];
 
 export function builtinTemplates() {
-  return [...BUILTIN.map(([name, scope, text], i) => ({ id: 'builtin-' + i, name, scope, text, note: '', layout: layoutOf({name}) })), ...PLAYBOOKS.map(p => ({...p, text:p.text+'\n'+(PLAYBOOK_UPDATES[p.layout] || '')+'\n'+(PLAYBOOK_RELATIONS[p.layout] || ''), playbookRevision:3, note:''}))];
+  return [...BUILTIN.map(([name, scope, text], i) => ({ id: 'builtin-' + i, name, scope, text, note: '', layout: layoutOf({name}) })), ...PLAYBOOKS.map(p => ({...p, text:p.text+'\n'+(PLAYBOOK_UPDATES[p.layout] || '')+'\n'+(PLAYBOOK_RELATIONS[p.layout] || '')+'\n'+(PLAYBOOK_EDITORIAL[p.layout] || ''), playbookRevision:4, note:''}))];
 }
 
 export async function getTemplates() {
@@ -54,12 +54,15 @@ export async function getTemplates() {
   }
   for (const t of v) {
     const p=playbookOf(t), update=p && PLAYBOOK_UPDATES[p.layout];
-    if(p && t.playbookRevision !== 3) {
+    if(p && t.playbookRevision !== 4) {
       // 保留用户改过的正文，只补充新版要求；后续再编辑不会被重复追加。
+      t.text=refreshPlaybookText(t.text);
       if(update && !t.text.includes(update)) t.text+='\n'+update;
       const relation=PLAYBOOK_RELATIONS[p.layout];
       if(relation && !t.text.includes(relation))t.text+='\n'+relation;
-      t.playbookRevision=3;changed=true;
+      const editorial=PLAYBOOK_EDITORIAL[p.layout];
+      if(editorial && !t.text.includes(editorial))t.text+='\n'+editorial;
+      t.playbookRevision=4;changed=true;
     }
   }
   if(changed) await saveTemplates(v);
@@ -107,7 +110,7 @@ export function buildExtraContext(story, opts) {
 
   // 角色卡：常驻的、视角角色、素材里被提到的
   const scan = material + '\n' + request + '\n' + pov + '\n' + castNames(opts.cast).join('\n');
-  const cards = (story.cards || []).filter((c) => c.name?.trim() && ([opts.cast?.owner,opts.cast?.partner,opts.cast?.subject].some(p=>p?.kind==='mixed') || c.core || c.name === pov || splitNames(c).some((n) => (n === c.name || n.length >= 2) && scan.includes(n))));
+  const cards = (story.cards || []).filter((c) => c.name?.trim() && (['chat','fic'].includes(layout) || [opts.cast?.owner,opts.cast?.partner,opts.cast?.subject].some(p=>p?.kind==='mixed') || c.core || c.name === pov || splitNames(c).some((n) => (n === c.name || n.length >= 2) && scan.includes(n))));
 
   const scopeText = scope === 'char' && ['show','chat','fic','report'].includes(layout) && opts.cast?.version >= 3
     ? '按各份材料的手机主人、报告作者、同人作者或在场人物分别限制其知情范围；关系对象不等于叙述者，不能因选了对方而把主角换成对方。私密真相若仅叙述者知道，不能泄漏给网友。'
@@ -144,6 +147,7 @@ export function buildExtraContext(story, opts) {
     ? `【时间点】这篇番外发生在正史第 ${anchorNo} 章之后。第 ${anchorNo} 章之后的正史还没有发生，不要写到。`
     : '【时间点】正史还没开始，按设定写。');
   add(`正史素材 · ${picked.length} 章`, material ? '【正史素材（只用来了解人物和发生过的事，不要照抄原句）】\n' + material : '');
+  if(layout) add('当前叙事修订（优先于旧模板冲突条款）',extraEditorial(layout,opts.cast));
   const system = parts.map((p) => p.text).join('\n\n');
   const user = `请写这篇番外，篇幅大约 ${lenChars} 字（${lenLabel}篇）${lenChars >= 5000 ? '，要写足，不要提前收尾' : ''}。` + (request.trim() ? `\n这次的要求：${request.trim()}` : '') + (pov && scope !== 'char' ? `\n视角角色：${pov}` : '');
   return {

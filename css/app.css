@@ -492,4 +492,7 @@ a { color: var(--accent); }
 .ex-chat .ex-message.consecutive { margin-top: 4px; }
 .ex-chat .ex-bubble { padding: 5px 8px; max-width: 79%; font-size: 13px; line-height: 1.65; }
 .extra-layout .ex-chat { padding: 0 10px 9px; margin: 13px 0; }
+.extra-layout .ex-note { border-left: 3px solid var(--accent); padding: 12px 14px; margin: 14px 0; }
+.ex-note-row { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 8px 0; }
+.ex-note-row .ex-body { font-size: 13px; }
 .ex-chat .ex-chat-head { margin-left: -10px; margin-right: -10px; padding: 7px 10px; }

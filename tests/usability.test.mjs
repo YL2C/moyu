@@ -401,11 +401,12 @@ test('六种材料本地排版保留内容，缺失标记回退；HTML与链接�
   const chat=renderExtraLayout(samples['他的聊天记录']);assert.ok(chat.querySelector('.mine .ex-bubble'));assert.ok(chat.textContent.includes('撤回'));
   const forum=renderExtraLayout(samples['论坛体']);assert.ok(forum.querySelector('.ex-op'));assert.ok(forum.querySelector('.ex-quote'));assert.ok(forum.querySelector('.hot'));
   const broken='【聊天】\n会话｜未完成\n我｜测试｜<img src=x onerror=alert(1)>\n消息还没写完';
-  const fallback=renderExtraLayout(broken);assert.equal(fallback.textContent,broken);assert.equal(fallback.querySelector('img'),null);
+  const fallback=renderExtraLayout(broken);assert.ok(fallback.querySelector('.ex-chat'));assert.ok(fallback.textContent.includes('<img src=x onerror=alert(1)>\n消息还没写完'));assert.equal(fallback.querySelector('img'),null);
+  const fragment='【聊天】\n会话｜还没有消息';assert.equal(renderExtraLayout(fragment).textContent,fragment);
   const invalid=renderExtraLayout('【报告】\n指数｜破坏测试｜9999｜<script>bad()</script>｜http://example.test\n【/】');
   assert.equal(invalid.querySelector('progress'),null);assert.ok(invalid.textContent.includes('未评分'));assert.equal(invalid.querySelector('script,a'),null);
   const nested='【论坛】\n楼主｜甲｜今天｜内容\n【聊天】\n他｜乙｜你好\n【/】';
-  assert.equal(parseExtraLayout(nested)[0].fallback,true);
+  assert.deepEqual(parseExtraLayout(nested).map(b=>b.type),['论坛','聊天']);assert.ok(renderExtraLayout(nested).textContent.includes('你好'));
 });
 
 test('番外实际创建可选自定义子类，生成五类布局，原文切换后文字不丢失；新旧版本续写沿用素材',async()=>{
@@ -560,4 +561,91 @@ test('聊天用文字头像与窄气泡，混合材料仍归属于同一篇完�
   const bubbles=doc.querySelectorAll('.ex-bubble');assert.equal(getComputedStyle(bubbles[0]).maxWidth,'79%');assert.equal(getComputedStyle(bubbles[0]).fontSize,'13px');
   assert.equal(doc.querySelectorAll('.ex-chat-avatar').length,2);assert.equal(doc.querySelectorAll('img').length,0);
   assert.equal(getComputedStyle(doc.querySelector('.ex-chat-avatar')).width,'24px');
+});
+
+
+test('模型省略闭合、使用扩展材料或格式变体时逐块恢复，不让其余材料丢失排版',async()=>{
+  const {renderExtraLayout,parseExtraLayout}=await import('../js/extra-layout.js');
+  const text=`# 现场记录
+【节目】
+环节｜互猜习惯｜你接过答题器。
+字幕｜回答正确
+郁黎安｜我记得。
+弹幕｜只关心晚饭｜这题怎么记得这么清楚？
+【场景】
+你转过头看他。
+【/】
+**【聊天记录】**
+会话 │ 他的工作群
+手机主人｜郁黎安
+我｜不爱画直线｜已经到了。
+他｜钢结构不背锅｜收到。
+【备忘录】
+标题｜周三的安排
+时间｜今天 01:23
+1. 提前出门。
+2. 带上热茶。
+【／】
+【同人文】
+标题｜下班以后
+作者｜夜航编辑
+正文｜林舟收起了信，许秋先移开目光。
+【/同人文】
+[评论区]
+#1｜只关心晚饭｜今天｜这段像真的。
+[/评论区]`;
+  const out=renderExtraLayout(text);
+  for(const cls of ['show','chat','note','fic','forum'])assert.ok(out.querySelector('.ex-'+cls),cls);
+  for(const phrase of ['你接过答题器','我记得','你转过头','已经到了','钢结构不背锅','提前出门','带上热茶','许秋先移开目光','这段像真的'])assert.ok(out.textContent.includes(phrase),phrase);
+  assert.equal(out.querySelector('.ex-fallback'),null);assert.equal(parseExtraLayout(text).filter(b=>b.recovered).length,2);
+  assert.equal(out.querySelector('img,script,a'),null);
+});
+
+test('热评可省略时间、点赞带标签并换行写内容；未知栏目与昵称不吞字',async()=>{
+  const {renderExtraLayout}=await import('../js/extra-layout.js');
+  const out=renderExtraLayout(`【论坛】
+标题｜施工现场
+#1｜钢结构不背锅｜今日14:13｜先把图纸看完。
+热评｜#4｜不喝蜂蜜水｜点赞 89｜
+
+划重点：他亲自端了热茶。
+【/】
+【聊天】
+会话｜工作群
+备注｜钢结构不背锅｜周既白
+钢结构不背锅｜14:18｜明天见。
+【/】
+【同人】
+作者的话｜这个结尾留给你们。
+正文｜林舟没有回头。
+【/】`);
+  const hot=out.querySelectorAll('.ex-post')[1];assert.ok(hot.querySelector('.hot'));assert.equal(hot.querySelector('.ex-author').textContent,'不喝蜂蜜水');
+  assert.equal(hot.querySelector('.ex-likes').textContent,'赞 89');assert.ok(hot.querySelector('.ex-body').textContent.includes('他亲自端了热茶'));
+  assert.equal(out.querySelector('.ex-bubble').textContent,'明天见。');assert.ok(out.textContent.includes('周既白'));assert.ok(out.textContent.includes('作者的话｜这个结尾留给你们'));
+});
+
+test('报告撰写口吻与收报告现场、手机阅读人称、同人内外人称同时进入最终指令',async()=>{
+  const {buildExtraContext,builtinTemplates}=await import('../js/fanwai.js');
+  const {story}=await seedStory();story.cards=[{name:'未登场的同事',initial:'工程师，讲话精确'}];
+  const chapters=[{no:1,id:'chapter-one',title:'初次见面',text:'你收到他留的便条。'}];
+  const make=(layout,cast)=>buildExtraContext(story,{chapters,anchorNo:1,template:builtinTemplates().find(t=>t.layout===layout),cast});
+  const cast={version:3,protagonist:{kind:'self',name:'林舟'},owner:{kind:'character',name:'许秋'}};
+  const chat=make('chat',cast);assert.ok(chat.system.includes('以“你”代指玩家主角'));assert.ok(chat.system.includes('先写你在何种场景'));assert.ok(chat.system.includes('网名或备注'));
+  assert.ok(chat.info.cards.includes('未登场的同事'));assert.ok(chat.system.includes('正文尚未出场'));assert.ok(chat.system.endsWith('必须有看到手机的场景。'));
+  const mixed=make('chat',{...cast,owner:{kind:'mixed'}});assert.ok(mixed.system.endsWith('分别标明各手机主人。'));
+  const report=make('report',{...cast,subject:cast.owner,reporter:{kind:'character',name:'未登场的同事'}});
+  assert.ok(report.system.includes('开篇必须先写“你”收到'));assert.ok(report.system.includes('以撰写人自己的口吻'));assert.ok(report.system.includes('不能写进可见报告'));assert.ok(report.system.includes('自行判断被报告人是否在场'));assert.ok(report.system.includes('若他没看到则不强加读后反应'));
+  assert.ok(!report.system.includes('证据注明素材章节或原文短句'));assert.ok(!report.system.includes('章节及具体证据'));
+  const fic=make('fic',{...cast,partner:cast.owner});assert.ok(fic.system.includes('同人作品内部以第三人称'));assert.ok(fic.system.includes('现实场景必须以“你”'));assert.ok(fic.system.includes('甚至亲自写同人'));assert.ok(fic.info.cards.includes('未登场的同事'));
+});
+
+test('已保存第三版模板升级口吻但不删除自定义内容，旧番外重写仍收到最新修订',async()=>{
+  const {getTemplates,buildExtraContext}=await import('../js/fanwai.js');
+  const {story}=await seedStory();
+  const oldText='我补充的要求。证据注明素材章节或原文短句，不能为凑分捏造正史。';
+  await db.kvSet('fwPlaybooksV1',true);await db.kvSet('fwTemplates',[{id:'playbook-report',name:'恋爱脑报告',layout:'report',playbookRevision:3,text:oldText}]);
+  const list=await getTemplates();assert.equal(list[0].playbookRevision,4);assert.ok(list[0].text.startsWith('我补充的要求。'));assert.ok(!list[0].text.includes('证据注明素材章节或原文短句'));
+  assert.ok(list[0].text.includes('开篇必须先写'));assert.equal((await getTemplates())[0].text,list[0].text);
+  const ctx=buildExtraContext(story,{chapters:[],anchorNo:0,template:{name:'恋爱脑报告',layout:'report',text:oldText}});
+  assert.equal(ctx.info.parts.at(-1).label,'当前叙事修订（优先于旧模板冲突条款）');assert.ok(ctx.info.parts.at(-1).text.includes('绝不能写进可见报告'));
 });

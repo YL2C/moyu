@@ -1,36 +1,53 @@
 import { el } from './util.js';
 import { inlineText } from './inline.js';
 
-const TYPES = new Set(['论坛','聊天','报告','节目','同人','场景']);
-const ROW_KEYS = new Set(['标题','分区','标签','楼主','补充','热评','系统','会话','时间','他','我','语音','已读','档案','案例','指数','批注','诊断','处方','规则','环节','字幕','观察室','采访','弹幕','作者','简介','数据','正文','报告人','总评','表现','现场','结语','章节']);
+const TYPES = new Set(['论坛','聊天','报告','节目','同人','场景','便笺']);
+const ALIASES = {论坛体:'论坛',评论区:'论坛',聊天记录:'聊天',私聊:'聊天',群聊:'聊天',群聊记录:'聊天',报告书:'报告',恋爱脑报告:'报告',恋综:'节目',节目片段:'节目',同人文:'同人',发布页:'同人',同人发布页:'同人',正文场景:'场景',备忘录:'便笺',搜索记录:'便笺',草稿箱:'便笺',日历:'便笺',订单:'便笺',购物车:'便笺',导航记录:'便笺',转账备注:'便笺',歌单:'便笺'};
+const ROW_KEYS = new Set(['标题','分区','标签','楼主','补充','热评','系统','会话','时间','他','我','语音','已读','档案','案例','指数','批注','诊断','处方','规则','环节','字幕','观察室','采访','弹幕','作者','简介','数据','正文','报告人','总评','表现','现场','结语','章节','主人','手机主人','备注','内容','条目','对白']);
+function marker(line) {
+  const clean=line.trim().replace(/^#{1,6}\s+/, '').replace(/^\*\*(.*?)\*\*$/, '$1');
+  const m=clean.match(/^(?:【([^】]+)】|\[([^\]]+)\])$/);
+  if(!m)return null;
+  const label=(m[1]||m[2]).trim();
+  if(/^[\/／]/.test(label)||label==='结束')return {end:true};
+  const type=ALIASES[label] || label;
+  return TYPES.has(type)?{type,label}:null;
+}
+function fieldsOf(line) {
+  const f=line.split(/[｜|│]/).map(v=>v.trim());
+  f[0]=f[0].replace(/^\*\*(.*?)\*\*$/, '$1').replace(/^(\d+)楼$/, '#$1').replace(/^#\s+(\d+)$/, '#$1');
+  return f;
+}
 export function parseExtraLayout(text) {
   const lines = String(text || '').replace(/\r/g, '').split('\n');
   if (/^#{1,4}\s+/.test(lines[0] || '')) lines.shift();
   const blocks = []; let prose = [];
   const flush = () => { if (prose.join('\n').trim()) blocks.push({ type: '场景', text: prose.join('\n').trim() }); prose = []; };
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].trim().match(/^【(论坛|聊天|报告|节目|同人|场景)】$/);
-    if (!m) { prose.push(lines[i]); continue; }
+    const m = marker(lines[i]);
+    if (!m || m.end) { prose.push(lines[i]); continue; }
     flush();
     let end = i + 1;
-    while (end < lines.length && lines[end].trim() !== '【/】') end++;
-    // 未闭合的块直接保留原文；流式过程中不丢字。
-    if (end === lines.length) { blocks.push({ type: '场景', text: lines.slice(i).join('\n'), fallback: true }); break; }
-    const raw = lines.slice(i, end + 1).join('\n');
+    while (end < lines.length && !marker(lines[end])) end++;
+    const closed=!!marker(lines[end]||'')?.end;
+    const raw = lines.slice(i, end + (closed?1:0)).join('\n');
     const body = lines.slice(i + 1, end);
-    if (body.some(line => /^【(?:论坛|聊天|报告|节目|同人|场景)】$/.test(line.trim()))) {
-      blocks.push({type:'场景',text:raw,fallback:true}); i=end; continue;
-    }
-    const rows = []; let malformed = false;
+    const rows = []; let recognized = 0;
     for (const line of body) {
       if (!line.trim()) { if(rows.length) rows.at(-1)[rows.at(-1).length-1]+='\n'; continue; }
-      const fields = line.split(/[｜|]/).map(v=>v.trim());
-      if (fields.length > 1 && (ROW_KEYS.has(fields[0]) || /^#\d+$/.test(fields[0]))) rows.push(fields);
+      const fields = fieldsOf(line);
+      if (fields.length > 1) {
+        // 昵称、原创栏目也保留为独立行，不能吞进上一条消息或丢掉字段名。
+        rows.push(fields);
+        if(ROW_KEYS.has(fields[0]) || /^#\d+$/.test(fields[0]) || m.type==='聊天')recognized++;
+      }
       else if (rows.length) rows.at(-1)[rows.at(-1).length-1] += '\n' + line;
-      else malformed = true;
+      else rows.push(['正文',line]);
     }
-    blocks.push(m[1]==='场景' ? {type:'场景',text:body.join('\n')} : malformed || !rows.length ? {type:'场景',text:raw,fallback:true} : {type:m[1],rows,raw});
-    i = end;
+    // 缺少收尾时，在下一块边界恢复；EOF仅恢复有充分结构的材料，残缺文字仍原样回退。
+    const usable=rows.length && (closed || end<lines.length || recognized>=2);
+    blocks.push(m.type==='场景' ? {type:'场景',text:body.join('\n')} : !usable ? {type:'场景',text:raw,fallback:true} : {type:m.type,label:m.label,rows,raw,recovered:!closed});
+    i = end - (closed?0:1);
   }
   flush(); return blocks;
 }
@@ -52,7 +69,7 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
   };
   for(const block of parseExtraLayout(text)) {
     if(block.type==='场景' || !TYPES.has(block.type)) {out.append(plain(block));continue;}
-    const rows=block.rows, box=el('section',{class:'ex-block ex-'+({'论坛':'forum','聊天':'chat','报告':'report','节目':'show','同人':'fic'}[block.type]),'aria-label':block.type});
+    const rows=block.rows, box=el('section',{class:'ex-block ex-'+({'论坛':'forum','聊天':'chat','报告':'report','节目':'show','同人':'fic','便笺':'note'}[block.type]),'aria-label':block.type});
     if(block.type==='论坛') {
       heading(box,rows,get(rows,'分区')||'讨论区');
       if(get(rows,'标签'))box.append(el('div',{class:'ex-tags',text:get(rows,'标签')}));
@@ -62,15 +79,20 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
         if(['标题','分区','标签'].includes(key))continue;
         if(key==='系统'){thread.append(body(f.join('｜'),'ex-system'));continue;}
         let nick,time,text,floor,hot=false,likes='',ref='';
-        if(key==='热评'){[floor,nick,time,likes,...text]=f;text=text.join('｜');hot=true;}
+        if(key==='热评'){
+          [floor,nick,...text]=f;hot=true;
+          if(/(?:\d[:：]\d|今天|今日|昨天|刚刚|分钟前|小时前|月.*日)/.test(text[0]||''))time=text.shift();
+          if(/^(?:(?:点赞|赞)\s*)?\d+[万千kK]?$/.test(text[0]||''))likes=text.shift().replace(/^(?:点赞|赞)\s*/,'');
+          text=text.join('｜').trim();
+        }
         else if(key==='楼主'||key==='补充'){[nick,time,...text]=f;text=text.join('｜');floor=key;}
-        else if(/^#\d+$/.test(key)){floor=key;[nick,time,...text]=f;if(/^引用#\d+$/.test(text[0]||''))ref=text.shift();text=text.join('｜');}
+        else if(/^#\d+$/.test(key)){floor=key;[nick,...text]=f;if(text.length>1&&!/^引用\s*#/.test(text[0]))time=text.shift();if(/^引用\s*#\d+$/.test(text[0]||''))ref=text.shift();text=text.join('｜');}
         else {thread.append(body(row.join('｜')));continue;}
         if(!nick || !text){thread.append(body(row.join('｜')));continue;}
         const post=el('article',{class:'ex-post'+(key==='楼主'?' ex-op':'')});
         const header=el('div',{class:'ex-post-head'},el('span',{class:'ex-avatar',text:Array.from(nick)[0]||'匿'}),el('span',{class:'ex-author',text:nick}),badge(floor));
         if(hot)header.append(badge('热评','hot'));
-        post.append(header,el('div',{class:'ex-time',text:time||''}));
+        post.append(header);if(time)post.append(el('div',{class:'ex-time',text:time}));
         if(ref)post.append(el('blockquote',{class:'ex-quote',text:ref.replace('引用','回复 ')}));
         post.append(body(text));if(likes)post.append(el('div',{class:'ex-likes',text:'赞 '+likes}));thread.append(post);
       }
@@ -78,10 +100,15 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
       box.append(el('div',{class:'ex-chat-head',text:get(rows,'会话')||'聊天记录'}));
       let lastSender = '';
       for(const [key,...f] of rows){
-        if(key==='会话')continue;
+        if(['会话','主人','手机主人'].includes(key))continue;
         if(['时间','系统','已读'].includes(key)){box.append(body(f.join('｜'),'ex-system'));lastSender='';continue;}
         let side=key,nick=f[0],text=f.slice(1).join('｜');
         if(key==='语音'){[side,nick,...text]=f;text='语音 '+(text[0]||'')+' · '+text.slice(1).join('｜');}
+        if(!ROW_KEYS.has(key)&&!['我','他'].includes(side)){
+          nick=key;side=key===get(rows,'主人')||key===get(rows,'手机主人')?'我':'他';
+          text=f.join('｜');
+          if(f.length>1 && /^\d{1,2}[:：]\d{2}$/.test(f[0]))text=f.slice(1).join('｜');
+        }
         if(!['我','他'].includes(side)||!nick){box.append(body([key,...f].join('｜')));continue;}
         const same = lastSender === side+'|'+nick;
         box.append(el('div',{class:'ex-message'+(side==='我'?' mine':'')+(same?' consecutive':'')},same?null:el('div',{class:'ex-speaker'},el('span',{class:'ex-chat-avatar','aria-hidden':'true',text:Array.from(nick)[0]||'匿'}),el('span',{class:'ex-time',text:nick})),body(text,'ex-bubble')));
@@ -111,6 +138,12 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
         else box.append(el('div',{class:'ex-segment'},el('div',{class:'ex-eyebrow',text:key}),body(f.join(' · '))));
       }
       if(comments.length)box.append(el('div',{class:'ex-danmu','aria-label':'节目弹幕'},...comments.map(t=>el('span',{text:t}))));
+    } else if(block.type==='便笺') {
+      heading(box,rows,block.label || '文字记录');
+      for(const [key,...f] of rows){
+        if(key==='标题')continue;
+        box.append(key==='时间'?body(f.join('｜'),'ex-time'):el('div',{class:'ex-note-row'},key==='正文'?null:badge(key),body(f.join('｜'))));
+      }
     } else {
       heading(box,rows,'FANWORK · 同人发布');
       if(get(rows,'作者'))box.append(el('div',{class:'ex-byline',text:'作者 '+get(rows,'作者')}));
@@ -118,7 +151,7 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
       for(const [key,...f] of rows){
         if(['标题','作者','标签'].includes(key))continue;
         if(key==='数据'){box.append(el('div',{class:'ex-stats',text:'喜欢 '+(f[0]||'0')+' · 收藏 '+(f[1]||'0')+' · 模拟数据'}));continue;}
-        box.append(body(f.join('｜'),key==='简介'?'ex-callout':'ex-fic-text'));
+        box.append(body((ROW_KEYS.has(key)?f:[key,...f]).join('｜'),key==='简介'?'ex-callout':'ex-fic-text'));
       }
     }
     out.append(box);
