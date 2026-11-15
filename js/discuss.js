@@ -6,6 +6,7 @@ import { getGlobalMemo, setGlobalMemo, getDefaultRules, getModules } from './sta
 import { cardText, applyCardState, latestCheckpoint, memoryText, protagonistText } from './prompt.js';
 import { chaptersOf } from './fanwai.js';
 import { attachmentContext } from './attachments.js';
+import { stripReasoning, FINAL_OUTPUT_GUIDE } from './reasoning.js';
 
 // ───── 存储：讨论列表 + 每个讨论单独一条 ─────
 export async function listDiscussions() {
@@ -86,13 +87,14 @@ export async function buildDiscussContext(d) {
     const stories = await db.all('stories');
     if (stories.length) add('故事列表', '【用户现有的故事】\n' + stories.map((s) => `- ${s.title || '未命名'}：${(s.world || '').replace(/\s+/g, ' ').slice(0, 80)}`).join('\n'));
   }
+  parts.push({label:'最终输出要求',text:FINAL_OUTPUT_GUIDE});
   const system = parts.map((p) => p.text).join('\n\n');
   return { system, parts: parts.map((p) => ({ label: p.label, chars: p.text.length, text: p.text })) };
 }
 
 export function chatMessages(d) {
   const ms = d.messages.filter(m => m.role === 'user' || m.role === 'assistant').map(m => ({ role: m.role,
-    content: [m.content || '', ...(m.attachments || []).map(attachmentContext)].filter(Boolean).join('\n\n'),
+    content: [m.role==='assistant'?stripReasoning(m.content):m.content || '', ...(m.attachments || []).map(attachmentContext)].filter(Boolean).join('\n\n'),
   })).filter(m => m.content.trim());
   while (ms.length && ms[0].role !== 'user') ms.shift();
   return ms;

@@ -1,5 +1,6 @@
 import { el } from './util.js';
 import { inlineText } from './inline.js';
+import { stripReasoning } from './reasoning.js';
 
 const TYPES = new Set(['论坛','聊天','报告','节目','同人','场景','便笺']);
 const ALIASES = {论坛体:'论坛',评论区:'论坛',聊天记录:'聊天',私聊:'聊天',群聊:'聊天',群聊记录:'聊天',报告书:'报告',恋爱脑报告:'报告',恋综:'节目',节目片段:'节目',同人文:'同人',发布页:'同人',同人发布页:'同人',正文场景:'场景',备忘录:'便笺',搜索记录:'便笺',草稿箱:'便笺',日历:'便笺',订单:'便笺',购物车:'便笺',导航记录:'便笺',转账备注:'便笺',歌单:'便笺'};
@@ -19,7 +20,7 @@ function fieldsOf(line) {
   return f;
 }
 export function parseExtraLayout(text) {
-  const lines = String(text || '').replace(/\r/g, '').split('\n');
+  const lines = stripReasoning(text,{streaming:true}).replace(/\r/g, '').split('\n');
   if (/^#{1,4}\s+/.test(lines[0] || '')) lines.shift();
   const blocks = []; let prose = [];
   const flush = () => { if (prose.join('\n').trim()) blocks.push({ type: '场景', text: prose.join('\n').trim() }); prose = []; };

@@ -1,5 +1,6 @@
 // 墨游 · 把模型回复拆成：标题 / 正文 / 弹幕 / 选项
 // 宽松解析：模型偶尔不按格式写，也尽量拆对；拆不出来就整段当正文。
+import { stripReasoning } from './reasoning.js';
 
 function clean(line) {
   return line.replace(/^[\s>#*_~`]+/, '').replace(/[\s*_~`]+$/, '');
@@ -52,7 +53,7 @@ function parseDanmuLine(s) {
 }
 
 export function parseReply(raw) {
-  const lines = String(raw || '').replace(/\r/g, '').split('\n');
+  const lines = stripReasoning(raw,{streaming:true}).replace(/\r/g, '').split('\n');
   let state = 'body';
   const body = [];
   const danmu = [];
@@ -130,7 +131,7 @@ export function parseReply(raw) {
 
 /** 正文分段：有空行按空行分，没有空行按单个换行分 */
 export function paragraphs(text) {
-  const t = String(text || '').trim();
+  const t = stripReasoning(text,{streaming:true}).trim();
   if (!t) return [];
   const byBlank = t.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const parts = byBlank.length > 1 ? byBlank : t.split('\n').map((p) => p.trim()).filter(Boolean);
@@ -142,5 +143,5 @@ export function paragraphs(text) {
 export function forContext(raw) {
   const p = parseReply(raw);
   const head = p.title ? `# ${p.title}\n` : '';
-  return (head + p.body).trim() || String(raw || '').trim();
+  return (head + p.body).trim() || stripReasoning(raw).trim();
 }

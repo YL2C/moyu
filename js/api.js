@@ -8,6 +8,7 @@
 
 import { resolveVertex, parseServiceAccount, vertexBaseUrl, VERTEX_MODELS } from './vertex.js';
 import { getRelay, relayFetch, RelayError } from './relay.js';
+import { inspectReasoning, stripReasoning } from './reasoning.js';
 
 export const FORMAT_LABEL = { auto: '自动识别', openai: 'OpenAI 兼容', anthropic: 'Claude 原生', vertex: 'Google Vertex AI（服务账号 JSON）' };
 
@@ -104,9 +105,11 @@ export function tidyMessages(messages) {
   const out = [];
   for (const m of messages) {
     if (!m || !m.content) continue;
+    const content=m.role==='assistant'?stripReasoning(m.content):m.content;
+    if(!content)continue;
     const last = out[out.length - 1];
-    if (last && last.role === m.role) last.content += '\n\n' + m.content;
-    else out.push({ role: m.role, content: m.content });
+    if (last && last.role === m.role) last.content += '\n\n' + content;
+    else out.push({ role: m.role, content });
   }
   if (out.length && out[0].role !== 'user') out.unshift({ role: 'user', content: '（故事从这里继续）' });
   return out;
@@ -210,6 +213,7 @@ function emptyError(finish, sawThinking) {
   if (/refusal/i.test(f)) return new ApiError('refusal', '模型拒绝了这次请求', { hint: '这轮内容被模型拒绝了。可以换个说法、换个模型，或者重试。', detail: `结束原因：${f}` });
   if (/content_filter|safety|blocked|prohibited/i.test(f)) return new ApiError('blocked', '内容被安全策略拦截', { hint: '这家接口拦下了这轮内容。可以换个说法或换个模型。', detail: `结束原因：${f}` });
   if (/length|max_tokens/i.test(f) && sawThinking) return new ApiError('empty', '输出上限被思考过程用完了', { hint: '在连接设置里把“输出上限”调大（例如 8000 以上）。', detail: `结束原因：${f}` });
+  if(sawThinking)return new ApiError('empty','模型只返回了思考内容，没有正文',{hint:'思考内容已隐藏。请检查接口的思考输出配置，或重新生成。',detail:f?`结束原因：${f}`:'没有收到最终回答'});
   return new ApiError('empty', '模型返回了空内容', {
     hint: '常见原因：内容被安全策略拦截；或者开了思考的模型把输出上限用完了（把“输出上限”调大）。',
     detail: f ? `结束原因：${f}` : '没有收到任何正文',
@@ -220,7 +224,7 @@ function emptyError(finish, sawThinking) {
 
 function partsText(content) {
   if (typeof content === 'string') return content;
-  if (Array.isArray(content)) return content.map((p) => (typeof p === 'string' ? p : p?.text || '')).join('');
+  if (Array.isArray(content)) return content.filter(p=>!['thinking','reasoning','analysis','reasoning_content'].includes(p?.type) && p?.channel!=='analysis').map((p) => (typeof p === 'string' ? p : p?.text || '')).join('');
   return '';
 }
 
@@ -232,8 +236,9 @@ function parseNonStream(format, j) {
     return { text, finish: j.stop_reason, usage: j.usage || null, thinking };
   }
   const ch = j.choices?.[0];
-  const text = partsText(ch?.message?.content);
-  return { text, finish: ch?.finish_reason, usage: j.usage || null, thinking: !!(ch?.message?.reasoning_content || ch?.message?.reasoning) };
+  const internal=['analysis','reasoning','thinking'].includes(ch?.message?.channel);
+  const text = internal?'':partsText(ch?.message?.content);
+  return { text, finish: ch?.finish_reason, usage: j.usage || null, thinking: internal || !!(ch?.message?.reasoning_content || ch?.message?.reasoning) };
 }
 
 // ───────────── 发请求 ─────────────
@@ -259,7 +264,25 @@ function checkConn(conn) {
  * 返回 { text, finish, usage, truncated, flagged }。
  * 出错时抛 ApiError，已收到的正文在 err.partial 里。
  */
-export async function streamChat(conn, { system, messages = [], maxTokens, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000 }) {
+export async function streamChat(conn, opts = {}) {
+  let visible='',received=false,thinking=false;
+  const thinkingOnce=()=>{received=true;if(!thinking){thinking=true;opts.onThinking?.();}};
+  const publish=(full,streaming)=>{
+    const cleaned=inspectReasoning(full,{streaming});
+    if(cleaned.hidden)thinkingOnce();
+    if(cleaned.text!==visible){const delta=cleaned.text.slice(visible.length);visible=cleaned.text;opts.onText?.(delta,visible);}
+  };
+  try {
+    const result=await streamChatRaw(conn,{...opts,onText:(_delta,full)=>{received=true;publish(full,true);},onThinking:thinkingOnce});
+    publish(result.text,false);
+    if(!visible.trim())throw emptyError(result.finish,thinking);
+    return {...result,text:visible};
+  } catch(e) {
+    if(e instanceof ApiError){e.partial=stripReasoning(e.partial||visible,{streaming:true});e.receivedOutput=received;}
+    throw e;
+  }
+}
+async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000 }) {
   if (!resumeJob) { checkConn(conn); conn = await effectiveConn(conn); }
   const format = guessFormat(conn);
   const url = resumeJob ? '' : normalizeUrl(format, conn.baseUrl);
@@ -349,9 +372,10 @@ export async function streamChat(conn, { system, messages = [], maxTokens, signa
         const ch = j.choices?.[0];
         if (ch) {
           const delta = ch.delta || ch.message || {};
-          const piece = partsText(delta.content);
+          const internal=['analysis','reasoning','thinking'].includes(delta.channel);
+          const piece = internal?'':partsText(delta.content);
           if (piece) { text += piece; onText(piece, text); }
-          if (delta.reasoning_content || delta.reasoning) { sawThinking = true; onThinking(); }
+          if (internal || delta.reasoning_content || delta.reasoning) { sawThinking = true; onThinking(); }
           if (ch.finish_reason) finish = ch.finish_reason;
         }
         if (j.usage) usage = j.usage;
@@ -416,7 +440,7 @@ export async function streamWithRetry(conn, opts, { retries = 1, onRetry = () =>
         onConnPatch({ usageOpt: false });
         continue;
       }
-      const retriable = e instanceof ApiError && ['network', 'ratelimit', 'server', 'overloaded'].includes(e.kind) && !e.partial;
+      const retriable = e instanceof ApiError && ['network', 'ratelimit', 'server', 'overloaded'].includes(e.kind) && !e.partial && !e.receivedOutput;
       if (!retriable || attempt >= retries || opts.signal?.aborted) throw e;
       attempt++;
       onRetry(e, attempt);

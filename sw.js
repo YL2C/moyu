@@ -2,7 +2,7 @@
 // 只缓存本站的页面文件；API 请求一律不经过缓存。
 // 先向服务器核验最新文件，取不到再用离线缓存；安装时绕过 HTTP 旧缓存。
 const CACHE_PREFIX = 'moyu-yl2c-personal-';
-const CACHE = CACHE_PREFIX + '0.6.16-personal.6';
+const CACHE = CACHE_PREFIX + '0.6.16-personal.7';
 const ASSETS = [
   './',
   './index.html',
@@ -18,6 +18,7 @@ const ASSETS = [
   './js/attachments.js',
   './js/protagonist.js',
   './js/api.js',
+  './js/reasoning.js',
   './js/relay.js',
   './js/prompt.js',
   './js/parse.js',

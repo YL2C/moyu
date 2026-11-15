@@ -6,6 +6,7 @@ import { uid } from './util.js';
 import { forContext, parseReply } from './parse.js';
 import { cardText, splitNames, protagonistText } from './prompt.js';
 import { EMPHASIS_GUIDE } from './inline.js';
+import { stripReasoning, FINAL_OUTPUT_GUIDE } from './reasoning.js';
 import { castNames, castText } from './extra-options.js';
 import { PLAYBOOKS, PLAYBOOK_COMMON, LAYOUT_GUIDE, layoutOf, PLAYBOOK_UPDATES, PLAYBOOK_RELATIONS, PLAYBOOK_EDITORIAL, NICKNAME_GUIDE, extraEditorial, refreshPlaybookText, playbookOf } from './extra-playbooks.js';
 
@@ -149,6 +150,7 @@ export function buildExtraContext(story, opts) {
     : '【时间点】正史还没开始，按设定写。');
   add(`正史素材 · ${picked.length} 章`, material ? '【正史素材（只用来了解人物和发生过的事，不要照抄原句）】\n' + material : '');
   if(layout) add('当前叙事修订（优先于旧模板冲突条款）',extraEditorial(layout,opts.cast));
+  add('最终输出要求',FINAL_OUTPUT_GUIDE);
   const system = parts.map((p) => p.text).join('\n\n');
   const user = `请写这篇番外，篇幅大约 ${lenChars} 字（${lenLabel}篇）${lenChars >= 5000 ? '，要写足，不要提前收尾' : ''}。` + (request.trim() ? `\n这次的要求：${request.trim()}` : '') + (pov && scope !== 'char' ? `\n视角角色：${pov}` : '');
   return {
@@ -160,7 +162,7 @@ export function buildExtraContext(story, opts) {
 
 /** 番外原文 → 标题 + 段落块（保留单个换行，论坛、群聊这类形式靠换行分楼层） */
 export function extraBlocks(text) {
-  const raw = String(text || '').replace(/\r/g, '').trim();
+  const raw = stripReasoning(text,{streaming:true}).replace(/\r/g, '').trim();
   let title = '';
   let body = raw;
   const first = raw.split('\n')[0] || '';

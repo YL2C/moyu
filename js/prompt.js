@@ -5,11 +5,13 @@ import { forContext } from './parse.js';
 import { INPUT_CONVENTION, PERSONAL_RULES } from './personal.js';
 import { protagonistState, PROTAGONIST_FIELDS } from './protagonist.js';
 import { EMPHASIS_GUIDE } from './inline.js';
+import { stripReasoning, FINAL_OUTPUT_GUIDE } from './reasoning.js';
 
 export const DEFAULT_RULES = PERSONAL_RULES;
 
 export function formatContract({ danmu = true, options = true } = {}) {
   const parts = [
+    FINAL_OUTPUT_GUIDE,
     '每次回复严格按下面的格式，不要输出格式以外的说明：',
     '# 本章标题（第一行，四到十二个字，不写“第几章”）',
     '（空一行后写正文）',
@@ -110,7 +112,7 @@ export function scanText(path, extra = '') {
   const users = path.filter((n) => n.role === 'user');
   const replies = path.filter((n) => n.role === 'assistant' && n.text);
   const u = users[users.length - 1];
-  return [u?.text || '', u?.director || '', ...replies.slice(-2).map((n) => n.text), extra].join('\n');
+  return [u?.text || '', u?.director || '', ...replies.slice(-2).map((n) => stripReasoning(n.text)), extra].join('\n');
 }
 
 /**
@@ -228,8 +230,8 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
       if (isLastUser && fmtTail && n.kind !== 'ooc') c += fmtTail;
       messages.push({ role: 'user', content: c });
     } else if (n.text && n.text.trim()) {
-      const content = n.kind === 'ooc' || rawSet.has(n.id) ? n.text.trim() : forContext(n.text);
-      messages.push({ role: 'assistant', content });
+      const content = n.kind === 'ooc' || rawSet.has(n.id) ? stripReasoning(n.text).trim() : forContext(n.text);
+      if(content)messages.push({ role: 'assistant', content });
     }
   });
 

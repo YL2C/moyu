@@ -9,6 +9,7 @@ import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, late
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { archiveConn, DEFAULT_EVERY } from './memory.js';
 import { parseReply, paragraphs } from '../parse.js';
+import { stripReasoning } from '../reasoning.js';
 import { CHOICE_LABELS, expandOptionInput, choiceInput, toggleChoice } from '../personal.js';
 import { inlineText } from '../inline.js';
 import { openExportDialog } from '../exporter.js';
@@ -466,8 +467,8 @@ export async function render(root, { id }) {
     if (continueNode) a = continueNode;
     else if (reuse) { a = reuse; if (!resumeJob) a.text = ''; }
     else a = { id: uid(), storyId: story.id, parentId: userNode.id, role: 'assistant', kind: userNode.kind === 'ooc' ? 'ooc' : 'play', text: '', createdAt: Date.now() };
-    const base = saved ? saved.base || '' : continueNode ? (a.text || '') : '';
-    const previousText = a.text || '';
+    const base = stripReasoning(saved ? saved.base || '' : continueNode ? (a.text || '') : '',{streaming:true});
+    const previousText = stripReasoning(a.text,{streaming:true});
     const continuation = saved ? saved.continuation : !!continueNode;
     const usageKind = saved?.usageKind || (a.kind === 'ooc' ? '出戏' : continueNode ? '续写' : '正文');
     a.status = 'streaming';

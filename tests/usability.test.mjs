@@ -631,8 +631,8 @@ test('报告撰写口吻与收报告现场、手机阅读人称、同人内外�
   const make=(layout,cast)=>buildExtraContext(story,{chapters,anchorNo:1,template:builtinTemplates().find(t=>t.layout===layout),cast});
   const cast={version:3,protagonist:{kind:'self',name:'林舟'},owner:{kind:'character',name:'许秋'}};
   const chat=make('chat',cast);assert.ok(chat.system.includes('以“你”代指玩家主角'));assert.ok(chat.system.includes('先写你在何种场景'));assert.ok(chat.system.includes('网名或备注'));
-  assert.ok(chat.info.cards.includes('未登场的同事'));assert.ok(chat.system.includes('正文尚未出场'));assert.ok(chat.system.endsWith('必须有看到手机的场景。'));
-  const mixed=make('chat',{...cast,owner:{kind:'mixed'}});assert.ok(mixed.system.endsWith('分别标明各手机主人。'));
+  assert.ok(chat.info.cards.includes('未登场的同事'));assert.ok(chat.system.includes('正文尚未出场'));assert.ok(chat.info.parts.find(p=>p.label==='当前叙事修订（优先于旧模板冲突条款）').text.endsWith('必须有看到手机的场景。'));
+  const mixed=make('chat',{...cast,owner:{kind:'mixed'}});assert.ok(mixed.info.parts.find(p=>p.label==='当前叙事修订（优先于旧模板冲突条款）').text.endsWith('分别标明各手机主人。'));
   const report=make('report',{...cast,subject:cast.owner,reporter:{kind:'character',name:'未登场的同事'}});
   assert.ok(report.system.includes('开篇必须先写“你”收到'));assert.ok(report.system.includes('以撰写人自己的口吻'));assert.ok(report.system.includes('不能写进可见报告'));assert.ok(report.system.includes('自行判断被报告人是否在场'));assert.ok(report.system.includes('若他没看到则不强加读后反应'));
   assert.ok(!report.system.includes('证据注明素材章节或原文短句'));assert.ok(!report.system.includes('章节及具体证据'));
@@ -647,7 +647,7 @@ test('已保存第三版模板升级口吻但不删除自定义内容，旧番�
   const list=await getTemplates();assert.equal(list[0].playbookRevision,5);assert.ok(list[0].text.startsWith('我补充的要求。'));assert.ok(!list[0].text.includes('证据注明素材章节或原文短句'));
   assert.ok(list[0].text.includes('开篇必须先写'));assert.equal((await getTemplates())[0].text,list[0].text);
   const ctx=buildExtraContext(story,{chapters:[],anchorNo:0,template:{name:'恋爱脑报告',layout:'report',text:oldText}});
-  assert.equal(ctx.info.parts.at(-1).label,'当前叙事修订（优先于旧模板冲突条款）');assert.ok(ctx.info.parts.at(-1).text.includes('绝不能写进可见报告'));
+  assert.ok(ctx.info.parts.find(p=>p.label==='当前叙事修订（优先于旧模板冲突条款）').text.includes('绝不能写进可见报告'));assert.equal(ctx.info.parts.at(-1).label,'最终输出要求');
 });
 
 test('恋综对白在无外层标记和场景内均排版，片段与弹幕保持发生顺序',async()=>{
@@ -713,4 +713,15 @@ test('实际番外阅读按保存的恋综形式修复没有节目块的对白�
   await db.put('extras',{id:'loose-show',storyId:story.id,tplName:'一起参加恋综',layout:'show',anchorNo:1,cur:0,versions:[{id:'v1',text,status:'done',layoutVersion:1}]});
   const dispose=await extras.render(root,{id:story.id,extraId:'loose-show'});
   try{assert.ok(root.querySelector('.ex-show-dialogue'));assert.ok(root.textContent.includes('你摇了摇头'));button('原文').click();assert.equal(root.querySelector('.extra-raw').textContent,text);button('排版').click();assert.ok(root.querySelector('.ex-show-dialogue'));}finally{dispose();}
+});
+
+test('已存档思考标签在正文和番外原文/排版阅读中隐藏，原始存档仍保留',async()=>{
+  const {story,nodes}=await seedStory();
+  const raw='<think>HIDDEN_SECRET\n【选项】\nA. 错误\nB. 错误</think># 门口\n你打开了门。\n【选项】\nA. 进去\nB. 等待';
+  nodes[1].text=raw;await db.put('nodes',nodes[1]);
+  const dispose=await play.render(root,{id:story.id});
+  try {assert.ok(!root.textContent.includes('HIDDEN_SECRET'));assert.ok(root.textContent.includes('你打开了门'));assert.equal((await db.get('nodes',nodes[1].id)).text,raw);}finally{dispose();}
+  await db.put('extras',{id:'tagged-extra',storyId:story.id,tplName:'他的聊天记录',layout:'chat',anchorNo:1,cur:0,versions:[{id:'v1',text:'<think>EXTRA_SECRET</think># 手机\n【聊天】\n我｜许秋｜收到。\n【/】',layoutVersion:1,status:'done'}]});
+  root.replaceChildren();const end=await extras.render(root,{id:story.id,extraId:'tagged-extra'});
+  try{assert.ok(!root.textContent.includes('EXTRA_SECRET'));assert.ok(root.querySelector('.ex-bubble'));button('原文').click();assert.ok(!root.querySelector('.extra-raw').textContent.includes('EXTRA_SECRET'));assert.ok((await db.get('extras','tagged-extra')).versions[0].text.includes('EXTRA_SECRET'));}finally{end();}
 });

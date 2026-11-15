@@ -4,6 +4,7 @@ import { db } from '../db.js';
 import { el, toast, sheet, menu, promptText, autoGrow, ago, pickRawFile } from '../util.js';
 import { go, getConnections, resolveConnection, connLabel, getGlobalMemo, setGlobalMemo, getPrefs } from '../state.js';
 import { inlineText } from '../inline.js';
+import { stripReasoning } from '../reasoning.js';
 import { streamWithRetry, ApiError } from '../api.js';
 import { normalizeUsage, computeCost, fmtMoney, recordUsage } from '../cost.js';
 import { openStoryEditor } from './story-edit.js';
@@ -152,7 +153,7 @@ async function renderChat(root, id) {
           toast('已撤销');
         } }, '撤销这次写回') : null);
     }
-    const body = el('div', { class: 'disc-text' }, inlineText(m.content || (m.streaming ? '…' : ''), getPrefs().emphasis !== false, getPrefs().dialogueColor !== false));
+    const body = el('div', { class: 'disc-text' }, inlineText((m.role==='assistant'?stripReasoning(m.content,{streaming:true}):m.content) || (m.streaming ? '…' : ''), getPrefs().emphasis !== false, getPrefs().dialogueColor !== false));
     const meta = [m.cost ? fmtMoney(m.cost) : '', m.error || ''].filter(Boolean).join(' · ');
     return el('div', { class: 'disc-msg ' + (m.role === 'user' ? 'me' : 'ai') + (m.error ? ' err' : '') }, body,
       ...(m.attachments || []).map(a => attachmentCard(a, { storyId: d.storyId, onChange: () => saveDiscussion(d).catch(e => toast(e.message)) })),

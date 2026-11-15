@@ -7,6 +7,7 @@ import { inlineText } from '../inline.js';
 import { streamWithRetry, ApiError, guessFormat } from '../api.js';
 import { extraConnection, connectionSelect, personPicker, companionPicker, castSummary } from '../extra-options.js';
 import { renderExtraLayout } from '../extra-layout.js';
+import { stripReasoning } from '../reasoning.js';
 import { playbookOf, layoutOf, FIC_AXES } from '../extra-playbooks.js';
 import { cancelRelayJob } from '../relay.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage } from '../cost.js';
@@ -272,7 +273,7 @@ async function renderReader(root, story, nodes, extraId) {
       const toggle = el('div',{class:'extra-view-toggle','aria-label':'番外阅读方式'});
       for (const [label,value] of [['排版',false],['原文',true]]) toggle.append(el('button',{class:'btn small'+(raw===value?' primary':''),'aria-pressed':String(raw===value),onclick:()=>{st.raw=value;draw();}},label));
       content.append(toggle);
-      if (raw) g.append(el('div',{class:'extra-raw',text:v.text}));
+      if (raw) g.append(el('div',{class:'extra-raw',text:stripReasoning(v.text,{streaming:true})}));
       else {
         if (title) g.append(el('h2', { text: title, style: { marginTop: '14px' } }));
         if (v.layout || x.layout || layoutOf({name:x.tplName}) || /【(?:论坛|聊天|报告|节目|同人|场景|便笺|备忘录)】/.test(v.text)) g.append(renderExtraLayout(v.text,{emphasis:getPrefs().emphasis!==false,dialogueColor:getPrefs().dialogueColor!==false,layout:v.layout || x.layout || layoutOf({name:x.tplName}),reportMode:(v.layout || x.layout || layoutOf({name:x.tplName}))==='report'}));
@@ -409,12 +410,12 @@ async function renderReader(root, story, nodes, extraId) {
     if (!conn) { toast('这篇番外的 API 未选择或已被删除，请点右上角选择番外 API'); return; }
     const ctx = v?.context || await buildCtx(v?.request ?? x.request);
     st.lastCtx = ctx;
-    let base = saved?.base || '';
+    let base = stripReasoning(saved?.base,{streaming:true});
     const continuation = resuming ? saved.mode === 'continue' : mode === 'continue';
-    const previousText = v?.text || '';
+    const previousText = stripReasoning(v?.text,{streaming:true});
     const messages = [...ctx.messages];
     if (mode === 'continue') {
-      base = v.text || '';
+      base = stripReasoning(v.text,{streaming:true});
       messages.push({ role: 'assistant', content: base }, { role: 'user', content: '（接着当前版本末尾往下写。已写内容保留，不重复，不另起标题；即使上一段已有收束，也按新进展继续。）' + (note ? '\n【本次续写要求】\n' + note : '') });
     } else if (!resuming) {
       v = { id: uid(), text: '', createdAt: Date.now(), request: x.request, context: ctx, layout:ctx.info.layout || '', layoutVersion:1, variant:x.variant || '', cast:x.cast, connectionId:conn.id };
