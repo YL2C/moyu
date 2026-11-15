@@ -86,3 +86,38 @@ test('明确标注analysis通道的兼容数据不当正文，final通道正常�
   mock(t,async()=>new Response(data.map(j=>'data: '+JSON.stringify(j)+'\n\n').join(''),{headers:{'Content-Type':'text/event-stream'}}));
   const r=await streamChat(conn,{});assert.equal(r.text,'最终正文');
 });
+
+test('正文边界严格识别整行标记，英文规划与临时标记不再当正文',async()=>{
+  const {extractFinalOutput}=await import('../js/reasoning.js');
+  const prefix="I'm drafting the next scene.\n临时标记\nI will use [MOYU_FINAL] later.\n";
+  assert.equal(extractFinalOutput(prefix).text,'');
+  const raw=prefix+'[MOYU_FINAL]\n# 标题\n正文。\n[/MOYU_FINAL]\n不显示的后记';
+  assert.equal(extractFinalOutput(raw).text,'# 标题\n正文。');
+  for(let i=1;i<raw.length;i++){
+    const visible=extractFinalOutput(raw.slice(0,i),{streaming:true}).text;
+    assert.ok(!visible.includes('drafting'));assert.ok(!visible.includes('临时标记'));assert.ok(!visible.includes('[MOYU'));assert.ok(!visible.includes('[/MOYU'));assert.ok(!visible.includes('后记'));
+  }
+});
+
+test('流式等待正文起点才显示，不把无标签前缀或结束后文字存成正文',async t=>{
+  let request;mock(t,async(_u,init)=>{request=JSON.parse(init.body);return response(["I'm drafting a scene.\n临时标记\n",'[MOYU_','FINAL]\n# 标题\n正文。\n','[/MOYU_','FINAL]\n其他文字']);});
+  const seen=[];const result=await streamChat(conn,{outputBoundary:true,onText:(_,s)=>seen.push(s)});
+  assert.equal(result.text,'# 标题\n正文。');assert.ok(seen.every(s=>!s.includes('drafting')&&!s.includes('其他文字')));assert.ok(request.messages[0].content.includes('正文边界协议'));assert.equal(result.usage.completion_tokens,30);
+});
+
+test('没有正文标记时仅提示异常并保留原始返回，不自动重试、不放进partial',async t=>{
+  const raw="I'm drafting the next scene.\n临时标记";let calls=0;mock(t,async()=>{calls++;return response([raw]);});
+  let count=0;await assert.rejects(streamWithRetry(conn,{outputBoundary:true,onText:()=>count++},{retries:1}),e=>e.kind==='output_format'&&e.partial===''&&e.detail===raw&&e.usage.completion_tokens===30);
+  assert.equal(calls,1);assert.equal(count,0);
+});
+
+test('等待正文时发生网络错误也不能通过partial泄漏未标记前缀',async t=>{
+  let sent=false;mock(t,async()=>new Response(new ReadableStream({pull(c){if(!sent){sent=true;c.enqueue(new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:'Unmarked planning text. 临时标记'}}]})+'\n\n'));}else c.error(new Error('drop'));}}),{headers:{'Content-Type':'text/event-stream'}}));
+  await assert.rejects(streamChat(conn,{outputBoundary:true}),e=>e.kind==='network'&&e.partial==='');
+});
+
+test('后台重放新正文边界请求时不创建新任务，旧请求仍可无边界接回',async t=>{
+  const {db}=await import('../js/db.js');const old=db.kvGet;db.kvGet=async(k,f)=>k==='relay'?{on:true,url:'https://relay.example/relay',token:'test'}:f;t.after(()=>db.kvGet=old);
+  const urls=[];mock(t,async url=>{urls.push(url);return url.includes('/stream?')?new Response(events(['Planning first.\n[MOYU_FINAL]\n正文\n[/MOYU_FINAL]']),{headers:{'X-Upstream-Status':'200','X-Upstream-Content-Type':'text/event-stream','X-Job-State':'done'}}):new Response('{"state":"done"}',{headers:{'Content-Type':'application/json'}});});
+  const r=await streamChat({format:'openai'},{resumeJob:'existing',relayServer:'https://relay.example/relay',outputBoundary:true});assert.equal(r.text,'正文');assert.ok(urls.every(u=>!u.endsWith('/jobs')));
+});

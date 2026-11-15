@@ -405,6 +405,7 @@ async function renderReader(root, story, nodes, extraId) {
     if (resuming && !v?.relayJob) return;
     if (mode === 'continue' && !v?.text?.trim()) return;
     const saved = resuming ? v.relayContext : null;
+    const outputBoundary=resuming?!!saved?.outputBoundary:true;
     const resumeJob = resuming ? v.relayJob : null;
     const conn = resuming ? saved?.connection : await extraConnection(v?.connectionId || x.connectionId);
     if (!conn) { toast('这篇番外的 API 未选择或已被删除，请点右上角选择番外 API'); return; }
@@ -441,9 +442,10 @@ async function renderReader(root, story, nodes, extraId) {
       const r = await streamWithRetry(conn, {
         system: ctx.system, messages, signal: ctrl.signal, maxTokens: Number(conn.maxTokens) || Math.min(8000, Math.ceil(lengthOf(x.length)[1] * 2) + 1500),
         resumeJob, relayServer: saved?.server || '',
+        outputBoundary,
         onJob: async (jobId, server) => {
           v.relayJob = jobId;
-          v.relayContext = { server, base, mode, inChars: ctx.info.totalChars + base.length,
+          v.relayContext = { server, base, mode, outputBoundary, inChars: ctx.info.totalChars + base.length,
             connection: { ...Object.fromEntries(['model', 'stream', 'priceMode', 'pricePerCall', 'priceIn', 'priceOut', 'priceCache', 'currency'].map((k) => [k, conn[k]])), format: guessFormat(conn) } };
           try { await db.put('extras', x); }
           catch { throw new ApiError('storage', '无法保存后台任务', { hint: '请先检查设备存储空间，再重试。' }); }
@@ -462,6 +464,7 @@ async function renderReader(root, story, nodes, extraId) {
       usageRaw = r.usage || null;
     } catch (e) {
       const err = e instanceof ApiError ? e.toJSON() : { message: String(e?.message || e) };
+      usageRaw=e?.usage || usageRaw;
       const received = base + (e?.partial ?? (v.text || '').slice(base.length));
       v.text = v.relayJob && previousText.length > received.length ? previousText : received;
       const has = !!v.text.trim();

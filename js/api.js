@@ -8,7 +8,7 @@
 
 import { resolveVertex, parseServiceAccount, vertexBaseUrl, VERTEX_MODELS } from './vertex.js';
 import { getRelay, relayFetch, RelayError } from './relay.js';
-import { inspectReasoning, stripReasoning } from './reasoning.js';
+import { inspectReasoning, stripReasoning, extractFinalOutput, FINAL_BOUNDARY_GUIDE } from './reasoning.js';
 
 export const FORMAT_LABEL = { auto: '自动识别', openai: 'OpenAI 兼容', anthropic: 'Claude 原生', vertex: 'Google Vertex AI（服务账号 JSON）' };
 
@@ -265,20 +265,25 @@ function checkConn(conn) {
  * 出错时抛 ApiError，已收到的正文在 err.partial 里。
  */
 export async function streamChat(conn, opts = {}) {
-  let visible='',received=false,thinking=false;
+  let visible='',received=false,thinking=false,rawOutput='';
   const thinkingOnce=()=>{received=true;if(!thinking){thinking=true;opts.onThinking?.();}};
   const publish=(full,streaming)=>{
     const cleaned=inspectReasoning(full,{streaming});
+    rawOutput=cleaned.text;
     if(cleaned.hidden)thinkingOnce();
-    if(cleaned.text!==visible){const delta=cleaned.text.slice(visible.length);visible=cleaned.text;opts.onText?.(delta,visible);}
+    const text=opts.outputBoundary?extractFinalOutput(cleaned.text,{streaming}).text:cleaned.text;
+    if(opts.outputBoundary&&!text&&full)thinkingOnce();
+    if(text!==visible){const delta=text.slice(visible.length);visible=text;opts.onText?.(delta,visible);}
   };
   try {
-    const result=await streamChatRaw(conn,{...opts,onText:(_delta,full)=>{received=true;publish(full,true);},onThinking:thinkingOnce});
+    const system=opts.outputBoundary?[opts.system,FINAL_BOUNDARY_GUIDE].filter(Boolean).join('\n\n'):opts.system;
+    const result=await streamChatRaw(conn,{...opts,system,onText:(_delta,full)=>{received=true;publish(full,true);},onThinking:thinkingOnce});
     publish(result.text,false);
+    if(opts.outputBoundary&&!extractFinalOutput(rawOutput).found){const e=new ApiError('output_format','接口没有返回可识别的最终正文',{hint:'已拦住未分隔的内容，不会自动重试。可以展开“原始信息”查看本次返回，或重新生成一个版本。',detail:rawOutput});e.usage=result.usage;throw e;}
     if(!visible.trim())throw emptyError(result.finish,thinking);
     return {...result,text:visible};
   } catch(e) {
-    if(e instanceof ApiError){e.partial=stripReasoning(e.partial||visible,{streaming:true});e.receivedOutput=received;}
+    if(e instanceof ApiError){const text=stripReasoning(e.partial||visible,{streaming:true});e.partial=opts.outputBoundary?(e.partial?extractFinalOutput(text,{streaming:true}).text:visible):text;e.receivedOutput=received;}
     throw e;
   }
 }

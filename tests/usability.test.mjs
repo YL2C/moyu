@@ -46,7 +46,7 @@ beforeEach(async () => {
   requests=[]; responses=[];
   await db.put('connections',{id:'qa-conn',format:'openai',name:'测试连接',baseUrl:'https://model.qa.example/v1',apiKey:'virtual-key',model:'test',stream:false,maxTokens:2048});
   await db.kvSet('relay',{on:false});
-  globalThis.fetch=async(url,init)=>{ requests.push({url,body:JSON.parse(init.body)}); const answer=responses.shift()??('# 新进展\n\n你收好了信。'+options);
+  globalThis.fetch=async(url,init)=>{ requests.push({url,body:JSON.parse(init.body)}); let answer=responses.shift()??('# 新进展\n\n你收好了信。'+options);if(JSON.parse(init.body).messages[0]?.content.includes('【正文边界协议】'))answer='[MOYU_FINAL]\n'+answer+'\n[/MOYU_FINAL]';
     return new Response(JSON.stringify({choices:[{message:{content:answer},finish_reason:'stop'}],usage:{prompt_tokens:20,completion_tokens:20}}),{headers:{'Content-Type':'application/json'}}); };
 });
 
@@ -90,7 +90,7 @@ test('番外重写、切回旧版本后续写绑定各自素材与要求，重�
     await wait(()=>root.textContent.includes('旧版的结尾。'));
     button('接着当前版本写').click(); await wait(()=>!dispose.busy()&&requests.length===2);
     const sent=requests[1].body;
-    assert.equal(sent.messages[0].content,'旧版本专用设定');
+    assert.ok(sent.messages[0].content.startsWith('旧版本专用设定'));assert.ok(sent.messages[0].content.includes('正文边界协议'));
     assert.ok(sent.messages.some(m=>m.role==='assistant'&&m.content.includes('旧版的结尾。')));
     assert.equal(sent.max_tokens,2048);
     const saved=await db.get('extras','extra-qa');
@@ -242,11 +242,12 @@ async function seedRelayExtra({pending=true, versions=[]}={}) {
   await db.put('extras',{id:'relay-extra',storyId:story.id,tplName:'日记体',request:'写一天的日记',anchorId:'a1',anchorNo:1,length:'mid',cur:0,pending,versions});
   return story;
 }
+let extraBoundary=false;
 function extraRelayMock(stream) {
-  const calls=[];
+  extraBoundary=false;const calls=[];
   globalThis.fetch=async(url,init={})=>{
     calls.push({url,method:init.method});
-    if(url.endsWith('/jobs'))return new Response(JSON.stringify({id:'extra-task'}),{status:201});
+    if(url.endsWith('/jobs')){extraBoundary=JSON.parse(JSON.parse(init.body).body).messages[0]?.content.includes('正文边界协议');return new Response(JSON.stringify({id:'extra-task'}),{status:201});}
     if(init.method==='DELETE')return new Response('{}');
     if(url.includes('/stream?'))return stream(init,calls);
     return new Response(JSON.stringify({state:'done'}));
@@ -254,6 +255,7 @@ function extraRelayMock(stream) {
   return calls;
 }
 function extraSSE(text,{signal,hang=false}={}) {
+  if(extraBoundary)text='[MOYU_FINAL]\n'+text+(hang?'':'\n[/MOYU_FINAL]');
   const data='data: '+JSON.stringify({choices:[{delta:{content:text},finish_reason:hang?null:'stop'}],usage:hang?undefined:{prompt_tokens:20,completion_tokens:8}})+'\n\n';
   const body=hang?new ReadableStream({start(c){c.enqueue(new TextEncoder().encode(data));signal.addEventListener('abort',()=>c.error(new DOMException('aborted','AbortError')),{once:true});}}):data+'data: [DONE]\n\n';
   return new Response(body,{headers:{'X-Upstream-Status':'200','X-Upstream-Content-Type':'text/event-stream','X-Job-State':hang?'running':'done'}});
@@ -724,4 +726,16 @@ test('已存档思考标签在正文和番外原文/排版阅读中隐藏，原�
   await db.put('extras',{id:'tagged-extra',storyId:story.id,tplName:'他的聊天记录',layout:'chat',anchorNo:1,cur:0,versions:[{id:'v1',text:'<think>EXTRA_SECRET</think># 手机\n【聊天】\n我｜许秋｜收到。\n【/】',layoutVersion:1,status:'done'}]});
   root.replaceChildren();const end=await extras.render(root,{id:story.id,extraId:'tagged-extra'});
   try{assert.ok(!root.textContent.includes('EXTRA_SECRET'));assert.ok(root.querySelector('.ex-bubble'));button('原文').click();assert.ok(!root.querySelector('.extra-raw').textContent.includes('EXTRA_SECRET'));assert.ok((await db.get('extras','tagged-extra')).versions[0].text.includes('EXTRA_SECRET'));}finally{end();}
+});
+
+test('实际游玩缺少正文边界时不写入剧情或后续上下文，原始返回仅供主动展开',async()=>{
+  const {story}=await seedStory();const raw="I'm drafting the next scene.\n临时标记";let calls=0;
+  globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({choices:[{message:{content:raw},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:15}}),{headers:{'Content-Type':'application/json'}});};
+  const dispose=await play.render(root,{id:story.id});
+  try{root.querySelector('.options button').click();button('发送').click();await wait(()=>!dispose.busy()&&calls===1);
+    const updated=await db.get('stories',story.id);const n=await db.get('nodes',updated.headId);
+    assert.equal(n.text,'');assert.equal(n.error.kind,'output_format');assert.equal(n.error.detail,raw);assert.ok(root.textContent.includes('接口没有返回可识别'));
+    assert.ok(!root.querySelector('.gm').textContent.includes('临时标记'));
+    const {buildContext}=await import('../js/prompt.js');const ctx=buildContext(updated,[n]);assert.ok(!ctx.messages.some(m=>m.content.includes('drafting')));
+  }finally{dispose();}
 });

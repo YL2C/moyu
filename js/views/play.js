@@ -470,6 +470,7 @@ export async function render(root, { id }) {
     const base = stripReasoning(saved ? saved.base || '' : continueNode ? (a.text || '') : '',{streaming:true});
     const previousText = stripReasoning(a.text,{streaming:true});
     const continuation = saved ? saved.continuation : !!continueNode;
+    const outputBoundary=saved?!!saved.outputBoundary:a.kind!=='ooc';
     const usageKind = saved?.usageKind || (a.kind === 'ooc' ? '出戏' : continueNode ? '续写' : '正文');
     a.status = 'streaming';
     a.error = null; a.stopped = false; a.flagged = false; a.thinking = false;
@@ -507,9 +508,10 @@ export async function render(root, { id }) {
       const r = await streamWithRetry(conn, {
         system: ctx.system, messages: ctx.messages, signal: ctrl.signal,
         resumeJob, relayServer: saved?.server || '',
+        outputBoundary,
         onJob: async (jobId, server) => {
           a.relayJob = jobId;
-          a.relayContext = { server, connectionId: conn.id, base, continuation, usageKind,
+          a.relayContext = { server, connectionId: conn.id, base, continuation, usageKind, outputBoundary,
             inChars: ctx.info.totalChars + (continueNode ? base.length : 0),
             connection: Object.fromEntries(['format', 'model', 'stream', 'priceMode', 'pricePerCall', 'priceIn', 'priceOut', 'priceCache', 'currency'].map((k) => [k, conn[k]])) };
           try { await db.put('nodes', a); }
@@ -535,6 +537,7 @@ export async function render(root, { id }) {
       a.flagged = !!r.flagged;
     } catch (e) {
       const err = e instanceof ApiError ? e.toJSON() : { kind: 'unknown', message: String(e?.message || e) };
+      usageRaw=e?.usage || usageRaw;
       const received = base + (e?.partial || '');
       a.text = a.relayJob && previousText.length > received.length ? previousText : received;
       const hasText = !!a.text.trim();
