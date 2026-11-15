@@ -84,7 +84,7 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
         if(key==='语音'){[side,nick,...text]=f;text='语音 '+(text[0]||'')+' · '+text.slice(1).join('｜');}
         if(!['我','他'].includes(side)||!nick){box.append(body([key,...f].join('｜')));continue;}
         const same = lastSender === side+'|'+nick;
-        box.append(el('div',{class:'ex-message'+(side==='我'?' mine':'')+(same?' consecutive':'')},same?null:el('div',{class:'ex-time',text:nick}),body(text,'ex-bubble')));
+        box.append(el('div',{class:'ex-message'+(side==='我'?' mine':'')+(same?' consecutive':'')},same?null:el('div',{class:'ex-speaker'},el('span',{class:'ex-chat-avatar','aria-hidden':'true',text:Array.from(nick)[0]||'匿'}),el('span',{class:'ex-time',text:nick})),body(text,'ex-bubble')));
         lastSender = side+'|'+nick;
       }
     } else if(block.type==='报告') {

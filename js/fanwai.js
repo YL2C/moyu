@@ -7,7 +7,7 @@ import { forContext, parseReply } from './parse.js';
 import { cardText, splitNames, protagonistText } from './prompt.js';
 import { EMPHASIS_GUIDE } from './inline.js';
 import { castNames, castText } from './extra-options.js';
-import { PLAYBOOKS, PLAYBOOK_COMMON, LAYOUT_GUIDE, layoutOf, PLAYBOOK_UPDATES, playbookOf } from './extra-playbooks.js';
+import { PLAYBOOKS, PLAYBOOK_COMMON, LAYOUT_GUIDE, layoutOf, PLAYBOOK_UPDATES, PLAYBOOK_RELATIONS, playbookOf } from './extra-playbooks.js';
 
 export const SCOPES = {
   follow: '跟随形式',
@@ -42,7 +42,7 @@ const BUILTIN = [
 ];
 
 export function builtinTemplates() {
-  return [...BUILTIN.map(([name, scope, text], i) => ({ id: 'builtin-' + i, name, scope, text, note: '', layout: layoutOf({name}) })), ...PLAYBOOKS.map(p => ({...p, text:p.text+'\n'+(PLAYBOOK_UPDATES[p.layout] || ''), playbookRevision:2, note:''}))];
+  return [...BUILTIN.map(([name, scope, text], i) => ({ id: 'builtin-' + i, name, scope, text, note: '', layout: layoutOf({name}) })), ...PLAYBOOKS.map(p => ({...p, text:p.text+'\n'+(PLAYBOOK_UPDATES[p.layout] || '')+'\n'+(PLAYBOOK_RELATIONS[p.layout] || ''), playbookRevision:3, note:''}))];
 }
 
 export async function getTemplates() {
@@ -54,10 +54,12 @@ export async function getTemplates() {
   }
   for (const t of v) {
     const p=playbookOf(t), update=p && PLAYBOOK_UPDATES[p.layout];
-    if(p && t.playbookRevision !== 2) {
+    if(p && t.playbookRevision !== 3) {
       // 保留用户改过的正文，只补充新版要求；后续再编辑不会被重复追加。
       if(update && !t.text.includes(update)) t.text+='\n'+update;
-      t.playbookRevision=2;changed=true;
+      const relation=PLAYBOOK_RELATIONS[p.layout];
+      if(relation && !t.text.includes(relation))t.text+='\n'+relation;
+      t.playbookRevision=3;changed=true;
     }
   }
   if(changed) await saveTemplates(v);
@@ -105,9 +107,11 @@ export function buildExtraContext(story, opts) {
 
   // 角色卡：常驻的、视角角色、素材里被提到的
   const scan = material + '\n' + request + '\n' + pov + '\n' + castNames(opts.cast).join('\n');
-  const cards = (story.cards || []).filter((c) => c.name?.trim() && (opts.cast?.owner?.kind === 'mixed' || c.core || c.name === pov || splitNames(c).some((n) => (n === c.name || n.length >= 2) && scan.includes(n))));
+  const cards = (story.cards || []).filter((c) => c.name?.trim() && ([opts.cast?.owner,opts.cast?.partner,opts.cast?.subject].some(p=>p?.kind==='mixed') || c.core || c.name === pov || splitNames(c).some((n) => (n === c.name || n.length >= 2) && scan.includes(n))));
 
-  const scopeText = scope === 'public'
+  const scopeText = scope === 'char' && ['show','chat','fic','report'].includes(layout) && opts.cast?.version >= 3
+    ? '按各份材料的手机主人、报告作者、同人作者或在场人物分别限制其知情范围；关系对象不等于叙述者，不能因选了对方而把主角换成对方。私密真相若仅叙述者知道，不能泄漏给网友。'
+    : scope === 'public'
     ? '写这篇的人（网友、路人、旁人）只知道公开发生、旁人能看到或听说的事：公开场合的言行、传闻、照片、热搜之类。私下的对话、内心想法、亲密细节一律不知道，只能猜，而且可以猜错。'
     : scope === 'char'
       ? (pov ? `以${pov}的视角写：只能写${pov}亲眼见过、亲耳听过、或通过合理渠道得知的事；${pov}不知道的事，不能写成他知道。` : '以视角角色的视角写：只能写他亲眼见过、亲耳听过、或通过合理渠道得知的事。')
@@ -126,6 +130,7 @@ export function buildExtraContext(story, opts) {
       (snapshotChapters.length ? snapshotChapters.map(c => `事件来源 第${c.no}章（${c.id}）：${c.title || '未命名'}，主角当轮行动：${c.said || '无'}；具体事件见下方本章原文。`).join('\n') : '正史还未开始，没有可评分的历史事件。报告应标记资料不足，其他玩法可依据人设原创非正史小事。'));
     add('材料排版', LAYOUT_GUIDE);
     if (PLAYBOOK_UPDATES[layout] && !template?.text?.includes(PLAYBOOK_UPDATES[layout])) add('当前玩法要求', PLAYBOOK_UPDATES[layout]);
+    if (PLAYBOOK_RELATIONS[layout] && !template?.text?.includes(PLAYBOOK_RELATIONS[layout])) add('人物关系与材料整合',PLAYBOOK_RELATIONS[layout]);
     add('本次人物选择',castText(opts.cast,layout));
     if (opts.variant) add('本次子类', '【本次玩法选择】\n' + opts.variant + '\n未指定的维度自行变化；指定子类不限制框架内的自由扩展。');
   }

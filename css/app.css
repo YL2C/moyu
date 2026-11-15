@@ -483,3 +483,13 @@ a { color: var(--accent); }
 .ex-report-document .ex-callout { margin: 10px 0; padding: 8px 10px; background: transparent; border-left: 2px solid var(--line); border-radius: 0; }
 .ex-report-document .ex-prescription { border-color: var(--accent); background: var(--accent-soft); }
 .ex-report-document .ex-scene { margin: 15px 0; font-size: 15px; }
+
+/* 手机记录：文字头像、紧凑消息与连续发送。 */
+.ex-chat .ex-speaker { display: flex; align-items: center; gap: 5px; margin: 0 0 4px; }
+.ex-chat .ex-chat-avatar { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--card); border: 1px solid var(--line); color: var(--accent); font-size: 11px; line-height: 1; flex-shrink: 0; }
+.ex-chat .ex-speaker .ex-time { margin: 0; }
+.ex-chat .ex-message { margin-top: 6px; }
+.ex-chat .ex-message.consecutive { margin-top: 4px; }
+.ex-chat .ex-bubble { padding: 5px 8px; max-width: 79%; font-size: 13px; line-height: 1.65; }
+.extra-layout .ex-chat { padding: 0 10px 9px; margin: 13px 0; }
+.ex-chat .ex-chat-head { margin-left: -10px; margin-right: -10px; padding: 7px 10px; }

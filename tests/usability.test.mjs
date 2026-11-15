@@ -440,24 +440,24 @@ test('聊天与报告无子类菜单；记录主人、报告对象和报告人�
   const {story}=await seedStory();story.cards=[{id:'c1',name:'许秋',initial:'出版社编辑',personality:'讲话直截了当'}];await db.put('stories',story);
   const chat=await openExtraForm(story,'playbook-chat');
   assert.equal([...chat.querySelectorAll('details')].find(d=>d.firstElementChild.textContent.includes('子类')).hidden,true);
-  const owner=chat.querySelector('[aria-label="查看谁的记录"]');
+  const owner=chat.querySelector('[aria-label="看谁的手机"]');
   assert.ok([...owner.options].some(o=>o.text.includes('主角（你）')));assert.ok([...owner.options].some(o=>o.text==='不同人'));
   owner.value='__self';owner.dispatchEvent(new Event('change'));button('开始写',chat).click();
   await wait(async()=>(await db.extrasOf(story.id)).length===1);
-  const first=(await db.extrasOf(story.id))[0];assert.equal(first.cast.owner.kind,'self');assert.equal(first.pov,'林舟');assert.equal(first.variant,'');
+  const first=(await db.extrasOf(story.id))[0];assert.equal(first.cast.owner.kind,'self');assert.equal(first.pov,'');assert.equal(first.cast.protagonist.name,'林舟');assert.equal(first.variant,'');
   const report=await openExtraForm(story,'playbook-report');
   assert.equal([...report.querySelectorAll('details')].find(d=>d.firstElementChild.textContent.includes('子类')).hidden,true);
-  report.querySelector('[aria-label="观察对象"]').value='card-0';
-  const writer=report.querySelector('[aria-label="报告人"]');writer.value='__named';writer.dispatchEvent(new Event('change'));
-  report.querySelector('[aria-label="报告人姓名"]').value='夏晚';
+  report.querySelector('[aria-label="看谁的恋爱脑报告"]').value='card-0';
+  const writer=report.querySelector('[aria-label="谁写报告"]');writer.value='__named';writer.dispatchEvent(new Event('change'));
+  report.querySelector('[aria-label="谁写报告姓名"]').value='夏晚';
   button('开始写',report).click();await wait(async()=>(await db.extrasOf(story.id)).length===2);
   const second=(await db.extrasOf(story.id)).find(x=>x.id!==first.id);
-  assert.equal(second.cast.owner.name,'许秋');assert.equal(second.cast.reporter.name,'夏晚');
+  assert.equal(second.cast.subject.name,'许秋');assert.equal(second.cast.reporter.name,'夏晚');
   responses.push('【报告】\n标题｜观察记录\n总评｜他给你留出了时间。\n【/】');
   root.replaceChildren();const dispose=await extras.render(root,{id:story.id,extraId:second.id});
   try{await wait(()=>!dispose.busy());const system=requests[0].body.messages[0].content;
     assert.ok(system.includes('许秋'));assert.ok(system.includes('出版社编辑'));assert.ok(system.includes('夏晚'));
-    assert.ok(system.includes('完整报告'));assert.ok(root.querySelector('.ex-report-document'));assert.ok(root.textContent.includes('报告人：夏晚'));
+    assert.ok(system.includes('完整报告'));assert.ok(root.querySelector('.ex-report-document'));assert.ok(root.textContent.includes('谁写报告：夏晚'));
   }finally{dispose();}
 });
 
@@ -513,4 +513,51 @@ test('保存过的玩法模板只补一次新版要求，用户改写的内容�
   const list=await getTemplates();assert.equal(list.length,1);assert.ok(list[0].text.startsWith('我自己补充的口吻要求'));assert.ok(list[0].text.includes('新版记录要求'));
   const text=list[0].text;assert.equal((await getTemplates())[0].text,text);
   list[0].text='我又重新编辑了';await saveTemplates(list);assert.equal((await getTemplates())[0].text,'我又重新编辑了');
+});
+
+test('番外列表停留期间新增角色后，打开表单仍能直接选择最新全部角色卡',async()=>{
+  const {story}=await seedStory();await extras.render(root,{id:story.id});
+  const updated={...story,cards:[{id:'first',name:'郁黎安',initial:'建筑师，克制'},{id:'second',name:'许秋',initial:'编辑，讲话直接'}]};
+  await db.put('stories',updated);
+  button('✦ 写一篇番外').click();await wait(()=>!!document.querySelector('[role=dialog] select'));
+  const dialog=document.querySelector('[role=dialog]'),type=dialog.querySelector('select');
+  for(const [id,label] of [['playbook-chat','看谁的手机'],['playbook-report','看谁的恋爱脑报告'],['playbook-fic','和谁的同人文']]){
+    type.value=id;type.dispatchEvent(new Event('change'));
+    const select=dialog.querySelector(`[aria-label="${label}"]`);const texts=[...select.options].map(o=>o.textContent);
+    assert.ok(texts.includes('郁黎安'));assert.ok(texts.includes('许秋'));
+    assert.ok(texts.indexOf('许秋')<texts.indexOf('不同人'));
+    assert.equal(select.querySelector('optgroup').label,'角色卡');
+    if(id==='playbook-fic')assert.ok(!texts.some(t=>t.includes('主角（你）')));
+    else assert.ok(texts[1].includes('主角（你）'));
+  }
+  type.value='playbook-report';type.dispatchEvent(new Event('change'));
+  const reporter=dialog.querySelector('[aria-label="谁写报告"]');assert.ok(![...reporter.options].some(o=>o.text==='不同人'));assert.ok([...reporter.options].some(o=>o.text==='郁黎安'));
+  type.value='playbook-show';type.dispatchEvent(new Event('change'));
+  assert.ok(dialog.querySelector('[aria-label="随行人：郁黎安"]'));assert.ok(dialog.querySelector('[aria-label="随行人：许秋"]'));
+  button('取消',dialog).click();assert.equal(requests.length,0);
+});
+
+test('同人选择的是主角的关系对象，报告作者独立，不能把对方当主角或叙述者',async()=>{
+  const {buildExtraContext,builtinTemplates}=await import('../js/fanwai.js');
+  const {castText}=await import('../js/extra-options.js');
+  const {story}=await seedStory();story.cards=[{id:'partner',name:'郁黎安',initial:'建筑师，克制'},{id:'writer',name:'许秋',initial:'编辑，讲话直接'}];
+  const protagonist={kind:'self',name:'林舟'},target={kind:'character',cardId:'partner',name:'郁黎安'},reporter={kind:'character',cardId:'writer',name:'许秋'};
+  const ficCast={version:3,protagonist,partner:target};
+  const ctx=buildExtraContext(story,{chapters:[],anchorNo:0,scope:'char',template:builtinTemplates().find(t=>t.layout==='fic'),cast:ficCast});
+  assert.ok(ctx.system.includes('林舟＋郁黎安'));assert.ok(ctx.system.includes('不是叙述视角或作者'));assert.ok(!ctx.system.includes('以郁黎安的视角写'));assert.ok(ctx.system.includes('建筑师，克制'));
+  const r=castText({version:3,protagonist,subject:target,reporter},'report');
+  assert.ok(r.includes('看谁的恋爱脑报告】郁黎安'));assert.ok(r.includes('谁写报告】许秋'));assert.ok(r.includes('与林舟的关系'));
+  const chat=castText({version:3,protagonist,owner:target},'chat');assert.ok(chat.includes('玩家主角始终是林舟'));assert.ok(chat.includes('各组会话来自同一位手机主人'));
+  const mixed=castText({version:3,protagonist,partner:{kind:'mixed'}},'fic');assert.ok(mixed.includes('各篇分别'));assert.ok(mixed.includes('不混成多人共同恋爱'));
+});
+
+test('聊天用文字头像与窄气泡，混合材料仍归属于同一篇完整报告',async()=>{
+  const {renderExtraLayout}=await import('../js/extra-layout.js');
+  const text='【报告】\n标题｜完整观察报告\n总评｜从一场接人开始。\n【/】\n【聊天】\n会话｜证据一\n我｜郁黎安｜已经出发。\n我｜郁黎安｜你等我。\n他｜林舟｜好。\n【/】\n【论坛】\n标题｜旁观记录\n楼主｜许秋｜今天｜他确实绕路了。\n【/】\n【节目】\n采访｜郁黎安｜顺路而已。\n【/】\n【同人】\n标题｜猜测\n正文｜网友猜错了他的理由。\n【/】\n【报告】\n结语｜以上材料共同解释了这次例外。\n处方｜下次别等雨停，等我。\n【/】';
+  const doc=renderExtraLayout(text,{reportMode:true});root.append(doc);
+  for(const type of ['chat','forum','show','fic'])assert.ok(doc.querySelector('.ex-'+type));
+  assert.equal(doc.querySelectorAll('.ex-fallback').length,0);assert.ok(doc.textContent.includes('共同解释'));
+  const bubbles=doc.querySelectorAll('.ex-bubble');assert.equal(getComputedStyle(bubbles[0]).maxWidth,'79%');assert.equal(getComputedStyle(bubbles[0]).fontSize,'13px');
+  assert.equal(doc.querySelectorAll('.ex-chat-avatar').length,2);assert.equal(doc.querySelectorAll('img').length,0);
+  assert.equal(getComputedStyle(doc.querySelector('.ex-chat-avatar')).width,'24px');
 });

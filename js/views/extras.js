@@ -95,6 +95,10 @@ async function renderList(root, story, nodes) {
 
 // ───────────── 新建 ─────────────
 async function newExtra(story, nodes) {
+  // 列表可能停留较久，打开表单时重新读取角色页使用的同一份已保存角色卡。
+  const fresh = await db.get('stories',story.id);
+  if(!fresh){toast('找不到这个故事');return;}
+  story = fresh; nodes = new Map((await db.byStory(story.id)).map(n=>[n.id,n]));
   const templates = await getTemplates();
   const modules = [...(await getModules()), ...(story.localModules || [])];
   const enabledAlways = modules.filter((m) => m.mode !== 'manual' && m.mode !== 'keyword' && story.modules?.[m.id]);
@@ -108,7 +112,7 @@ async function newExtra(story, nodes) {
   const subtypeFields = [];
   const req = el('textarea', { style: { minHeight: '80px' } });
   const owner = personPicker(story,'视角角色');
-  const reporter = personPicker(story,'报告人',{mixed:false});
+  const reporter = personPicker(story,'谁写报告',{mixed:false});
   const companions = companionPicker(story);
   const apiSelect = await connectionSelect();
   const anchorSel = el('select');
@@ -145,9 +149,7 @@ async function newExtra(story, nodes) {
     const p = playbookOf(t);
     const layout = layoutOf(t);
     owner.el.hidden = layout === 'show';
-    owner.title.textContent = layout === 'chat' ? '查看谁的记录' : layout === 'report' ? '观察对象' : '视角角色';
-    owner.select.setAttribute('aria-label',owner.title.textContent);
-    owner.free.setAttribute('aria-label',owner.title.textContent+'姓名');
+    owner.configure({label:layout==='chat'?'看谁的手机':layout==='report'?'看谁的恋爱脑报告':layout==='fic'?'和谁的同人文':'视角角色',allowSelf:layout!=='fic',mixed:true});
     reporter.el.hidden = layout !== 'report';
     companions.el.hidden = layout !== 'show';
     subtypeBox.hidden = !p || ['chat','report'].includes(layout);
@@ -189,17 +191,20 @@ async function newExtra(story, nodes) {
         if (!t && !req.value.trim()) { toast('自定义番外要写一下想看什么'); return; }
         if (!apiSelect.value) { toast('请选择番外 API；没有连接时先去设置添加'); return; }
         const layout = layoutOf(t);
-        const cast = {owner:owner.value(),reporter:reporter.value(),companions:companions.value()};
-        if (layout === 'show') { delete cast.owner; delete cast.reporter; }
-        else { delete cast.companions; if(layout!=='report') delete cast.reporter; }
-        if ([cast.owner,cast.reporter].some(p=>p?.kind==='named'&&!p.name)) {toast('请填写人物姓名');return;}
+        const cast = {version:3,protagonist:{kind:'self',name:story.protagonist?.name?.trim() || '主角'}};
+        if(layout==='show')cast.companions=companions.value();
+        else if(layout==='fic')cast.partner=owner.value();
+        else if(layout==='report'){cast.subject=owner.value();cast.reporter=reporter.value();}
+        else cast.owner=owner.value();
+        if ([cast.owner,cast.partner,cast.subject,cast.reporter].some(p=>p?.kind==='named'&&!p.name)) {toast('请填写人物姓名');return;}
+        if(cast.partner?.name && cast.partner.name===cast.protagonist.name){toast('请选择主角以外的同人关系对象');return;}
         const anchorNo = Number(anchorSel.value) || 0;
         const anchorCh = chapters.find((c) => c.no === anchorNo);
         const x = {
           id: uid(), storyId: story.id, createdAt: Date.now(), updatedAt: Date.now(),
           tplName: t ? t.name : '自定义', tplText: t ? t.text : '', tplScope: t ? t.scope : 'all',
           layout: layoutOf(t), variant: subtypeFields.filter(f=>f.input.value.trim()).map(f=>f.label+'：'+f.input.value.trim()).join('\n'),
-          request: req.value.trim(), cast, pov: layout === 'show' ? '' : cast.owner?.name || '', connectionId:apiSelect.value,
+          request: req.value.trim(), cast, pov: ['show','chat','fic','report'].includes(layout) ? '' : cast.owner?.name || '', connectionId:apiSelect.value,
           scope: scopeSel.value, anchorId: anchorCh ? anchorCh.id : null, anchorNo,
           recentN: Math.max(0, Math.min(20, Number(recent.value) || 0)),
           pinned: pinChecks.filter((c) => c.checked).map((c) => Number(c.value)),

@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>墨游交互预览</title>
-<link rel="stylesheet" href="../css/app.css?v=0.6.16-personal.2">
+<link rel="stylesheet" href="../css/app.css?v=0.6.16-personal.3">
 <style>
 html,body{height:auto;overflow:auto}body{padding:16px}#switches{display:flex;flex-wrap:wrap;gap:8px;margin:0 auto 12px;max-width:430px}#preview{max-width:430px;height:760px;margin:auto;border:1px solid var(--line);border-radius:16px;overflow:hidden;position:relative}#preview .view{height:100%}#note{max-width:430px;margin:10px auto;font-size:12px;color:var(--text3)}
 </style>
@@ -33,7 +33,7 @@ await db.kvSet('disc.preview-disc',{id:'preview-disc',title:'讨论附件',story
 await db.put('extras',{id:'preview-extra',storyId:story.id,tplName:'小说体',tplText:'日常场景',request:'写门口重逢',anchorId:story.headId,anchorNo:1,length:'mid',cur:0,versions:[{text:'# 他留下的信\n\n他把伞搁在门口，先低头看了一眼你的拖鞋。',status:'done'}]});
 window.fetch=async()=>new Response(JSON.stringify({choices:[{message:{content:'# 新的片刻\n\n他在桌边坐下，**把明天留给你**。'+choices},finish_reason:'stop'}]}),{headers:{'Content-Type':'application/json'}});
 const root=document.querySelector('#preview');let dispose;
-const views=[['游玩',play,{id:story.id}],['设置',settings,{section:'modules'}],['讨论',discuss,{id:'preview-disc'}],['主角卡',chars,{id:story.id}],['番外',extras,{id:story.id,extraId:'preview-extra'}]];
+const views=[['新建番外',extras,{id:story.id}],['游玩',play,{id:story.id}],['设置',settings,{section:'modules'}],['讨论',discuss,{id:'preview-disc'}],['主角卡',chars,{id:story.id}],['番外',extras,{id:story.id,extraId:'preview-extra'}]];
 async function show(render,params){dispose?.();root.replaceChildren();dispose=await render(root,params);}
 for(const [label,render,params] of views)document.querySelector('#switches').append(el('button',{class:'btn small',onclick:()=>show(render,params)},label));
 for (const [name,text] of Object.entries(samples)) {
