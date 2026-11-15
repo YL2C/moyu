@@ -576,11 +576,15 @@ export async function render(root, { section }) {
     const scope = el('select');
     for (const [k, v] of Object.entries(SCOPES)) if (k !== 'follow') scope.append(el('option', { value: k }, v));
     scope.value = t.scope || 'all';
+    const layout = el('select', {'aria-label':'材料排版'});
+    for (const [value,label] of [['','普通正文'],['forum','论坛'],['chat','聊天'],['show','节目'],['fic','同人发布'],['report','报告']]) layout.append(el('option',{value},label));
+    layout.value = t.layout || ({'论坛体':'forum','群聊记录':'chat'}[t.name]) || '';
     const text = el('textarea', { class: 'tall', placeholder: '这种形式怎么写：格式、视角、要有哪些元素、要避免什么' }); text.value = t.text; text.style.minHeight = '36vh';
     const note = el('textarea', { placeholder: '备注，只给自己看，不发给模型' }); note.value = t.note || '';
     s.body.append(
       el('div', { class: 'field' }, el('label', { text: '名字' }), name),
       el('div', { class: 'field' }, el('label', { text: '默认知情范围' }), scope, el('div', { class: 'hint', text: '写番外时可以临时改。' })),
+      el('div', { class: 'field' }, el('label', { text: '材料排版' }), layout),
       el('div', { class: 'field' }, el('label', { text: '写法要求（发给模型）' }), text),
       el('div', { class: 'field' }, el('label', { text: '备注（不发给模型）' }), note));
     s.foot.append(...[
@@ -595,7 +599,7 @@ export async function render(root, { section }) {
       el('button', {
         class: 'btn primary',
         onclick: async () => {
-          t.name = name.value.trim(); t.scope = scope.value; t.text = text.value; t.note = note.value;
+          t.name = name.value.trim(); t.scope = scope.value; t.text = text.value; t.note = note.value; t.layout = layout.value;
           if (!t.name) { toast('起个名字'); return; }
           const list = await getTemplates();
           const i = list.findIndex((x) => x.id === t.id);

@@ -40,7 +40,7 @@ async function seedStory() {
 }
 beforeEach(async () => {
   for(const store of ['stories','nodes','extras','connections']) for(const item of await db.all(store)) await db.del(store,item.id);
-  for(const key of ['modules','packs','disc.index','relay','defaultConnId','globalMemo','modules.undo','fwTemplates','fwBase','usageLog','spend']) await db.kvSet(key,null);
+  for(const key of ['modules','packs','disc.index','relay','defaultConnId','globalMemo','modules.undo','fwTemplates','fwBase','fwPlaybooksV1','usageLog','spend']) await db.kvSet(key,null);
   Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
   localStorage.clear(); document.body.innerHTML='<div id="fixture"></div><div id="toast"></div>'; root=document.querySelector('#fixture');
   requests=[]; responses=[];
@@ -116,6 +116,7 @@ test('设置栏目可折叠并记忆，规则管理提供批量选中删除与�
   assert.equal(root.querySelectorAll('.rule-pack').length,1);
   button('全选').click();button('删除所选').click();await wait(async()=>!(await getModules()).length);
   await wait(()=>!!button('撤销上次删除'));button('撤销上次删除').click();await wait(async()=>(await getModules()).length===2);
+  await wait(()=>[...root.querySelectorAll('.settings-section')].some(d=>d.firstElementChild.textContent==='阅读'));
   const reading=[...root.querySelectorAll('.settings-section')].find(d=>d.firstElementChild.textContent==='阅读');
   reading.open=true;reading.dispatchEvent(new Event('toggle'));
   assert.equal(localStorage.getItem('moyu-yl2c.settings.fold.阅读'),'open');
@@ -363,5 +364,67 @@ test('番外正在生成时离开再重进保留同一版本；主动停止只�
     assert.equal(saved.versions.length,1);assert.equal(saved.versions[0].text,'已经收到的片段，接回后内容。');
     assert.equal(saved.versions[0].status,'partial');assert.equal(saved.versions[0].relayJob,undefined);
     assert.equal(calls.filter(c=>c.method==='POST').length,1);assert.equal(calls.filter(c=>c.method==='DELETE').length,1);
+  }finally{dispose();}
+});
+
+test('四个玩法升级仅补一次，保留自定义模板与后续删除、修改',async()=>{
+  const {getTemplates,saveTemplates}=await import('../js/fanwai.js');
+  await db.kvSet('fwTemplates',[{id:'custom',name:'我的写法',scope:'char',text:'保持我的写法'}]);
+  const list=await getTemplates();assert.equal(list.length,5);assert.equal(list[0].text,'保持我的写法');
+  assert.ok(list.some(t=>t.name==='一起参加恋综'));assert.ok(list.every(t=>t.text));
+  const kept=list.filter(t=>t.name!=='他的聊天记录');kept[1].text='自己编辑后的要求';await saveTemplates(kept);
+  const again=await getTemplates();assert.equal(again.length,4);assert.equal(again[1].text,'自己编辑后的要求');
+});
+
+test('玩法快照仅取锚点前最近三章，带子类与自由扩展，空素材报告不得编造评分',async()=>{
+  const {buildExtraContext,builtinTemplates}=await import('../js/fanwai.js');
+  const {story}=await seedStory();const template=builtinTemplates().find(t=>t.name==='恋爱脑报告');
+  const chapters=[1,2,3,4,5].map(no=>({no,id:'chapter-'+no,title:'事件'+no,said:'行动'+no,text:'第'+no+'章独有事件'}));
+  const make=anchorNo=>buildExtraContext(story,{template,chapters,anchorNo,recentN:0,variant:'观察侧重：日程让步'});
+  const a=make(3),b=make(4);
+  assert.deepEqual(a.info.snapshotChapters,[1,2,3]);assert.deepEqual(b.info.snapshotChapters,[2,3,4]);
+  assert.ok(!a.system.includes('第4章独有事件'));assert.ok(b.system.includes('第4章独有事件'));
+  assert.ok(a.system.includes('自由扩展'));assert.ok(a.system.includes('观察侧重：日程让步'));assert.ok(a.system.includes('资料不足'));
+  assert.notEqual(a.system,b.system);
+  const empty=make(0);assert.ok(empty.system.includes('没有可评分的历史事件'));
+});
+
+test('六种材料本地排版保留内容，缺失标记回退；HTML与链接不执行、不加载',async()=>{
+  const {renderExtraLayout,parseExtraLayout}=await import('../js/extra-layout.js');
+  const {samples}=await import('./extra-samples.js');
+  for(const text of Object.values(samples)){
+    const out=renderExtraLayout(text);assert.ok(out.querySelector('.ex-block'));assert.ok(out.textContent.length>80);
+    assert.equal(out.querySelector('img,script,iframe'),null);
+  }
+  const report=renderExtraLayout(samples['恋爱脑报告']);assert.equal(report.querySelectorAll('progress').length,3);
+  assert.equal(report.querySelector('progress').value,87);
+  const chat=renderExtraLayout(samples['他的聊天记录']);assert.ok(chat.querySelector('.mine .ex-bubble'));assert.ok(chat.textContent.includes('撤回'));
+  const forum=renderExtraLayout(samples['论坛体']);assert.ok(forum.querySelector('.ex-op'));assert.ok(forum.querySelector('.ex-quote'));assert.ok(forum.querySelector('.hot'));
+  const broken='【聊天】\n会话｜未完成\n我｜测试｜<img src=x onerror=alert(1)>\n消息还没写完';
+  const fallback=renderExtraLayout(broken);assert.equal(fallback.textContent,broken);assert.equal(fallback.querySelector('img'),null);
+  const invalid=renderExtraLayout('【报告】\n指数｜破坏测试｜9999｜<script>bad()</script>｜http://example.test\n【/】');
+  assert.equal(invalid.querySelector('progress'),null);assert.ok(invalid.textContent.includes('未评分'));assert.equal(invalid.querySelector('script,a'),null);
+  const nested='【论坛】\n楼主｜甲｜今天｜内容\n【聊天】\n他｜乙｜你好\n【/】';
+  assert.equal(parseExtraLayout(nested)[0].fallback,true);
+});
+
+test('番外实际创建可选自定义子类，生成五类布局，原文切换后文字不丢失；新旧版本续写沿用素材',async()=>{
+  const {samples}=await import('./extra-samples.js');const {story}=await seedStory();
+  await extras.render(root,{id:story.id});button('✦ 写一篇番外').click();await wait(()=>!!document.querySelector('[role=dialog] select'));
+  const dialog=document.querySelector('[role=dialog]'),type=dialog.querySelector('select');
+  for(const name of ['一起参加恋综','他的聊天记录','我跟你的同人文','恋爱脑报告'])assert.ok([...type.options].some(o=>o.text===name));
+  type.value='playbook-fic';type.dispatchEvent(new Event('change'));
+  dialog.querySelector('[aria-label="题材"]').value='星际';dialog.querySelector('[aria-label="平台"]').value='AO3';dialog.querySelector('[aria-label="自定义子类"]').value='船舱便签';
+  button('开始写',dialog).click();await wait(async()=>(await db.extrasOf(story.id)).length===1);
+  const x=(await db.extrasOf(story.id))[0];assert.equal(x.layout,'fic');assert.ok(x.variant.includes('船舱便签'));assert.ok(x.variant.includes('星际'));
+  responses.push(samples['我跟你的同人文']);root.replaceChildren();const dispose=await extras.render(root,{id:story.id,extraId:x.id});
+  try{
+    await wait(()=>!dispose.busy());assert.equal(requests.length,1);assert.ok(root.querySelector('.ex-fic'));assert.ok(root.querySelector('.ex-forum'));
+    const v=(await db.get('extras',x.id)).versions[0];assert.equal(v.layoutVersion,1);
+    button('原文').click();assert.equal(root.querySelector('.extra-raw').textContent,samples['我跟你的同人文']);
+    button('排版').click();assert.ok(root.querySelector('.ex-fic'));
+    responses.push('\n\n【场景】\n他把新的便签递了过来。\n【/】');button('接着当前版本写').click();await wait(()=>!dispose.busy()&&requests.length===2);
+    assert.equal(requests[0].body.messages[0].content,requests[1].body.messages[0].content);
+    assert.ok((await db.get('extras',x.id)).versions[0].text.endsWith('【/】'));
   }finally{dispose();}
 });

@@ -5,6 +5,8 @@ import { el, uid, toast, menu, sheet, promptText, ago, approxTokens } from '../u
 import { resolveConnection, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS, getPrefs } from '../state.js';
 import { inlineText } from '../inline.js';
 import { streamWithRetry, ApiError, guessFormat } from '../api.js';
+import { renderExtraLayout } from '../extra-layout.js';
+import { playbookOf, layoutOf, FIC_AXES } from '../extra-playbooks.js';
 import { cancelRelayJob } from '../relay.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage } from '../cost.js';
 import { getTemplates, getBase, buildExtraContext, chaptersOf, extraBlocks, SCOPES, LENGTHS, lengthOf } from '../fanwai.js';
@@ -102,6 +104,8 @@ async function newExtra(story, nodes) {
   const tplSel = el('select');
   templates.forEach((t) => tplSel.append(el('option', { value: t.id }, t.name)));
   tplSel.append(el('option', { value: '__custom' }, '自定义（自己写要求）'));
+  const subtypeBox = el('details', {class:'card'});
+  const subtypeFields = [];
   const req = el('textarea', { style: { minHeight: '80px' } });
   const povSel = el('select');
   povSel.append(el('option', { value: '' }, '不指定'));
@@ -136,6 +140,21 @@ async function newExtra(story, nodes) {
   const tplHint = el('div', { class: 'hint' });
   const syncTpl = () => {
     const t = templates.find((x) => x.id === tplSel.value);
+    subtypeBox.replaceChildren(el('summary', {text:'子类与风格 · 默认随机',style:{cursor:'pointer'}}));
+    subtypeFields.length = 0;
+    const p = playbookOf(t);
+    subtypeBox.hidden = !p;
+    if (p) {
+      const axes = { [p.layout === 'fic' ? '题材' : '子类']: p.choices, ...(p.layout==='fic' ? FIC_AXES : {}) };
+      for (const [label, choices] of Object.entries(axes)) {
+        const select = el('select', {'aria-label':label});
+        select.append(el('option', {value:''}, '随机 · 由当前剧情决定'), ...choices.map(c=>el('option',{value:c},c)));
+        subtypeBox.append(el('div',{class:'field'},el('label',{text:label}),select)); subtypeFields.push({label,input:select});
+      }
+      const custom = el('input',{placeholder:'也可写池外的新玩法，例如：雨夜末班车恋综', 'aria-label':'自定义子类'});
+      subtypeBox.append(el('div',{class:'field'},el('label',{text:'自定义扩展'}),custom),el('div',{class:'hint',text:'示例仅作启发；AI可根据人设与剧情自由扩展。全程仅生成文字。'}));
+      subtypeFields.push({label:'自定义扩展',input:custom});
+    }
     req.placeholder = t ? '这次想看什么？可以不填。例：他们吵架那晚，八卦组在扒' : '想看什么就写什么。例：如果他们小时候就认识；二十年后的同学会';
     tplHint.textContent = t ? `${SCOPE_SHORT[t.scope] ? '默认知情范围：' + SCOPE_SHORT[t.scope] + '。' : ''}${t.text.slice(0, 60)}${t.text.length > 60 ? '…' : ''}` : '自定义番外：要求写得越具体越好。写完满意的话，可以在设置里存成模板。';
   };
@@ -143,7 +162,8 @@ async function newExtra(story, nodes) {
 
   s.body.append(...[
     el('div', { class: 'field' }, el('label', { text: '形式' }), tplSel, tplHint),
-    el('div', { class: 'field' }, el('label', { text: '要求' }), req),
+    subtypeBox,
+    el('div', { class: 'field' }, el('label', { text: '要求（可留空）' }), req),
     el('div', { class: 'field' }, el('label', { text: '视角角色（日记、采访这类要选）' }), povSel, el('div', { style: { height: '6px' } }), povFree),
     el('div', { class: 'field' }, el('label', { text: '时间点' }), anchorSel, el('div', { class: 'hint', text: '时间点之后的正史一律不发给模型，番外就不会提前写到。' })),
     el('div', { class: 'field' }, el('label', { text: '带上时间点前最近几章的原文' }), recent, el('div', { class: 'hint', text: '让模型熟悉人物口吻和最近发生的事。更早的剧情可以在下面单独指定。' })),
@@ -164,6 +184,7 @@ async function newExtra(story, nodes) {
         const x = {
           id: uid(), storyId: story.id, createdAt: Date.now(), updatedAt: Date.now(),
           tplName: t ? t.name : '自定义', tplText: t ? t.text : '', tplScope: t ? t.scope : 'all',
+          layout: layoutOf(t), variant: subtypeFields.filter(f=>f.input.value.trim()).map(f=>f.label+'：'+f.input.value.trim()).join('\n'),
           request: req.value.trim(), pov: (povFree.value.trim() || povSel.value || '').trim(),
           scope: scopeSel.value, anchorId: anchorCh ? anchorCh.id : null, anchorNo,
           recentN: Math.max(0, Math.min(20, Number(recent.value) || 0)),
@@ -191,7 +212,7 @@ async function renderReader(root, story, nodes, extraId) {
     v.error = { ...v.error, message: '旧版番外任务无法接回', hint: '这次任务没有保存后台任务编号，无法取回原任务。已有文字保留，可续写；没有内容时需重新生成一个版本。更新后的新任务支持自动接回。' };
   }
 
-  const st = { streaming: null, lastCtx: null, frame: 0 };
+  const st = { streaming: null, lastCtx: null, frame: 0, raw: null };
   let destroyed = false;
   const titleEl = el('div', { class: 'title' });
   const content = el('div', { class: 'feed' });
@@ -213,13 +234,22 @@ async function renderReader(root, story, nodes, extraId) {
     content.replaceChildren();
     content.append(el('div', { class: 'card', style: { fontFamily: 'var(--ui-font)', fontSize: '13.5px', marginTop: '8px' } },
       el('div', { class: 'muted', text: metaLine(x) }),
-      x.request ? el('div', { style: { marginTop: '4px' }, text: '要求：' + x.request }) : null));
+      x.request ? el('div', { style: { marginTop: '4px' }, text: '要求：' + x.request }) : null,
+      x.variant ? el('div',{class:'hint',text:x.variant.replace(/\n/g,' · ')}) : null));
     const g = el('div', { class: 'gm' });
     const live = !!st.streaming || jobs > 0;
     if (v?.text) {
       const { title, blocks } = extraBlocks(v.text);
-      if (title) g.append(el('h2', { text: title, style: { marginTop: '14px' } }));
-      blocks.forEach((b, i) => g.append(el('p', { class: [b.includes('\n') ? 'fw' : '', live && i === blocks.length - 1 ? 'cursor' : ''].filter(Boolean).join(' ') || null }, inlineText(b, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false))));
+      const raw = st.raw ?? !v.layoutVersion;
+      const toggle = el('div',{class:'extra-view-toggle','aria-label':'番外阅读方式'});
+      for (const [label,value] of [['排版',false],['原文',true]]) toggle.append(el('button',{class:'btn small'+(raw===value?' primary':''),'aria-pressed':String(raw===value),onclick:()=>{st.raw=value;draw();}},label));
+      content.append(toggle);
+      if (raw) g.append(el('div',{class:'extra-raw',text:v.text}));
+      else {
+        if (title) g.append(el('h2', { text: title, style: { marginTop: '14px' } }));
+        if (v.layout || /【(?:论坛|聊天|报告|节目|同人|场景)】/.test(v.text)) g.append(renderExtraLayout(v.text,{emphasis:getPrefs().emphasis!==false,dialogueColor:getPrefs().dialogueColor!==false}));
+        else blocks.forEach((b, i) => g.append(el('p', { class: [b.includes('\n') ? 'fw' : '', live && i === blocks.length - 1 ? 'cursor' : ''].filter(Boolean).join(' ') || null }, inlineText(b, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false))));
+      }
     } else if (live) {
       g.append(el('div', { class: 'thinking', style: { marginTop: '14px' }, text: v?.thinking ? '模型思考中' : '正在构思' }));
     }
@@ -280,7 +310,7 @@ async function renderReader(root, story, nodes, extraId) {
     const chapters = chaptersOf(path);
     return buildExtraContext(story, {
       chapters, anchorNo: chapters.length, recentN: x.recentN, pinned: x.pinned || [],
-      template: { name: x.tplName, text: x.tplText, scope: x.tplScope }, request, scope: x.scope, pov: x.pov,
+      template: { name: x.tplName, text: x.tplText, scope: x.tplScope, layout:x.layout }, variant:x.variant, request, scope: x.scope, pov: x.pov,
       length: x.length, modules, base,
     });
   }
@@ -348,7 +378,8 @@ async function renderReader(root, story, nodes, extraId) {
       base = v.text || '';
       messages.push({ role: 'assistant', content: base }, { role: 'user', content: '（接着当前版本末尾往下写。已写内容保留，不重复，不另起标题；即使上一段已有收束，也按新进展继续。）' + (note ? '\n【本次续写要求】\n' + note : '') });
     } else if (!resuming) {
-      v = { id: uid(), text: '', createdAt: Date.now(), request: x.request, context: ctx };
+      v = { id: uid(), text: '', createdAt: Date.now(), request: x.request, context: ctx, layout:ctx.info.layout || '', layoutVersion:1, variant:x.variant || '' };
+      st.raw = null;
       x.versions = x.versions || [];
       x.versions.push(v);
       x.cur = x.versions.length - 1;

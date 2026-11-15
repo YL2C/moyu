@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>墨游交互预览</title>
-<link rel="stylesheet" href="../css/app.css?v=0.6.15-personal.5">
+<link rel="stylesheet" href="../css/app.css?v=0.6.16-personal.1">
 <style>
 html,body{height:auto;overflow:auto}body{padding:16px}#switches{display:flex;flex-wrap:wrap;gap:8px;margin:0 auto 12px;max-width:430px}#preview{max-width:430px;height:760px;margin:auto;border:1px solid var(--line);border-radius:16px;overflow:hidden;position:relative}#preview .view{height:100%}#note{max-width:430px;margin:10px auto;font-size:12px;color:var(--text3)}
 </style>
@@ -12,6 +12,7 @@ import { render as discuss } from '../js/views/discuss.js';
 import { render as chars } from '../js/views/chars.js';
 import { render as extras } from '../js/views/extras.js';
 import { el } from '../js/util.js';
+import { samples } from './extra-samples.js';
 import { markdownPack } from '../js/rules.js';
 const tables=new Map();const table=s=>{if(!tables.has(s))tables.set(s,new Map());return tables.get(s);};
 db.get=async(s,k)=>structuredClone(table(s).get(k));db.all=async s=>structuredClone([...table(s).values()]);
@@ -34,5 +35,10 @@ const root=document.querySelector('#preview');let dispose;
 const views=[['游玩',play,{id:story.id}],['设置',settings,{section:'modules'}],['讨论',discuss,{id:'preview-disc'}],['主角卡',chars,{id:story.id}],['番外',extras,{id:story.id,extraId:'preview-extra'}]];
 async function show(render,params){dispose?.();root.replaceChildren();dispose=await render(root,params);}
 for(const [label,render,params] of views)document.querySelector('#switches').append(el('button',{class:'btn small',onclick:()=>show(render,params)},label));
+for (const [name,text] of Object.entries(samples)) {
+ const extraId='demo-'+Object.keys(samples).indexOf(name);
+ await db.put('extras',{id:extraId,storyId:story.id,tplName:name,request:'演示排版，非实际生成内容',anchorId:story.headId,anchorNo:1,cur:0,versions:[{text,status:'done',layoutVersion:1,layout:'mixed'}]});
+ document.querySelector('#switches').append(el('button',{class:'btn small',onclick:()=>show(extras,{id:story.id,extraId})},name));
+}
 await show(play,{id:story.id});
 </script></html>

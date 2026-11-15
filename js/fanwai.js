@@ -6,6 +6,7 @@ import { uid } from './util.js';
 import { forContext, parseReply } from './parse.js';
 import { cardText, splitNames, protagonistText } from './prompt.js';
 import { EMPHASIS_GUIDE } from './inline.js';
+import { PLAYBOOKS, PLAYBOOK_COMMON, LAYOUT_GUIDE, layoutOf } from './extra-playbooks.js';
 
 export const SCOPES = {
   follow: '跟随形式',
@@ -40,14 +41,19 @@ const BUILTIN = [
 ];
 
 export function builtinTemplates() {
-  return BUILTIN.map(([name, scope, text], i) => ({ id: 'builtin-' + i, name, scope, text, note: '' }));
+  return [...BUILTIN.map(([name, scope, text], i) => ({ id: 'builtin-' + i, name, scope, text, note: '', layout: layoutOf({name}) })), ...PLAYBOOKS.map(p => ({...p, note:''}))];
 }
 
 export async function getTemplates() {
   const v = await db.kvGet('fwTemplates', null);
-  return Array.isArray(v) ? v : builtinTemplates();
+  if (!Array.isArray(v)) return builtinTemplates();
+  if (!(await db.kvGet('fwPlaybooksV1', false))) {
+    for (const p of PLAYBOOKS) if (!v.some(t => t.id === p.id || t.name === p.name)) v.push({...p, note:''});
+    await saveTemplates(v);
+  }
+  return v;
 }
-export async function saveTemplates(list) { return db.kvSet('fwTemplates', list); }
+export async function saveTemplates(list) { await db.kvSet('fwTemplates', list); return db.kvSet('fwPlaybooksV1', true); }
 export async function getBase() {
   const v = await db.kvGet('fwBase', null);
   return v == null ? DEFAULT_BASE : v;
@@ -82,7 +88,9 @@ export function buildExtraContext(story, opts) {
   const upto = chapters.filter((c) => c.no <= anchorNo);
   const recent = recentN > 0 ? upto.slice(-recentN) : [];
   const pinnedSet = new Set(pinned.filter((no) => no <= anchorNo));
-  const picked = upto.filter((c) => pinnedSet.has(c.no) || recent.includes(c));
+  const layout = layoutOf(template);
+  const snapshotChapters = layout ? upto.slice(-3) : [];
+  const picked = upto.filter((c) => pinnedSet.has(c.no) || recent.includes(c) || snapshotChapters.includes(c));
   const material = picked.map((c) => `【第${c.no}章${c.title ? ' · ' + c.title : ''}】${pinnedSet.has(c.no) ? '（指定素材）' : ''}\n${c.said ? '（主角：' + c.said.trim() + '）\n' : ''}${c.text}`).join('\n\n');
 
   // 角色卡：常驻的、视角角色、素材里被提到的
@@ -101,6 +109,14 @@ export function buildExtraContext(story, opts) {
   add('开头', '你在为一部文字互动小说写番外。番外是独立于正史的创作，写完不推进主线。');
   add('番外通用要求', '【番外通用要求】\n' + base);
   add('文字排版', EMPHASIS_GUIDE);
+  if (layout) {
+    add('玩法与快照', PLAYBOOK_COMMON);
+    add('剧情快照材料', '【自动附带的剧情快照材料】\n'+
+      '角色档案使用下方主角与角色卡，关系阶段、最近3件具体事件及未回收细节从下方最近章节提取；没有依据的口头禅、癖好与底线不补成事实。语气依据人设和本次要求选择。\n'+
+      (snapshotChapters.length ? snapshotChapters.map(c => `事件来源 第${c.no}章（${c.id}）：${c.title || '未命名'}，主角当轮行动：${c.said || '无'}；具体事件见下方本章原文。`).join('\n') : '正史还未开始，没有可评分的历史事件。报告应标记资料不足，其他玩法可依据人设原创非正史小事。'));
+    add('材料排版', LAYOUT_GUIDE);
+    if (opts.variant) add('本次子类', '【本次玩法选择】\n' + opts.variant + '\n未指定的维度自行变化；指定子类不限制框架内的自由扩展。');
+  }
   add(`形式 · ${template?.name || '自定义'}`, '【这篇的形式与写法】\n' + (template?.text?.trim() || '按下面玩家的要求来写。'));
   add('知情范围', '【知情范围】\n' + scopeText);
   for (const m of modules) add(`规则模块 · ${m.name}`, `【规则模块·${m.name}】\n${m.text.trim()}`);
@@ -116,7 +132,7 @@ export function buildExtraContext(story, opts) {
   return {
     system,
     messages: [{ role: 'user', content: user }],
-    info: { parts: parts.map((p) => ({ label: p.label, chars: p.text.length, text: p.text })), totalChars: system.length + user.length, chapters: picked.map((c) => c.no), cards: cards.map((c) => c.name), scope },
+    info: { parts: parts.map((p) => ({ label: p.label, chars: p.text.length, text: p.text })), totalChars: system.length + user.length, chapters: picked.map((c) => c.no), cards: cards.map((c) => c.name), scope, layout, snapshotChapters: snapshotChapters.map(c=>c.no), variant: opts.variant || '' },
   };
 }
 
@@ -128,6 +144,6 @@ export function extraBlocks(text) {
   const first = raw.split('\n')[0] || '';
   const m = first.match(/^#{1,4}\s*(.+?)\s*#*$/);
   if (m) { title = m[1].replace(/^\*+|\*+$/g, '').trim(); body = raw.slice(first.length).trim(); }
-  const blocks = body.split(/\n\s*\n/).map((b) => b.replace(/\*\*(.+?)\*\*/g, '$1').trim()).filter(Boolean);
+  const blocks = body.split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
   return { title, blocks };
 }

@@ -406,3 +406,56 @@ a { color: var(--accent); }
 .segs { display: flex; gap: 6px; margin-top: 8px; }
 .segs > .seg { flex: 1; display: block; border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px; font-size: 13px; color: var(--text2); cursor: pointer; overflow: visible; }
 .segs > .seg.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* 番外刊物：共享主题，分别呈现论坛、聊天、报告、节目与同人。 */
+.extra-layout { font-family: var(--ui-font); line-height: 1.8; font-size: 15px; overflow-wrap: anywhere; }
+.extra-layout p { text-indent: 0; }
+.extra-layout .ex-scene { font-family: var(--read-font); font-size: var(--read-size); margin: 22px 0; }
+.extra-layout .ex-scene p { text-indent: var(--indent); white-space: pre-wrap; }
+.extra-layout .ex-fallback p { text-indent: 0; }
+.ex-block { border: 1px solid var(--line); border-radius: 16px; background: var(--card); margin: 22px 0; overflow: hidden; padding: 20px; }
+.ex-block h3 { font-family: var(--read-font); font-size: 21px; line-height: 1.5; margin: 8px 0 12px; color: var(--text); }
+.ex-eyebrow { font-size: 11px; color: var(--accent); letter-spacing: .08em; font-weight: 600; }
+.ex-body, .ex-bubble, .ex-fic-text { white-space: pre-wrap; }
+.ex-badge { display: inline-block; border-radius: 5px; padding: 1px 6px; font-size: 10px; line-height: 1.7; background: var(--accent-soft); color: var(--accent); flex-shrink: 0; }
+.ex-badge.hot { border: 1px solid var(--line); }
+.ex-tags { font-size: 12px; color: var(--accent); margin: 8px 0 18px; }
+.ex-thread { border-top: 1px solid var(--line); margin: 0 -20px -20px; }
+.ex-post { padding: 18px 20px; border-bottom: 1px solid var(--line); }
+.ex-post:last-child { border-bottom: 0; }
+.ex-post.ex-op { background: var(--accent-soft); }
+.ex-post-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ex-author { font-weight: 600; font-size: 13px; }
+.ex-avatar { display: grid; place-items: center; height: 28px; width: 28px; border-radius: 50%; background: var(--bg2); color: var(--accent); font-size: 12px; flex-shrink: 0; }
+.ex-time { font-size: 11px; color: var(--text2); margin: 4px 0 8px; }
+.ex-likes, .ex-byline, .ex-stats { font-size: 12px; color: var(--text2); margin: 10px 0 0; }
+.ex-quote { border-left: 2px solid var(--accent); background: var(--bg2); margin: 10px 0; padding: 6px 10px; color: var(--text2); font-size: 12px; }
+.ex-chat { background: var(--bg2); padding-top: 0; }
+.ex-chat-head { margin: 0 -20px 15px; padding: 13px 20px; border-bottom: 1px solid var(--line); text-align: center; font-weight: 600; font-size: 14px; background: var(--card); }
+.ex-system { text-align: center; color: var(--text2); font-size: 11px; margin: 12px 0; white-space: pre-wrap; }
+.ex-message { display: flex; align-items: flex-start; flex-direction: column; margin: 14px 0; }
+.ex-message.mine { align-items: flex-end; }
+.ex-bubble { max-width: 88%; background: var(--card); border: 1px solid var(--line); padding: 10px 13px; border-radius: 4px 13px 13px; }
+.ex-message.mine .ex-bubble { background: var(--accent-soft); border-color: transparent; border-radius: 13px 4px 13px 13px; }
+.ex-index { padding: 15px 0; border-bottom: 1px solid var(--line); }
+.ex-index-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.ex-index-head strong { font-size: 14px; }
+.ex-index-head span { color: var(--accent); font-size: 13px; white-space: nowrap; }
+.ex-index progress { display: block; width: 100%; height: 6px; border: 0; border-radius: 4px; margin: 12px 0; accent-color: var(--accent); }
+.ex-index progress::-webkit-progress-bar { background: var(--bg2); border-radius: 4px; }
+.ex-index progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
+.ex-index progress::-moz-progress-bar { background: var(--accent); border-radius: 4px; }
+.ex-evidence { font-size: 12px; line-height: 1.7; color: var(--text2); margin-top: 8px; white-space: pre-wrap; }
+.ex-case, .ex-segment { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.ex-case .ex-eyebrow, .ex-segment .ex-eyebrow { margin-bottom: 5px; }
+.ex-callout { background: var(--bg2); padding: 12px 14px; border-radius: 9px; margin: 14px 0; font-size: 14px; }
+.ex-callout .ex-badge { margin-bottom: 6px; }
+.ex-prescription { border-left: 3px solid var(--accent); background: var(--accent-soft); font-family: var(--read-font); }
+.ex-danmu { display: flex; overflow-x: auto; gap: 8px; margin-top: 16px; padding-bottom: 6px; scrollbar-width: thin; }
+.ex-danmu span { white-space: nowrap; border-radius: 20px; background: var(--accent-soft); color: var(--accent); padding: 4px 12px; font-size: 12px; }
+.ex-fic { border-top: 3px solid var(--accent); }
+.ex-fic-text { font-family: var(--read-font); font-size: var(--read-size); margin: 22px 0; line-height: 1.95; }
+.ex-stats { border-top: 1px solid var(--line); padding-top: 12px; }
+.extra-raw { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--read-font); font-size: var(--read-size); line-height: 1.9; margin: 20px 0; }
+.extra-view-toggle { display: flex; gap: 6px; margin: 16px 0 0; }
+@media (max-width: 380px) { .ex-block { padding: 15px; } .ex-thread { margin-left: -15px; margin-right: -15px; margin-bottom: -15px; } .ex-post { padding: 15px; } .ex-chat-head { margin-left: -15px; margin-right: -15px; } }
