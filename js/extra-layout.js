@@ -77,6 +77,7 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
       for(const row of rows){
         const [key,...f]=row;
         if(['标题','分区','标签'].includes(key))continue;
+        if(['正文','主帖'].includes(key)){thread.append(body(f.join('｜')));continue;}
         if(key==='系统'){thread.append(body(f.join('｜'),'ex-system'));continue;}
         let nick,time,text,floor,hot=false,likes='',ref='';
         if(key==='热评'){
@@ -101,6 +102,7 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
       let lastSender = '';
       for(const [key,...f] of rows){
         if(['会话','主人','手机主人'].includes(key))continue;
+        if(key==='备注'){box.append(body(f.join(' · '),'ex-chat-note'));continue;}
         if(['时间','系统','已读'].includes(key)){box.append(body(f.join('｜'),'ex-system'));lastSender='';continue;}
         let side=key,nick=f[0],text=f.slice(1).join('｜');
         if(key==='语音'){[side,nick,...text]=f;text='语音 '+(text[0]||'')+' · '+text.slice(1).join('｜');}
@@ -151,7 +153,8 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
       for(const [key,...f] of rows){
         if(['标题','作者','标签'].includes(key))continue;
         if(key==='数据'){box.append(el('div',{class:'ex-stats',text:'喜欢 '+(f[0]||'0')+' · 收藏 '+(f[1]||'0')+' · 模拟数据'}));continue;}
-        box.append(body((ROW_KEYS.has(key)?f:[key,...f]).join('｜'),key==='简介'?'ex-callout':'ex-fic-text'));
+        if(!ROW_KEYS.has(key)){box.append(el('aside',{class:'ex-callout'},badge(key),body(f.join('｜'))));continue;}
+        box.append(body(f.join('｜'),key==='简介'?'ex-callout':'ex-fic-text'));
       }
     }
     out.append(box);

@@ -621,7 +621,7 @@ test('热评可省略时间、点赞带标签并换行写内容；未知栏目�
 【/】`);
   const hot=out.querySelectorAll('.ex-post')[1];assert.ok(hot.querySelector('.hot'));assert.equal(hot.querySelector('.ex-author').textContent,'不喝蜂蜜水');
   assert.equal(hot.querySelector('.ex-likes').textContent,'赞 89');assert.ok(hot.querySelector('.ex-body').textContent.includes('他亲自端了热茶'));
-  assert.equal(out.querySelector('.ex-bubble').textContent,'明天见。');assert.ok(out.textContent.includes('周既白'));assert.ok(out.textContent.includes('作者的话｜这个结尾留给你们'));
+  assert.equal(out.querySelector('.ex-bubble').textContent,'明天见。');assert.equal(out.querySelector('.ex-chat-note').textContent,'钢结构不背锅 · 周既白');assert.ok(out.querySelector('.ex-fic .ex-callout').textContent.includes('作者的话'));assert.ok(out.textContent.includes('这个结尾留给你们'));
 });
 
 test('报告撰写口吻与收报告现场、手机阅读人称、同人内外人称同时进入最终指令',async()=>{

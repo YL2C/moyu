@@ -495,4 +495,5 @@ a { color: var(--accent); }
 .extra-layout .ex-note { border-left: 3px solid var(--accent); padding: 12px 14px; margin: 14px 0; }
 .ex-note-row { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 8px 0; }
 .ex-note-row .ex-body { font-size: 13px; }
+.ex-chat-note { color: var(--text2); font-size: 11px; line-height: 1.6; margin: 3px 0; }
 .ex-chat .ex-chat-head { margin-left: -10px; margin-right: -10px; padding: 7px 10px; }
