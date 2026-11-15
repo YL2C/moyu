@@ -7,7 +7,7 @@ import { forContext, parseReply } from './parse.js';
 import { cardText, splitNames, protagonistText } from './prompt.js';
 import { EMPHASIS_GUIDE } from './inline.js';
 import { castNames, castText } from './extra-options.js';
-import { PLAYBOOKS, PLAYBOOK_COMMON, LAYOUT_GUIDE, layoutOf, PLAYBOOK_UPDATES, PLAYBOOK_RELATIONS, PLAYBOOK_EDITORIAL, extraEditorial, refreshPlaybookText, playbookOf } from './extra-playbooks.js';
+import { PLAYBOOKS, PLAYBOOK_COMMON, LAYOUT_GUIDE, layoutOf, PLAYBOOK_UPDATES, PLAYBOOK_RELATIONS, PLAYBOOK_EDITORIAL, NICKNAME_GUIDE, extraEditorial, refreshPlaybookText, playbookOf } from './extra-playbooks.js';
 
 export const SCOPES = {
   follow: '跟随形式',
@@ -42,7 +42,7 @@ const BUILTIN = [
 ];
 
 export function builtinTemplates() {
-  return [...BUILTIN.map(([name, scope, text], i) => ({ id: 'builtin-' + i, name, scope, text, note: '', layout: layoutOf({name}) })), ...PLAYBOOKS.map(p => ({...p, text:p.text+'\n'+(PLAYBOOK_UPDATES[p.layout] || '')+'\n'+(PLAYBOOK_RELATIONS[p.layout] || '')+'\n'+(PLAYBOOK_EDITORIAL[p.layout] || ''), playbookRevision:4, note:''}))];
+  return [...BUILTIN.map(([name, scope, text], i) => ({ id: 'builtin-' + i, name, scope, text, note: '', layout: layoutOf({name}) })), ...PLAYBOOKS.map(p => ({...p, text:p.text+'\n'+(PLAYBOOK_UPDATES[p.layout] || '')+'\n'+(PLAYBOOK_RELATIONS[p.layout] || '')+'\n'+(PLAYBOOK_EDITORIAL[p.layout] || ''), playbookRevision:5, note:''}))];
 }
 
 export async function getTemplates() {
@@ -54,7 +54,7 @@ export async function getTemplates() {
   }
   for (const t of v) {
     const p=playbookOf(t), update=p && PLAYBOOK_UPDATES[p.layout];
-    if(p && t.playbookRevision !== 4) {
+    if(p && t.playbookRevision !== 5) {
       // 保留用户改过的正文，只补充新版要求；后续再编辑不会被重复追加。
       t.text=refreshPlaybookText(t.text);
       if(update && !t.text.includes(update)) t.text+='\n'+update;
@@ -62,7 +62,7 @@ export async function getTemplates() {
       if(relation && !t.text.includes(relation))t.text+='\n'+relation;
       const editorial=PLAYBOOK_EDITORIAL[p.layout];
       if(editorial && !t.text.includes(editorial))t.text+='\n'+editorial;
-      t.playbookRevision=4;changed=true;
+      t.playbookRevision=5;changed=true;
     }
   }
   if(changed) await saveTemplates(v);
@@ -126,6 +126,7 @@ export function buildExtraContext(story, opts) {
   add('开头', '你在为一部文字互动小说写番外。番外是独立于正史的创作，写完不推进主线。');
   add('番外通用要求', '【番外通用要求】\n' + base);
   add('文字排版', EMPHASIS_GUIDE);
+  add('网名与备注',NICKNAME_GUIDE);
   if (layout) {
     add('玩法与快照', PLAYBOOK_COMMON);
     add('剧情快照材料', '【自动附带的剧情快照材料】\n'+

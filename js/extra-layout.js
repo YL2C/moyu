@@ -52,8 +52,10 @@ export function parseExtraLayout(text) {
   flush(); return blocks;
 }
 
-export function renderExtraLayout(text, { emphasis = true, dialogueColor = true, reportMode = false } = {}) {
+export function renderExtraLayout(text, { emphasis = true, dialogueColor = true, reportMode = false, layout = '' } = {}) {
   const out = el('div', {class:'extra-layout'+(reportMode?' ex-report-document':'')});
+  const blocks=parseExtraLayout(text);
+  const showMode=layout==='show'||blocks.some(b=>b.type==='节目');
   const rich = text => inlineText(String(text || ''), emphasis, dialogueColor);
   const body = (text, className='ex-body') => el('div',{class:className},rich(text));
   const badge = (text, cls='') => el('span',{class:'ex-badge '+cls,text});
@@ -62,17 +64,39 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
     box.append(el('div',{class:'ex-eyebrow',text:label}));
     if(get(rows,'标题'))box.append(el('h3',{text:get(rows,'标题')}));
   };
+  const showKeys=new Set(['对白','对话','规则','环节','字幕','观察室','采访','弹幕']);
+  const showRow=(key,f) => {
+    if(key==='弹幕')return el('div',{class:'ex-danmu','aria-label':'节目弹幕'},el('span',{},rich(f.join('：'))));
+    if(['对白','对话'].includes(key))return el('aside',{class:'ex-show-dialogue'},badge(f[0]||'嘉宾'),body(f.slice(1).join('｜')));
+    if(['字幕','观察室','采访'].includes(key))return el('aside',{class:'ex-callout'},badge(key),body(f.join(' · ')));
+    return el('div',{class:'ex-segment'},el('div',{class:'ex-eyebrow',text:key}),body(f.join(' · ')));
+  };
   const plain = block => {
     const box=el('div',{class:'ex-scene'+(block.fallback?' ex-fallback':'')});
-    for(const p of block.text.split(/\n\s*\n/).filter(s=>s.trim()))box.append(el('p',{},rich(p)));
+    for(const p of block.text.split(/\n\s*\n/).filter(s=>s.trim())) {
+      if(!showMode || block.fallback){box.append(el('p',{},rich(p)));continue;}
+      // 部分模型把对白行放进【场景】或直接漏写【节目】，按显式栏目逐行恢复。
+      let row=null, prose=[];
+      const flush=()=>{if(row){const [key,...f]=row;box.append(el('div',{class:'ex-show-fragment'},showRow(key,f)));row=null;}if(prose.length){box.append(el('p',{},rich(prose.join('\n'))));prose=[];}};
+      for(const line of p.split('\n')){
+        const f=fieldsOf(line);
+        if(f.length>1 && showKeys.has(f[0])){flush();row=f;}
+        else if(row)row[row.length-1]+='\n'+line;
+        else prose.push(line);
+      }
+      flush();
+    }
     return box;
   };
-  for(const block of parseExtraLayout(text)) {
-    if(block.type==='场景' || !TYPES.has(block.type)) {out.append(plain(block));continue;}
+  let commentHost=null;
+  for(const block of blocks) {
+    if(block.type==='场景' || !TYPES.has(block.type)) {out.append(plain(block));commentHost=null;continue;}
+    const attachComments=block.type==='论坛' && commentHost;
+    if(block.type!=='论坛')commentHost=null;
     const rows=block.rows, box=el('section',{class:'ex-block ex-'+({'论坛':'forum','聊天':'chat','报告':'report','节目':'show','同人':'fic','便笺':'note'}[block.type]),'aria-label':block.type});
     if(block.type==='论坛') {
-      heading(box,rows,get(rows,'分区')||'讨论区');
-      if(get(rows,'标签'))box.append(el('div',{class:'ex-tags',text:get(rows,'标签')}));
+      if(attachComments){box.classList.remove('ex-block');box.classList.add('ex-fic-comments');box.setAttribute('aria-label','作品评论');box.append(el('div',{class:'ex-comments-title',text:'评论'}));}
+      else {heading(box,rows,get(rows,'分区')||'讨论区');if(get(rows,'标签'))box.append(el('div',{class:'ex-tags',text:get(rows,'标签')}));}
       const thread=el('div',{class:'ex-thread'});box.append(thread);
       for(const row of rows){
         const [key,...f]=row;
@@ -132,14 +156,10 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
       }
     } else if(block.type==='节目') {
       heading(box,rows,'ON AIR · 本期节目');
-      const comments=[];
       for(const [key,...f] of rows){
         if(key==='标题')continue;
-        if(key==='弹幕'){comments.push(f.join('：'));continue;}
-        if(['字幕','观察室','采访'].includes(key))box.append(el('aside',{class:'ex-callout'},badge(key),body(f.join(' · '))));
-        else box.append(el('div',{class:'ex-segment'},el('div',{class:'ex-eyebrow',text:key}),body(f.join(' · '))));
+        box.append(showRow(key,f));
       }
-      if(comments.length)box.append(el('div',{class:'ex-danmu','aria-label':'节目弹幕'},...comments.map(t=>el('span',{text:t}))));
     } else if(block.type==='便笺') {
       heading(box,rows,block.label || '文字记录');
       for(const [key,...f] of rows){
@@ -157,7 +177,9 @@ export function renderExtraLayout(text, { emphasis = true, dialogueColor = true,
         box.append(body(f.join('｜'),key==='简介'?'ex-callout':'ex-fic-text'));
       }
     }
-    out.append(box);
+    if(attachComments)attachComments.append(box);
+    else out.append(box);
+    if(block.type==='同人')commentHost=box;
   }
   return out;
 }

@@ -275,7 +275,7 @@ async function renderReader(root, story, nodes, extraId) {
       if (raw) g.append(el('div',{class:'extra-raw',text:v.text}));
       else {
         if (title) g.append(el('h2', { text: title, style: { marginTop: '14px' } }));
-        if (v.layout || x.layout || layoutOf({name:x.tplName}) || /【(?:论坛|聊天|报告|节目|同人|场景|便笺|备忘录)】/.test(v.text)) g.append(renderExtraLayout(v.text,{emphasis:getPrefs().emphasis!==false,dialogueColor:getPrefs().dialogueColor!==false,reportMode:(v.layout || x.layout || layoutOf({name:x.tplName}))==='report'}));
+        if (v.layout || x.layout || layoutOf({name:x.tplName}) || /【(?:论坛|聊天|报告|节目|同人|场景|便笺|备忘录)】/.test(v.text)) g.append(renderExtraLayout(v.text,{emphasis:getPrefs().emphasis!==false,dialogueColor:getPrefs().dialogueColor!==false,layout:v.layout || x.layout || layoutOf({name:x.tplName}),reportMode:(v.layout || x.layout || layoutOf({name:x.tplName}))==='report'}));
         else blocks.forEach((b, i) => g.append(el('p', { class: [b.includes('\n') ? 'fw' : '', live && i === blocks.length - 1 ? 'cursor' : ''].filter(Boolean).join(' ') || null }, inlineText(b, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false))));
       }
     } else if (live) {

@@ -497,3 +497,22 @@ a { color: var(--accent); }
 .ex-note-row .ex-body { font-size: 13px; }
 .ex-chat-note { color: var(--text2); font-size: 11px; line-height: 1.6; margin: 3px 0; }
 .ex-chat .ex-chat-head { margin-left: -10px; margin-right: -10px; padding: 7px 10px; }
+
+/* 节目遗漏外层标记的对白也使用节目样式，不显示协议分隔符。 */
+.ex-show-dialogue { margin: 10px 0; padding: 9px 12px; background: var(--accent-soft); border-left: 2px solid var(--accent); border-radius: 7px; font: 14px/1.8 var(--ui-font); }
+.ex-show-dialogue .ex-badge { margin-bottom: 5px; }
+.ex-show-fragment { font: 14px/1.8 var(--ui-font); margin: 10px 0; }
+.ex-show-fragment .ex-body { text-indent: 0; }
+/* 评论属于作品发布页，紧跟正文，不再套独立论坛卡片。 */
+.ex-fic > .ex-fic-comments { margin: 16px 0 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+.ex-comments-title { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px; }
+.ex-fic-comments .ex-thread { border: 0; margin: 0; }
+.ex-fic-comments .ex-post { padding: 10px 0; background: transparent; }
+.ex-fic-comments .ex-post .ex-body { font-size: 13px; line-height: 1.7; }
+.ex-fic-comments .ex-avatar { width: 23px; height: 23px; font-size: 10px; }
+/* 报告中的附件聊天独立于正文阅读字号，防止手机自动放大。 */
+.ex-chat { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+.ex-report-document .ex-chat .ex-bubble { font-size: 12px; line-height: 1.65; padding: 5px 7px; }
+.ex-report-document .ex-chat .ex-chat-head { font-size: 12px; }
+.ex-report-document .ex-chat .ex-chat-avatar { width: 22px; height: 22px; font-size: 10px; }
+.ex-report-document .ex-chat .ex-time, .ex-report-document .ex-chat .ex-system, .ex-report-document .ex-chat .ex-chat-note { font-size: 10px; }

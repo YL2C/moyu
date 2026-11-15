@@ -558,9 +558,9 @@ test('聊天用文字头像与窄气泡，混合材料仍归属于同一篇完�
   const doc=renderExtraLayout(text,{reportMode:true});root.append(doc);
   for(const type of ['chat','forum','show','fic'])assert.ok(doc.querySelector('.ex-'+type));
   assert.equal(doc.querySelectorAll('.ex-fallback').length,0);assert.ok(doc.textContent.includes('共同解释'));
-  const bubbles=doc.querySelectorAll('.ex-bubble');assert.equal(getComputedStyle(bubbles[0]).maxWidth,'79%');assert.equal(getComputedStyle(bubbles[0]).fontSize,'13px');
+  const bubbles=doc.querySelectorAll('.ex-bubble');assert.equal(getComputedStyle(bubbles[0]).maxWidth,'79%');assert.equal(getComputedStyle(bubbles[0]).fontSize,'12px');
   assert.equal(doc.querySelectorAll('.ex-chat-avatar').length,2);assert.equal(doc.querySelectorAll('img').length,0);
-  assert.equal(getComputedStyle(doc.querySelector('.ex-chat-avatar')).width,'24px');
+  assert.equal(getComputedStyle(doc.querySelector('.ex-chat-avatar')).width,'22px');
 });
 
 
@@ -644,8 +644,73 @@ test('已保存第三版模板升级口吻但不删除自定义内容，旧番�
   const {story}=await seedStory();
   const oldText='我补充的要求。证据注明素材章节或原文短句，不能为凑分捏造正史。';
   await db.kvSet('fwPlaybooksV1',true);await db.kvSet('fwTemplates',[{id:'playbook-report',name:'恋爱脑报告',layout:'report',playbookRevision:3,text:oldText}]);
-  const list=await getTemplates();assert.equal(list[0].playbookRevision,4);assert.ok(list[0].text.startsWith('我补充的要求。'));assert.ok(!list[0].text.includes('证据注明素材章节或原文短句'));
+  const list=await getTemplates();assert.equal(list[0].playbookRevision,5);assert.ok(list[0].text.startsWith('我补充的要求。'));assert.ok(!list[0].text.includes('证据注明素材章节或原文短句'));
   assert.ok(list[0].text.includes('开篇必须先写'));assert.equal((await getTemplates())[0].text,list[0].text);
   const ctx=buildExtraContext(story,{chapters:[],anchorNo:0,template:{name:'恋爱脑报告',layout:'report',text:oldText}});
   assert.equal(ctx.info.parts.at(-1).label,'当前叙事修订（优先于旧模板冲突条款）');assert.ok(ctx.info.parts.at(-1).text.includes('绝不能写进可见报告'));
+});
+
+test('恋综对白在无外层标记和场景内均排版，片段与弹幕保持发生顺序',async()=>{
+  const {renderExtraLayout}=await import('../js/extra-layout.js');
+  const text=`你们装作初次见面的嘉宾。
+
+对白 | 许秋 | （放下茶杯）“你做什么工作？”
+
+你转过身，把杯子推过去。
+
+【场景】
+对白｜你｜“写字。”
+字幕｜这个回答有点敷衍
+观察室｜今天也不交稿｜他刚刚在笑。
+【/】
+【节目】
+环节｜答案揭晓｜片段之前
+弹幕｜快门比嘴快｜弹幕在这里
+对白｜许秋｜“我知道。”
+规则｜收工｜片段之后
+【/】`;
+  const out=renderExtraLayout(text,{layout:'show'});root.append(out);
+  assert.equal(out.querySelectorAll('.ex-show-dialogue').length,3);
+  for(const s of ['你们装作初次见面','你转过身','这个回答有点敷衍','他刚刚在笑','我知道'])assert.ok(out.textContent.includes(s));
+  assert.ok(!out.textContent.includes('对白｜'));assert.ok(!out.textContent.includes('对白 |'));
+  const main=out.querySelector('.ex-show').textContent;assert.ok(main.indexOf('片段之前')<main.indexOf('弹幕在这里'));assert.ok(main.indexOf('弹幕在这里')<main.indexOf('我知道'));assert.ok(main.indexOf('我知道')<main.indexOf('片段之后'));
+  assert.equal(getComputedStyle(out.querySelector('.ex-danmu')).overflow,'visible');
+  const novel=renderExtraLayout('对白｜甲｜这是小说里引用的格式。');assert.equal(novel.querySelector('.ex-show-dialogue'),null);
+});
+
+test('同人每篇评论嵌在本篇正文下面，独立论坛仍是独立帖子',async()=>{
+  const {renderExtraLayout}=await import('../js/extra-layout.js');
+  const text=['第一篇','第二篇','第三篇'].map((name,i)=>`【同人】\n标题｜${name}\n正文｜故事${i}\n【/】\n【评论区】\n标题｜${name}评论区\n#1｜读者${i}｜今天｜评论${i}\n【/】`).join('\n')+'\n【场景】\n你把手机递了过去。\n【/】\n【论坛】\n标题｜独立吃瓜帖\n楼主｜另一个人｜今天｜另一个话题\n【/】';
+  const out=renderExtraLayout(text);root.append(out);
+  assert.equal(out.querySelectorAll('.ex-fic').length,3);assert.equal(out.querySelectorAll('.ex-fic > .ex-fic-comments').length,3);
+  [...out.querySelectorAll('.ex-fic')].forEach((fic,i)=>{assert.ok(fic.querySelector('.ex-fic-text').textContent.includes('故事'+i));assert.ok(fic.querySelector('.ex-fic-comments').textContent.includes('评论'+i));assert.equal(fic.querySelector('.ex-fic-comments .ex-eyebrow'),null);assert.ok(!fic.querySelector('.ex-fic-comments').classList.contains('ex-block'));});
+  assert.equal(out.querySelectorAll(':scope > .ex-forum').length,1);assert.ok(out.querySelector(':scope > .ex-forum').textContent.includes('独立吃瓜帖'));
+});
+
+test('报告内聊天比普通聊天更小，字号不被放大的正文覆盖，强调与台词仍保留',async()=>{
+  const {renderExtraLayout}=await import('../js/extra-layout.js');
+  const text='【聊天】\n会话｜证据\n我｜截稿不交稿｜“**我记得**。”\n他｜快门比嘴快｜行。\n【/】';
+  const host=document.createElement('div');host.className='gm';host.style.fontSize='28px';root.append(host);
+  const report=renderExtraLayout(text,{reportMode:true}),chat=renderExtraLayout(text);host.append(report,chat);
+  assert.equal(getComputedStyle(report.querySelector('.ex-bubble')).fontSize,'12px');assert.equal(getComputedStyle(chat.querySelector('.ex-bubble')).fontSize,'13px');
+  assert.equal(getComputedStyle(report.querySelector('.ex-chat-head')).fontSize,'12px');assert.ok(report.querySelector('.ex-bubble .dialogue-text strong'));assert.ok(report.textContent.includes('截稿不交稿'));
+});
+
+test('三篇大跨度同人与所有番外网名、手机末尾未读彩蛋写入指令并迁移旧模板',async()=>{
+  const {buildExtraContext,builtinTemplates,getTemplates}=await import('../js/fanwai.js');
+  const {story}=await seedStory();const make=layout=>buildExtraContext(story,{chapters:[],anchorNo:0,template:builtinTemplates().find(t=>t.layout===layout)});
+  const fic=make('fic');assert.ok(fic.system.includes('每次必须恰好三篇'));assert.ok(fic.system.includes('至少三个维度拉开距离'));assert.ok(fic.system.includes('用户指定题材时遵守指定'));assert.ok(fic.system.includes('故意OOC'));assert.ok(fic.system.includes('紧接该【同人】块'));
+  const chat=make('chat');assert.ok(chat.system.includes('你没有看到的记录'));assert.ok(chat.system.includes('主角尚不知道'));assert.ok(chat.system.includes('不把它变成已发生的正史'));
+  for(const template of [...builtinTemplates(),{name:'自定义',text:'写一个日常'}]){
+    const ctx=buildExtraContext(story,{chapters:[],anchorNo:0,template});assert.ok(ctx.system.includes('所有番外的网名与备注'));assert.ok(ctx.system.includes('脑洞大'));
+  }
+  await db.kvSet('fwPlaybooksV1',true);await db.kvSet('fwTemplates',[{id:'playbook-fic',name:'我跟你的同人文',playbookRevision:4,text:'保留我的要求。写2—3篇差异明显的网友同人及本人读后现场'}]);
+  const list=await getTemplates();assert.equal(list[0].playbookRevision,5);assert.ok(list[0].text.startsWith('保留我的要求'));assert.ok(!list[0].text.includes('写2—3篇'));assert.ok(list[0].text.includes('每次必须恰好三篇'));assert.equal((await getTemplates())[0].text,list[0].text);
+});
+
+test('实际番外阅读按保存的恋综形式修复没有节目块的对白，原文切换保留所有字符',async()=>{
+  const {story}=await seedStory();const text='# 开场\n\n你端起杯子。\n\n对白｜许秋｜“我来晚了吗？”\n\n你摇了摇头。';
+  await db.put('extras',{id:'loose-show',storyId:story.id,tplName:'一起参加恋综',layout:'show',anchorNo:1,cur:0,versions:[{id:'v1',text,status:'done',layoutVersion:1}]});
+  const dispose=await extras.render(root,{id:story.id,extraId:'loose-show'});
+  try{assert.ok(root.querySelector('.ex-show-dialogue'));assert.ok(root.textContent.includes('你摇了摇头'));button('原文').click();assert.equal(root.querySelector('.extra-raw').textContent,text);button('排版').click();assert.ok(root.querySelector('.ex-show-dialogue'));}finally{dispose();}
 });

@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>墨游交互预览</title>
-<link rel="stylesheet" href="../css/app.css?v=0.6.16-personal.5">
+<link rel="stylesheet" href="../css/app.css?v=0.6.16-personal.6">
 <style>
 html,body{height:auto;overflow:auto}body{padding:16px}#switches{display:flex;flex-wrap:wrap;gap:8px;margin:0 auto 12px;max-width:430px}#preview{max-width:430px;height:760px;margin:auto;border:1px solid var(--line);border-radius:16px;overflow:hidden;position:relative}#preview .view{height:100%}#note{max-width:430px;margin:10px auto;font-size:12px;color:var(--text3)}
 </style>
@@ -38,7 +38,8 @@ async function show(render,params){dispose?.();root.replaceChildren();dispose=aw
 for(const [label,render,params] of views)document.querySelector('#switches').append(el('button',{class:'btn small',onclick:()=>show(render,params)},label));
 for (const [name,text] of Object.entries(samples)) {
  const extraId='demo-'+Object.keys(samples).indexOf(name);
- await db.put('extras',{id:extraId,storyId:story.id,tplName:name,request:'演示排版，非实际生成内容',layout:name==='恋爱脑报告'?'report':name==='他的聊天记录'?'chat':'mixed',anchorId:story.headId,anchorNo:1,cur:0,versions:[{text,status:'done',layoutVersion:1,layout:name==='恋爱脑报告'?'report':name==='他的聊天记录'?'chat':'mixed'}]});
+ const sampleLayout=name==='恋爱脑报告'?'report':name==='他的聊天记录'?'chat':['一起参加恋综','恋综场景兼容'].includes(name)?'show':name==='我跟你的同人文'?'fic':'mixed';
+ await db.put('extras',{id:extraId,storyId:story.id,tplName:name,request:'演示排版，非实际生成内容',layout:sampleLayout,anchorId:story.headId,anchorNo:1,cur:0,versions:[{text,status:'done',layoutVersion:1,layout:sampleLayout}]});
  document.querySelector('#switches').append(el('button',{class:'btn small',onclick:()=>show(extras,{id:story.id,extraId})},name));
 }
 await show(play,{id:story.id});
