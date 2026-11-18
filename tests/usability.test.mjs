@@ -13,7 +13,7 @@ globalThis.requestAnimationFrame = fn => setTimeout(fn, 0); globalThis.cancelAni
 globalThis.confirm = () => true;
 dom.window.HTMLElement.prototype.scrollIntoView = function() {};
 const style = document.createElement('style'); style.textContent = await readFile(new URL('../css/app.css', import.meta.url), 'utf8'); document.head.append(style);
-const { db } = await import('../js/db.js');
+const { db, exportAll } = await import('../js/db.js');
 const { choiceInput, toggleChoice, expandOptionInput } = await import('../js/personal.js');
 const { readAttachment, attachmentBytes, selectedImport } = await import('../js/attachments.js');
 const { chatMessages, newDiscussion, saveDiscussion, getDiscussion, exportDiscussions } = await import('../js/discuss.js');
@@ -40,7 +40,7 @@ async function seedStory() {
 }
 beforeEach(async () => {
   for(const store of ['stories','nodes','extras','connections']) for(const item of await db.all(store)) await db.del(store,item.id);
-  for(const key of ['modules','packs','disc.index','relay','defaultConnId','globalMemo','modules.undo','fwTemplates','fwBase','fwPlaybooksV1','extraConnectionId','usageLog','spend']) await db.kvSet(key,null);
+  for(const key of ['modules','packs','disc.index','relay','defaultConn','globalMemo','modules.undo','fwTemplates','fwBase','fwPlaybooksV1','extraConnectionId','usageLog','spend']) await db.kvSet(key,null);
   Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
   localStorage.clear(); document.body.innerHTML='<div id="fixture"></div><div id="toast"></div>'; root=document.querySelector('#fixture');
   requests=[]; responses=[];
@@ -120,6 +120,83 @@ test('设置栏目可折叠并记忆，规则管理提供批量选中删除与�
   const reading=[...root.querySelectorAll('.settings-section')].find(d=>d.firstElementChild.textContent==='阅读');
   reading.open=true;reading.dispatchEvent(new Event('toggle'));
   assert.equal(localStorage.getItem('moyu-yl2c.settings.fold.阅读'),'open');
+});
+
+test('复制 API 连接复用地址和密钥，选模型保存后可在游玩页切换', async () => {
+  const {story} = await seedStory();
+  const source = {...await db.get('connections','qa-conn'), createdAt: 1, mt8000: true, viaRelay: true};
+  await db.put('connections', source);
+  await settings.render(root,{});
+  const openCopy = async () => {
+    button('复制连接', root).click();
+    await wait(() => !!document.querySelector('[role=dialog]'));
+    return document.querySelector('[role=dialog]');
+  };
+  let dialog = await openCopy();
+  assert.equal(dialog.querySelector('input[type=password]').value, source.apiKey);
+  assert.equal(button('删除', dialog), undefined);
+  button('取消', dialog).click();
+  assert.equal((await db.all('connections')).length, 1);
+
+  const originalFetch = globalThis.fetch;
+  const outgoing = [];
+  globalThis.fetch = (url, init) => {
+    outgoing.push({url, auth: init.headers.Authorization});
+    if (url.endsWith('/models')) return new Response(JSON.stringify({data:[{id:'second-model'}]}));
+    return originalFetch(url, init);
+  };
+  dialog = await openCopy();
+  button('获取模型列表', dialog).click();
+  await wait(() => !!button('second-model'));
+  button('second-model').click();
+  await wait(() => dialog.querySelector('input[list]').value === 'second-model');
+  button('保存副本', dialog).click();
+  await wait(() => !document.querySelector('[role=dialog]'));
+  const copy = (await db.all('connections')).find(c => c.id !== source.id);
+  assert.equal(copy.model, 'second-model');
+  assert.equal(copy.viaRelay, true);
+  assert.deepEqual(await db.get('connections',source.id), source);
+  assert.equal(await db.kvGet('defaultConn',null), null);
+  assert.ok((await exportAll()).connections.every(c => !c.apiKey));
+
+  root.replaceChildren();
+  const dispose = await play.render(root,{id:story.id});
+  try {
+    const chip = root.querySelector('.model-chip');
+    assert.equal(chip.textContent, source.name);
+    chip.click();
+    const copiedModel = () => [...document.querySelectorAll('[role=dialog] .menu-list button')].find(b => b.firstChild.textContent === 'second-model');
+    await wait(copiedModel);
+    copiedModel().click();
+    await wait(() => chip.textContent === 'second-model');
+    button('继续').click();
+    await wait(() => requests.length === 1 && !dispose.busy());
+    assert.equal(requests[0].body.model, 'second-model');
+    assert.deepEqual(outgoing, [
+      {url:source.baseUrl + '/models', auth:'Bearer ' + source.apiKey},
+      {url:source.baseUrl + '/chat/completions', auth:'Bearer ' + source.apiKey},
+    ]);
+  } finally { dispose(); }
+});
+
+test('复制 Vertex 连接保留服务账号 JSON 和地区', async () => {
+  const key = JSON.stringify({type:'service_account',private_key:'fake-key',project_id:'fake-project',client_email:'test@example.test'});
+  await db.put('connections',{id:'qa-conn',format:'vertex',apiKey:key,model:'first-model',region:'us-central1',mt8000:true});
+  await db.kvSet('defaultConn', 'qa-conn');
+  await settings.render(root,{});
+  button('复制连接', root).click();
+  await wait(() => !!document.querySelector('[role=dialog]'));
+  const dialog = document.querySelector('[role=dialog]');
+  assert.equal(dialog.querySelector('textarea').value, key);
+  dialog.querySelector('input[list]').value = 'second-model';
+  button('保存副本',dialog).click();
+  await wait(() => !document.querySelector('[role=dialog]'));
+  const copy = (await db.all('connections')).find(c => c.id !== 'qa-conn');
+  assert.equal(copy.format, 'vertex');
+  assert.equal(copy.apiKey, key);
+  assert.equal(copy.region, 'us-central1');
+  assert.equal(copy.model, 'second-model');
+  assert.equal(await db.kvGet('defaultConn',null), 'qa-conn');
 });
 
 test('故事批量开关不修改另一个故事的启用状态',async()=>{

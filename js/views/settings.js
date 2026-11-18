@@ -79,6 +79,7 @@ export async function render(root, { section }) {
           `${FORMAT_LABEL[c.format || 'auto']} · ${c.model || '未填模型'}` + (priceLabel(c) ? ` · ${priceLabel(c)}` : ''), el('br'), url),
         el('div', { class: 'row', style: { marginTop: '10px' } },
           el('button', { class: 'btn small', onclick: () => editConn(c) }, '编辑 / 测试'),
+          el('button', { class: 'btn small ghost', onclick: () => editConn(c, { duplicate: true }) }, '复制连接'),
           isDef ? null : el('button', { class: 'btn small ghost', onclick: async () => { await setDefaultConnId(c.id); toast('已设为默认'); draw(); } }, '设为默认')
         )
       ));
@@ -279,16 +280,17 @@ export async function render(root, { section }) {
   }
 
   // ───── 连接编辑 ─────
-  async function editConn(existing) {
+  async function editConn(existing, { duplicate = false } = {}) {
     const conns = await getConnections();
     const relayConfig = await getRelay();
-    const isNew = !existing;
+    const isNew = !existing || duplicate;
     const c = existing ? { ...existing } : {
       id: uid(), name: '', format: 'auto', baseUrl: '', apiKey: '', model: '', maxTokens: 8000, mt8000: true, temperature: '', stream: true, createdAt: Date.now(),
     };
-    const s = sheet({ title: isNew ? '添加连接' : '编辑连接' });
+    if (duplicate) Object.assign(c, { id: uid(), name: '', createdAt: Date.now() });
+    const s = sheet({ title: duplicate ? '复制连接' : isNew ? '添加连接' : '编辑连接' });
 
-    const name = el('input', { type: 'text', placeholder: '随便起个名字，例：我的中转' }); name.value = c.name || '';
+    const name = el('input', { type: 'text', placeholder: duplicate ? '留空则显示模型名' : '随便起个名字，例：我的中转' }); name.value = c.name || '';
     const fmt = el('select');
     for (const [k, v] of Object.entries(FORMAT_LABEL)) fmt.append(el('option', { value: k }, v));
     fmt.value = c.format || 'auto';
@@ -445,7 +447,9 @@ export async function render(root, { section }) {
       (keyField.append(el('label', { text: 'API 密钥' }), el('div', { class: 'row', style: { flexWrap: 'nowrap' } }, key, showKey),
         el('div', { class: 'hint', text: '只存在这台设备上，导出备份时不会带出去。' })), keyField),
       saField, regionField,
-      el('div', { class: 'field' }, el('label', { text: '模型名' }), model, dl, el('div', { class: 'row', style: { marginTop: '6px' } }, getModels, refetch)),
+      el('div', { class: 'field' }, el('label', { text: '模型名' }), model, dl,
+        el('div', { class: 'row', style: { marginTop: '6px' } }, getModels, refetch),
+        duplicate ? el('div', { class: 'hint' }, '已沿用原连接的凭证。选好模型后保存副本。') : null),
       el('div', { class: 'row', style: { alignItems: 'flex-start', flexWrap: 'nowrap' } },
         el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '输出上限' }), maxT,
           el('div', { class: 'hint', text: '每轮最多写多少（单位是 token）。一章加弹幕和选项常要 5000 左右；开了思考的模型思考也算在里面，可以再调大。太小会写不到选项。' })),
@@ -470,6 +474,22 @@ export async function render(root, { section }) {
     showMode();
     showFmt();
 
+    const save = el('button', {
+      class: 'btn primary',
+      onclick: async () => {
+        const v = read();
+        if (!v.apiKey || !v.model) { toast(v.format === 'vertex' ? '服务账号 JSON 和模型名都要填' : '密钥和模型名都要填'); return; }
+        if (v.format === 'vertex') { try { parseServiceAccount(v.apiKey); } catch (e) { toast(e.message, 3500); return; } }
+        save.disabled = true;
+        try {
+          await db.put('connections', v);
+          if (!duplicate && (!conns.length || !(await getDefaultConnId()))) await setDefaultConnId(v.id);
+          toast(duplicate ? '连接副本已保存' : '连接已保存');
+          s.close();
+          draw();
+        } catch { save.disabled = false; toast('保存失败，请重试'); }
+      },
+    }, duplicate ? '保存副本' : '保存');
     s.foot.append(...[
       isNew ? null : el('button', {
         class: 'btn danger', style: { marginRight: 'auto' },
@@ -481,21 +501,7 @@ export async function render(root, { section }) {
         },
       }, '删除'),
       el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'),
-      el('button', {
-        class: 'btn primary',
-        onclick: async () => {
-          const v = read();
-          if (!v.apiKey || !v.model) { toast(v.format === 'vertex' ? '服务账号 JSON 和模型名都要填' : '密钥和模型名都要填'); return; }
-          if (v.format === 'vertex') { try { parseServiceAccount(v.apiKey); } catch (e) { toast(e.message, 3500); return; } }
-          try {
-            await db.put('connections', v);
-            if (!conns.length || !(await getDefaultConnId())) await setDefaultConnId(v.id);
-            toast('连接已保存');
-            s.close();
-            draw();
-          } catch {}
-        },
-      }, '保存'),
+      save,
     ].filter(Boolean));
   }
 
