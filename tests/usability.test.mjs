@@ -262,14 +262,51 @@ test('主角更新只接受有原文依据的状态字段，并隔离分支及�
 test('主角卡实际整理、审阅保存、撤销，正文上下文读取当前变化',async()=>{
   const {story,nodes}=await seedStory();const dispose=await chars.render(root,{id:story.id});
   try{
-    responses.push(JSON.stringify({changes:[{field:'identity',value:'设计公司职员',conflict:false,evidence:[{source:'chapter:1',quote:'林舟已经毕业，入职设计公司。'}]}]}));
+    responses.push(JSON.stringify({changes:[{field:'identity',value:'设计公司职员',conflict:false,evidence:{source:'第1章',quote:'“林舟已经毕业, 入职**设计公司**。”'}}]}));
     button('根据当前剧情更新').click();await wait(()=>!!button('读取剧情并生成建议'));button('读取剧情并生成建议').click();
     await wait(()=>!button('保存勾选项').disabled);button('保存勾选项').click();
     await wait(async()=>(await db.get('stories',story.id)).protagonist.stateEntries?.length===1);
     const saved=await db.get('stories',story.id);assert.equal(saved.protagonist.name,'林舟');assert.equal(saved.protagonist.note,'初始是大学生。');
+    assert.equal(saved.protagonist.stateEntries[0].evidence[0].source,'chapter:1');
+    assert.equal(saved.protagonist.stateEntries[0].manualConfirmed,undefined);
     assert.ok(buildContext(saved,nodes).system.includes('设计公司职员'));
     await wait(()=>!!button('撤销上次更新'));button('撤销上次更新').click();await wait(async()=>(await db.get('stories',story.id)).protagonist.stateEntries.length===0);
   }finally{dispose();}
+});
+
+test('旧主角卡草稿全都未核验时仍可逐项勾选，保存标为手动确认', async () => {
+  const {story,nodes}=await seedStory();
+  await db.kvSet('background.characters.'+story.id+'.update',{
+    state:'done',
+    meta:{sources:[{id:'chapter:1',label:'第1章',text:'林舟已经毕业，入职设计公司。'}],current:{},anchor:'a1',reviewedHead:'a1'},
+    text:JSON.stringify({changes:[
+      {field:'identity',value:'设计公司职员'},
+      {field:'abilities',value:'获得超能力',evidence:[{source:'chapter:1',quote:'获得了超能力'}]},
+    ]}),
+  });
+  const dispose=await chars.render(root,{id:story.id});
+  try {
+    button('根据当前剧情更新').click();
+    await wait(()=>!!button('保存勾选项'));
+    const checks=[...document.querySelectorAll('[role=dialog] input[type=checkbox]')];
+    const save=button('保存勾选项');
+    assert.equal(checks.length,2);
+    assert.ok(checks.every(check=>!check.checked&&!check.disabled));
+    assert.equal(save.disabled,true);
+    checks[0].click(); assert.equal(save.disabled,false);
+    checks[0].click(); assert.equal(save.disabled,true);
+    checks[0].click(); save.click();
+    await wait(()=>!document.querySelector('[role=dialog]'));
+    const saved=await db.get('stories',story.id);
+    assert.equal(saved.protagonist.stateEntries.length,1);
+    const entry=saved.protagonist.stateEntries[0];
+    assert.equal(entry.field,'identity');
+    assert.equal(entry.sourceNodeId,nodes[1].id);
+    assert.equal(entry.manualConfirmed,true);
+    assert.deepEqual(entry.evidence,[]);
+    assert.equal(requests.length,0);
+    assert.ok(root.querySelector('.protagonist-state').textContent.includes('手动确认'));
+  } finally {dispose();}
 });
 
 test('主角状态默认收起、可记住展开状态，编辑不会触发折叠或改变资料',async()=>{
