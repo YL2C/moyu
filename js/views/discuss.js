@@ -5,8 +5,8 @@ import { el, toast, sheet, menu, promptText, autoGrow, ago, pickRawFile } from '
 import { go, getConnections, resolveConnection, connLabel, getGlobalMemo, setGlobalMemo, getPrefs } from '../state.js';
 import { inlineText } from '../inline.js';
 import { stripReasoning } from '../reasoning.js';
-import { streamWithRetry, ApiError } from '../api.js';
-import { normalizeUsage, computeCost, fmtMoney, recordUsage } from '../cost.js';
+import { clearTask, getTask, resumeTask, startTask, stopTask, taskId, taskPending } from '../background.js';
+import { fmtMoney } from '../cost.js';
 import { openStoryEditor } from './story-edit.js';
 import { readAttachment } from '../attachments.js';
 import { attachmentCard } from './attachment-ui.js';
@@ -62,7 +62,7 @@ async function renderList(root) {
             const d = await getDiscussion(x.id);
             const v = await promptText({ title: '重命名', value: d.title, multiline: false });
             if (v?.trim()) { d.title = v.trim(); await saveDiscussion(d); go('discuss'); }
-          } else if (k === 'del' && confirm('删除这个讨论？已经写回的修改不受影响。')) { await deleteDiscussion(x.id); go('discuss'); }
+          } else if (k === 'del') await removeDiscussion(x.id);
         } }, '⋯')),
       el('div', { class: 'm', text: (x.storyId ? '📖 ' : '🌐 ') + scope + ` · ${x.count || 0} 条` }),
       el('div', { class: 'd', text: ago(x.updatedAt) })));
@@ -74,6 +74,24 @@ async function renderList(root) {
 }
 
 // ───────────── 单个讨论 ─────────────
+async function canDeleteDiscussion(id) {
+  const d = await getDiscussion(id);
+  if (d?.messages.some(m => m.taskId) || (await Promise.all(['changes', 'story']
+    .map(k => getTask('discussion.' + id + '.' + k)))).some(taskPending)) {
+    toast('请先回到讨论，接回或停止生成。');
+    return false;
+  }
+  return true;
+}
+
+async function removeDiscussion(id) {
+  if (!await canDeleteDiscussion(id)) return;
+  if (!confirm('删除这个讨论？已经写回的修改不受影响。')) return;
+  await deleteDiscussion(id);
+  await Promise.all(['changes', 'story'].map(k => clearTask('discussion.' + id + '.' + k)));
+  go('discuss');
+}
+
 async function renderChat(root, id) {
   const d = await getDiscussion(id);
   if (!d) { toast('找不到这个讨论'); go('discuss'); return; }
@@ -84,7 +102,12 @@ async function renderChat(root, id) {
     conn = (d.connId && list.find((c) => c.id === d.connId)) || (d.storyId ? await resolveConnection(await db.get('stories', d.storyId)) : await resolveConnection(null));
   };
   await pickConn();
-  let ctrl = null;
+  const tasks = { changes: null, story: null };
+  const keyFor = kind => 'discussion.' + d.id + '.' + kind;
+  const replyKey = m => keyFor('reply.' + m.taskId);
+  let replyBusy = false;
+  let jobs = 0;
+  const idleCbs = new Set();
   let destroyed = false;
   d.pendingAttachments = d.pendingAttachments || [];
   const pendingFiles = el('div', { class: 'pending-attachments' });
@@ -109,11 +132,12 @@ async function renderChat(root, id) {
   const feed = el('div', { class: 'feed disc-feed' });
   const scroller = el('div', { class: 'scroll' }, feed);
   const ta = el('textarea', { rows: 1, placeholder: '自由输入…' });
-  const sendBtn = el('button', { class: 'send', onclick: () => (ctrl ? ctrl.abort() : onSend()) }, '发送');
+  const sendBtn = el('button', { class: 'send', onclick: () => replyBusy ? stopReply() : onSend() }, '发送');
   const chipChanges = el('button', { class: 'chip', onclick: () => makeChanges() }, '✍️ 整理成修改');
   const chipNew = el('button', { class: 'chip', onclick: () => makeNewStory() }, '＋ 生成新故事');
   const chipCh = el('button', { class: 'chip', onclick: () => chooseChapters() });
-  const composer = el('div', { class: 'composer' },
+  const draftStatus = el('div', { class: 'status-row' });
+  const composer = el('div', { class: 'composer' }, draftStatus,
     pendingFiles,
     el('div', { class: 'bar' }, attachBtn, chipChanges, d.storyId ? chipCh : null, chipNew),
     el('div', { class: 'inrow' }, ta, sendBtn));
@@ -161,6 +185,7 @@ async function renderChat(root, id) {
   }
 
   function draw(stick = true) {
+    updateTasks();
     if (!d.messages.length) {
       feed.replaceChildren(el('div', { class: 'empty' },
         d.storyId ? `会带上「${storyTitle}」的设定、角色卡和前情档案。` : '会带上全局备忘、默认规则和规则模块库。',
@@ -171,30 +196,87 @@ async function renderChat(root, id) {
     if (stick) scroller.scrollTop = scroller.scrollHeight;
   }
 
-  async function callModel(system, messages, maxTokens, onText) {
-    if (!conn) { toast('先在设置里添加一个连接'); throw new Error('no conn'); }
-    ctrl = new AbortController();
-    sendBtn.textContent = '停止';
-    sendBtn.classList.add('stop');
-    try {
-      const r = await streamWithRetry(conn, { system, messages, maxTokens, signal: ctrl.signal, onText: (_, full) => onText && onText(full) });
-      const inChars = system.length + messages.reduce((a, m) => a + m.content.length, 0);
-      const u = normalizeUsage(r.usage, { inChars, outChars: r.text.length });
-      return { text: r.text, cost: computeCost(u, conn), usage: u };
-    } finally {
-      ctrl = null;
-      sendBtn.textContent = '发送';
-      sendBtn.classList.remove('stop');
+  function pendingReply() {
+    return d.messages.findLast(m => m.role === 'assistant' && m.taskId);
+  }
+
+  function updateTasks() {
+    sendBtn.textContent = replyBusy ? '停止' : '发送';
+    sendBtn.classList.toggle('stop', replyBusy);
+    const pending = pendingReply();
+    sendBtn.disabled = !!pending && !replyBusy;
+    draftStatus.replaceChildren();
+    if (pending && !replyBusy) {
+      draftStatus.append(el('div', { class: 'status' }, pending.error || '讨论回复待接回',
+        el('button', { class: 'chip', onclick: () => collectReply(pending) }, '接回后台生成'),
+        el('button', { class: 'chip', onclick: () => stopReply() }, '停止后台生成')));
+    }
+    for (const [kind, label, button] of [
+      ['changes', '整理成修改', chipChanges], ['story', '生成新故事', chipNew],
+    ]) {
+      const task = tasks[kind];
+      button.textContent = task?.state === 'done' ? (kind === 'changes' ? '查看待写回的修改' : '查看新故事草稿') : label;
+      if (!taskPending(task) && task?.state !== 'error') continue;
+      const key = keyFor(kind);
+      draftStatus.append(el('div', { class: 'status' }, label + ' · ' + (task.error || (task.job ? '服务器生成中' : '生成中')),
+        taskPending(task)
+          ? el('button', { class: 'chip', onclick: () => resumeTask(key).then(t => setDraft(kind, t)).catch(report) }, '接回')
+          : el('button', { class: 'chip', onclick: () => discardDraft(kind).catch(report) }, '关闭'),
+        taskPending(task) ? el('button', { class: 'chip', onclick: () => stopTask(key).then(t => setDraft(kind, t)).catch(report) }, '停止') : null));
     }
   }
 
-  let jobs = 0;
-  const idleCbs = new Set();
+  const report = e => { if (!destroyed) toast(e?.message || String(e), 4000); };
+  function setDraft(kind, task) {
+    const prior = tasks[kind];
+    tasks[kind] = task;
+    if (!destroyed && (prior?.state !== task?.state || prior?.error !== task?.error || prior?.job !== task?.job)) updateTasks();
+  }
+  async function discardDraft(kind) {
+    if (await clearTask(keyFor(kind))) setDraft(kind, null);
+  }
+
+  async function stopReply() {
+    const m = pendingReply();
+    if (!m) return;
+    try { await collectReply(m, () => stopTask(replyKey(m))); }
+    catch (e) { report(e); }
+  }
+
+  async function collectReply(a, action = () => resumeTask(replyKey(a))) {
+    const wasBusy = replyBusy;
+    replyBusy = true;
+    if (!destroyed) updateTasks();
+    try {
+      const task = await action();
+      if (!a.taskId) return;
+      if (task && task.id !== a.taskId) return;
+      if (task?.text) a.content = task.text;
+      delete a.streaming;
+      if (taskPending(task)) a.error = task.error || '后台生成待接回';
+      else {
+        a.error = task?.state === 'done' ? '' : (task?.error || '生成被中断');
+        if (task?.cost) a.cost = task.cost;
+        const storedKey = replyKey(a);
+        delete a.taskId;
+        try { await saveDiscussion(d); }
+        catch (e) { a.taskId = task?.id || storedKey.split('.').at(-1); throw e; }
+        await clearTask(storedKey);
+      }
+    } catch (e) { a.error = e?.message || String(e); report(e); }
+    finally {
+      if (!wasBusy) replyBusy = false;
+      if (!destroyed) draw();
+      if (!replyBusy && !jobs) idleCbs.forEach(f => f());
+    }
+  }
+
   async function onSend() {
-    if (ctrl || jobs) return;
+    if (replyBusy || jobs || pendingReply()) return;
     jobs++;
-    try { return await onSendInner(); }
-    finally { jobs--; if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} }); }
+    try { await onSendInner(); }
+    catch (e) { report(e); }
+    finally { jobs--; if (!jobs) idleCbs.forEach(f => f()); }
   }
   async function onSendInner() {
     const text = ta.value.trim() || (d.pendingAttachments.length ? '请根据我勾选的附件内容进行讨论。' : '');
@@ -211,61 +293,67 @@ async function renderChat(root, id) {
     ta.dispatchEvent(new Event('input'));
     drawPending();
     if (d.messages.filter((m) => m.role === 'user').length === 1 && (!d.title || d.title === storyTitle)) d.title = text.slice(0, 18);
-    const a = { role: 'assistant', content: '', streaming: true };
+    const a = { role: 'assistant', content: '', streaming: true, taskId: taskId() };
     d.messages.push(a);
-    draw();
-    await saveDiscussion(d);
-    let last = 0;
     try {
+      await saveDiscussion(d);
+      draw();
       const { system } = await buildDiscussContext(d);
-      const msgs = chatMessages({ messages: d.messages.slice(0, -1) });
-      const r = await callModel(system, msgs, Number(conn.maxTokens) || 8000, (full) => {
-        a.content = full;
-        const node = feed.lastChild?.querySelector('.disc-text');
-        if (node) node.replaceChildren(inlineText(full, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false));
-        if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120) scroller.scrollTop = scroller.scrollHeight;
-        if (Date.now() - last > 1500) { last = Date.now(); saveDiscussion(d).catch(() => {}); }
-      });
-      a.content = r.text;
-      a.cost = r.cost;
-      recordUsage({ kind: '讨论', storyId: d.storyId, model: conn.model, usage: r.usage, cost: r.cost });
+      const messages = chatMessages({ messages: d.messages.slice(0, -1) });
+      await collectReply(a, () => startTask(replyKey(a), {
+        id: a.taskId, conn, system, messages, maxTokens: Number(conn.maxTokens) || 8000,
+        kind: '讨论', storyId: d.storyId,
+      }));
     } catch (e) {
-      if (e?.message !== 'no conn') {
-        a.content = e?.partial || a.content || '';
-        a.error = e instanceof ApiError && e.kind === 'aborted' ? '已停止' : '出错：' + (e?.message || e);
-        if (!a.content.trim()) { d.messages.pop(); d.messages.pop(); ta.value = text; ta.dispatchEvent(new Event('input')); toast(a.error, 4000); }
-      }
+      a.error = e?.message || String(e);
+      delete a.streaming;
+      delete a.taskId;
+      await saveDiscussion(d).catch(() => {});
+      draw();
+      report(e);
     }
-    delete a.streaming;
-    await saveDiscussion(d);
-    if (!destroyed) draw();
+  }
+
+  async function draftFor(kind) {
+    const key = keyFor(kind);
+    const saved = await getTask(key);
+    if (saved?.state === 'done') return saved;
+    if (taskPending(saved)) {
+      await resumeTask(key).then(t => setDraft(kind, t));
+      return await getTask(key);
+    }
+    if (!conn) { toast('先在设置里添加一个连接'); return null; }
+    if (replyBusy || pendingReply()) { toast('等这条回复写完再整理'); return null; }
+    if (!d.messages.some(m => m.role === 'assistant' && m.content?.trim())) { toast('先聊几句再整理'); return null; }
+    const { system } = await buildDiscussContext(d);
+    const messages = chatMessages(d);
+    if (messages.at(-1)?.role === 'user') messages.push({ role: 'assistant', content: '（继续）' });
+    messages.push({ role: 'user', content: kind === 'changes' ? changesPrompt(d) : NEWSTORY_PROMPT });
+    const task = await startTask(key, {
+      conn, system, messages, maxTokens: kind === 'changes' ? 4000 : 6000,
+      kind: kind === 'changes' ? '整理修改' : '生成新故事', storyId: d.storyId,
+    });
+    setDraft(kind, task);
+    return task;
   }
 
   async function makeChanges() {
-    if (ctrl) { toast('等这条回复写完再整理'); return; }
-    if (!d.messages.some((m) => m.role === 'assistant' && m.content?.trim())) { toast('先聊几句再整理'); return; }
-    const s = sheet({ title: '整理成修改' });
-    const status = el('div', { class: 'hint', text: '正在整理…（只调用一次，量不大）' });
-    s.body.append(status);
-    s.foot.append(el('button', { class: 'btn ghost', onclick: () => { ctrl?.abort(); s.close(); } }, '取消'));
-    let changes;
-    let state;
+    let task, changes, state;
     try {
-      const { system } = await buildDiscussContext(d);
-      const msgs = chatMessages(d);
-      msgs.push({ role: 'user', content: changesPrompt(d) });
-      if (msgs.length > 1 && msgs[msgs.length - 2].role === 'user') msgs.splice(msgs.length - 1, 0, { role: 'assistant', content: '（继续）' });
-      const r = await callModel(system, msgs, 4000);
-      recordUsage({ kind: '整理修改', storyId: d.storyId, model: conn.model, usage: r.usage, cost: r.cost });
-      changes = parseChanges(r.text, !!d.storyId);
+      task = await draftFor('changes');
+      if (destroyed || !root.isConnected || root.classList.contains('parked') || task?.state !== 'done') return;
+      try { changes = parseChanges(task.text, !!d.storyId); }
+      catch (e) { await discardDraft('changes'); throw e; }
       state = d.storyId ? await loadStoryState(d.storyId) : null;
-      status.textContent = changes.length ? `${changes.length} 条修改，默认全选。不要的取消勾选，文字可以直接改。${r.cost ? '（这次整理 ' + fmtMoney(r.cost) + '）' : ''}` : '讨论里没有找到可以写回的结论。';
-    } catch (e) {
-      if (e instanceof ApiError && e.kind === 'aborted') return;
-      status.textContent = '整理失败：' + (e?.message || e);
-      return;
-    }
-    if (!changes.length) return;
+    } catch (e) { report(e); return; }
+    const s = sheet({ title: '整理成修改' });
+    s.body.append(el('p', { class: 'hint', text: changes.length
+      ? changes.length + ' 条修改，可以取消勾选或编辑文字。'
+      : '讨论里没有找到可以写回的结论。' }));
+    const discard = el('button', { class: 'btn ghost', onclick: async () => {
+      await discardDraft('changes'); s.close();
+    } }, '清除草稿');
+    if (!changes.length) { s.foot.append(discard); return; }
     const list = el('div');
     const applyBtn = el('button', { class: 'btn primary' });
     const count = () => { const n = changes.filter((c) => c.on).length; applyBtn.textContent = n ? `写回 ${n} 条` : '写回'; applyBtn.disabled = !n; };
@@ -297,7 +385,7 @@ async function renderChat(root, id) {
       setTimeout(() => autoGrow(txt, 0.3), 0);
     }
     s.body.append(list);
-    s.foot.replaceChildren(el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'), applyBtn);
+    s.foot.replaceChildren(discard, el('button', { class: 'btn ghost', onclick: () => s.close() }, '关闭'), applyBtn);
     count();
     applyBtn.onclick = async () => {
       applyBtn.disabled = true;
@@ -306,6 +394,7 @@ async function renderChat(root, id) {
         const u = await getUndo();
         if (done.length) d.messages.push({ role: 'note', content: '已写回：\n' + done.map((x) => '· ' + x).join('\n'), undo: u?.at });
         await saveDiscussion(d);
+        await discardDraft('changes');
         s.close();
         draw();
         header();
@@ -319,22 +408,19 @@ async function renderChat(root, id) {
   }
 
   async function makeNewStory() {
-    if (ctrl) { toast('等这条回复写完再生成'); return; }
-    if (!d.messages.some((m) => m.role === 'assistant' && m.content?.trim())) { toast('先聊一聊新故事的设定，再生成'); return; }
-    toast('正在根据讨论整理新故事…', 4000);
     try {
-      const { system } = await buildDiscussContext(d);
-      const msgs = chatMessages(d);
-      if (msgs.length && msgs[msgs.length - 1].role === 'user') msgs.push({ role: 'assistant', content: '（继续）' });
-      msgs.push({ role: 'user', content: NEWSTORY_PROMPT });
-      const r = await callModel(system, msgs, 6000);
-      recordUsage({ kind: '生成新故事', storyId: d.storyId, model: conn.model, usage: r.usage, cost: r.cost });
-      const prefill = parseNewStory(r.text);
+      const task = await draftFor('story');
+      if (destroyed || !root.isConnected || root.classList.contains('parked') || task?.state !== 'done') return;
+      let prefill;
+      try { prefill = parseNewStory(task.text); }
+      catch (e) { await discardDraft('story'); throw e; }
       const st = await openStoryEditor(null, prefill);
-      if (st) go('play/' + encodeURIComponent(st.id));
-    } catch (e) {
-      if (!(e instanceof ApiError && e.kind === 'aborted') && e?.message !== 'no conn') toast('生成失败：' + (e?.message || e), 4000);
-    }
+      if (st) { await discardDraft('story'); go('play/' + encodeURIComponent(st.id)); }
+      else if (await menu('新故事草稿', [
+        { key: 'keep', label: '保留，稍后继续编辑' },
+        { key: 'discard', label: '清除草稿' },
+      ]) === 'discard') await discardDraft('story');
+    } catch (e) { report(e); }
   }
 
   async function chooseChapters() {
@@ -360,12 +446,13 @@ async function renderChat(root, id) {
   }
 
   async function moreMenu() {
+    const busy = !!pendingReply() || Object.values(tasks).some(taskPending);
     const k = await menu(d.title || storyTitle, [
       { key: 'ctx', label: '查看发给模型的资料' },
       d.storyId ? { key: 'go', label: '去这个故事' } : null,
-      { key: 'pop', label: '删掉最后一轮' },
+      busy ? null : { key: 'pop', label: '删掉最后一轮' },
       { key: 'rename', label: '重命名' },
-      { key: 'del', label: '删除这个讨论', danger: true },
+      busy ? null : { key: 'del', label: '删除这个讨论', danger: true },
     ]);
     if (k === 'ctx') {
       const { parts } = await buildDiscussContext(d);
@@ -382,16 +469,45 @@ async function renderChat(root, id) {
     } else if (k === 'rename') {
       const v = await promptText({ title: '重命名', value: d.title, multiline: false });
       if (v?.trim()) { d.title = v.trim(); await saveDiscussion(d); header(); }
-    } else if (k === 'del' && confirm('删除这个讨论？已经写回的修改不受影响。')) { await deleteDiscussion(d.id); go('discuss'); }
+    } else if (k === 'del') await removeDiscussion(d.id);
   }
 
-  // 上次生成中途离开的：标记一下
-  for (const m of d.messages) if (m.streaming) { delete m.streaming; m.error = m.error || '生成被中断了'; }
+  const refreshTasks = async () => {
+    if (destroyed) return;
+    const a = pendingReply();
+    if (a && !replyBusy && !jobs) void collectReply(a);
+    for (const kind of Object.keys(tasks)) {
+      const saved = await getTask(keyFor(kind));
+      if (destroyed) return;
+      setDraft(kind, saved);
+      if (taskPending(saved)) void resumeTask(keyFor(kind)).then(t => setDraft(kind, t)).catch(report);
+    }
+  };
+  const onTask = ({detail: { key, task }}) => {
+    const a = pendingReply();
+    if (a && key === replyKey(a) && task.id === a.taskId && task.text) {
+      const node = feed.lastChild?.querySelector('.disc-text');
+      if (node) node.replaceChildren(inlineText(task.text, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false));
+      if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120) scroller.scrollTop = scroller.scrollHeight;
+    }
+    for (const kind of Object.keys(tasks)) if (key === keyFor(kind)) setDraft(kind, task);
+  };
+  const reconnect = () => { if (document.visibilityState !== 'hidden') void refreshTasks().catch(report); };
+  for (const m of d.messages) if (m.streaming && !m.taskId) { delete m.streaming; m.error ||= '生成被中断了'; }
+  window.addEventListener('moyu:background', onTask);
+  window.addEventListener('online', reconnect);
+  document.addEventListener('visibilitychange', reconnect);
   header();
   draw();
-  const destroy = () => { destroyed = true; ctrl?.abort(); };
-  destroy.busy = () => jobs > 0;
-  destroy.onIdle = (fn) => { idleCbs.add(fn); return () => idleCbs.delete(fn); };
-  destroy.show = () => { header(); draw(false); };
+  reconnect();
+  const destroy = () => {
+    destroyed = true;
+    window.removeEventListener('moyu:background', onTask);
+    window.removeEventListener('online', reconnect);
+    document.removeEventListener('visibilitychange', reconnect);
+  };
+  destroy.busy = () => jobs > 0 || replyBusy;
+  destroy.onIdle = fn => { idleCbs.add(fn); return () => idleCbs.delete(fn); };
+  destroy.show = () => { header(); draw(false); reconnect(); };
   return destroy;
 }

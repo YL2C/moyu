@@ -62,7 +62,7 @@ test('多选以点选顺序显示加号，取消或改写后保留补充，发�
 test('游玩真实按钮多选与发送，输入栏采用居中对齐', async () => {
   const {story}=await seedStory(); const dispose=await play.render(root,{id:story.id});
   try {
-    const buttons=root.querySelectorAll('.options button'); buttons[0].click(); buttons[1].click();
+    const buttons=root.querySelectorAll('.options [data-choice]'); buttons[0].click(); buttons[1].click();
     const ta=root.querySelector('textarea'); assert.equal(ta.value,'A+B');
     assert.notEqual(document.activeElement,ta,'点选多选不自动聚焦输入框或唤起键盘');
     assert.equal(buttons[0].getAttribute('aria-pressed'),'true');
@@ -732,10 +732,181 @@ test('实际游玩缺少正文边界时不写入剧情或后续上下文，原�
   const {story}=await seedStory();const raw="I'm drafting the next scene.\n临时标记";let calls=0;
   globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({choices:[{message:{content:raw},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:15}}),{headers:{'Content-Type':'application/json'}});};
   const dispose=await play.render(root,{id:story.id});
-  try{root.querySelector('.options button').click();button('发送').click();await wait(()=>!dispose.busy()&&calls===1);
+  try{root.querySelector('.options [data-choice]').click();button('发送').click();await wait(()=>!dispose.busy()&&calls===1);
     const updated=await db.get('stories',story.id);const n=await db.get('nodes',updated.headId);
     assert.equal(n.text,'');assert.equal(n.error.kind,'output_format');assert.equal(n.error.detail,raw);assert.ok(root.textContent.includes('接口没有返回可识别'));
     assert.ok(!root.querySelector('.gm').textContent.includes('临时标记'));
     const {buildContext}=await import('../js/prompt.js');const ctx=buildContext(updated,[n]);assert.ok(!ctx.messages.some(m=>m.content.includes('drafting')));
   }finally{dispose();}
+});
+
+test('选项独立编辑，场外模式连聊两轮，确认结论后手动继续', async () => {
+  const {story} = await seedStory();
+  let dispose = await play.render(root,{id:story.id});
+  try {
+    root.querySelector('[aria-label="修改选项 B"]').click();
+    document.querySelector('[role="dialog"] textarea').value = '把信交给同伴';
+    button('保存', document.querySelector('[role="dialog"]')).click();
+    await wait(() => root.querySelector('[data-choice=B]')?.textContent.includes('把信交给同伴'));
+
+    root.querySelector('[data-choice=B]').click();
+    root.querySelector('[aria-label=出戏]').click();
+    assert.equal(root.querySelector('[data-choice=B]'), null);
+    const input = root.querySelector('textarea');
+    responses.push('建议先讨论误会原因，不发生新事件。', '他暂时还不知道真相。');
+    input.value = '场外讨论专用文字'; button('发送').click();
+    await wait(() => requests.length === 1 && !dispose.busy());
+    assert.equal(input.placeholder, '场外讨论…');
+    assert.ok(requests[0].body.messages[0].content.includes('场外模式'));
+    assert.ok(!requests[0].body.messages[0].content.includes('【输出格式】'));
+    input.value = '那就先讲讲他的动机'; button('发送').click();
+    await wait(() => requests.length === 2 && !dispose.busy());
+    assert.equal(root.querySelector('[aria-label=出戏]').getAttribute('aria-checked'), 'true');
+
+    button('带结论回正文').click();
+    const dialog = document.querySelector('[role=dialog]');
+    assert.ok(dialog.querySelector('textarea').value.includes('他暂时还不知道真相'));
+    dialog.querySelector('textarea').value = '下一轮只写试探，不公开真相。';
+    button('确认并回正文', dialog).click();
+    await wait(() => root.querySelector('[data-choice=B]') && root.textContent.includes('下一轮只写试探'));
+    assert.equal(requests.length, 2);
+    assert.equal(input.value, 'B');
+    assert.ok(!root.textContent.includes('场外讨论专用文字'));
+
+    dispose(); root.replaceChildren(); dispose = await play.render(root,{id:story.id});
+    assert.ok(root.textContent.includes('下一轮只写试探'));
+    root.querySelector('textarea').value = 'AB';
+    button('发送').click();
+    await wait(() => requests.length === 3 && !dispose.busy());
+    const sent = requests[2].body.messages;
+    assert.ok(sent.at(-1).content.includes('（查看地图）\n（把信交给同伴）'));
+    assert.ok(sent.at(-1).content.includes('下一轮只写试探'));
+    assert.ok(!JSON.stringify(sent).includes('场外讨论专用文字'));
+    assert.ok(!JSON.stringify(sent).includes('B. 收好信件'));
+    assert.equal((await db.get('stories',story.id)).oocHandoff, undefined);
+  } finally { dispose(); }
+});
+
+test('文风切换整组默认启用、记住子项，上轮发送记录刷新后仍可核对', async () => {
+  const {story} = await seedStory();
+  await db.kvSet('packs', [{id:'style-a',name:'龙族文风预设',kind:'preset'},{id:'style-b',name:'另一个文风',kind:'preset'},{id:'world',name:'世界书',kind:'lore'}]);
+  await saveModules([
+    {id:'a1',pack:'style-a',name:'甲文风',text:'文风甲规则',mode:'always'},
+    {id:'a2',pack:'style-a',name:'乙文风',text:'文风乙规则',mode:'always',defaultOn:false},
+    {id:'b1',pack:'style-b',name:'其他写法',text:'其他写法规则',mode:'always'},
+  ]);
+  let dispose = await play.render(root,{id:story.id});
+  const show = async () => {
+    button('文风预设').click();
+    await wait(() => document.querySelector('[aria-label=主文风]'));
+    return document.querySelector('[role=dialog]');
+  };
+  const selectPreset = val => {
+    const select = document.querySelector('[aria-label=主文风]');
+    select.value = val; select.dispatchEvent(new Event('change'));
+  };
+  try {
+    let s = await show();
+    assert.equal(s.querySelector('[aria-label=主文风] option[value=world]'), null);
+    selectPreset('style-a');
+    assert.equal([...s.querySelectorAll('input:checked')].length, 2);
+    s.querySelectorAll('input[type=checkbox]')[1].click();
+    selectPreset('style-b'); selectPreset('style-a');
+    assert.equal([...s.querySelectorAll('input:checked')].length, 1);
+    button('保存',s).click();
+    await wait(() => !document.querySelector('[role=dialog]'));
+    button('继续').click();
+    await wait(() => requests.length === 1 && !dispose.busy());
+    assert.ok(requests[0].body.messages[0].content.includes('文风甲规则'));
+    assert.ok(!requests[0].body.messages[0].content.includes('文风乙规则'));
+    dispose(); root.replaceChildren(); dispose = await play.render(root,{id:story.id});
+    s = await show();
+    assert.ok(s.textContent.includes('龙族文风预设 · 甲文风'));
+    assert.ok(!s.textContent.includes('龙族文风预设 · 甲文风、乙文风'));
+    button('取消',s).click();
+  } finally { dispose(); }
+});
+
+test('讨论回复与整理草稿通过服务器接回，分开保存且只请求原任务', async () => {
+  const story = await seedRelayExtra();
+  const d = newDiscussion(story.id,story.title);
+  await saveDiscussion(d);
+  let offline = true;
+  let total = 0;
+  const calls = extraRelayMock(() => {
+    if (offline) throw new TypeError('offline');
+    return extraSSE(total === 1 ? '接回的完整讨论。' : '{"changes":[{"target":"rules","text":"让对话自然"}]}');
+  });
+  const fetchMock = globalThis.fetch;
+  globalThis.fetch = (url, init) => { if (url.endsWith('/jobs')) total++; return fetchMock(url,init); };
+  let dispose = await discussion.render(root,{id:d.id});
+  try {
+    root.querySelector('textarea').value = '看看这一章的人设';
+    button('发送',root).click();
+    await wait(() => button('接回后台生成',root) && !dispose.busy());
+    assert.equal(total,1);
+    dispose(); root.replaceChildren(); offline = false;
+    dispose = await discussion.render(root,{id:d.id});
+    await wait(async () => (await getDiscussion(d.id)).messages.at(-1)?.content === '接回的完整讨论。');
+    assert.equal(total,1);
+    offline = true;
+    button('整理成修改',root).click();
+    await wait(() => button('接回',root));
+    await wait(async () => (await db.kvGet('background.discussion.'+d.id+'.changes',null))?.state === 'pending');
+    dispose(); root.replaceChildren(); offline = false;
+    dispose = await discussion.render(root,{id:d.id});
+    await wait(() => button('查看待写回的修改',root));
+    assert.equal(total,2);
+    assert.ok(calls.every(c => c.method !== 'DELETE'));
+    assert.equal((await db.get('stories',story.id)).rules,'保持设定');
+    button('查看待写回的修改',root).click();
+    await wait(() => document.querySelector('[role=dialog] .chg-text'));
+    assert.equal(document.querySelector('.chg-text').value,'让对话自然');
+    button('关闭',document.querySelector('[role=dialog]')).click();
+  } finally { dispose(); }
+});
+
+test('拆卡离页后可接回原任务，草稿审阅之前原角色列表不变', async () => {
+  const story = await seedRelayExtra();
+  let offline = true;
+  const calls = extraRelayMock(() => {
+    if (offline) throw new TypeError('offline');
+    return extraSSE('[{"name":"阿文","initial":"入职设计公司","core":true}]');
+  });
+  let dispose = await chars.render(root,{id:story.id});
+  const key = 'background.characters.'+story.id+'.split';
+  try {
+    button('让 AI 从设定和剧情里拆角色卡',root).click();
+    await wait(async () => (await db.kvGet(key,null))?.state === 'pending');
+    assert.ok(!JSON.stringify(await db.kvGet(key,null)).includes('virtual-key'));
+    dispose(); root.replaceChildren(); offline = false;
+    dispose = await chars.render(root,{id:story.id});
+    await wait(() => button('查看草稿',root));
+    assert.deepEqual((await db.get('stories',story.id)).cards,[]);
+    assert.equal(calls.filter(c=>c.method==='POST').length,1);
+    assert.equal(calls.filter(c=>c.method==='DELETE').length,0);
+    button('查看草稿',root).click();
+    await wait(() => button('添加选中的'));
+    button('添加选中的').click();
+    await wait(async () => (await db.get('stories',story.id)).cards[0]?.name === '阿文' && !await db.kvGet(key,null));
+  } finally { dispose(); }
+});
+
+test('番外自动人物在界面预告首位角色卡，生成快照保存该人物', async () => {
+  const {story} = await seedStory();
+  story.cards = [{id:'other',name:'配角'},{id:'lead',name:'首位常驻',core:true}];
+  await db.put('stories',story);
+  const dispose = await extras.render(root,{id:story.id});
+  try {
+    button('✦ 写一篇番外',root).click();
+    await wait(() => document.querySelector('[aria-label=视角角色]'));
+    const owner = document.querySelector('[aria-label=视角角色]');
+    assert.equal(owner.value,'');
+    assert.equal(owner.selectedOptions[0].textContent,'自动安排 · 首位常驻');
+    button('开始写').click();
+    await wait(async () => (await db.extrasOf(story.id)).length === 1);
+    const [saved] = await db.extrasOf(story.id);
+    assert.equal(saved.pov,'首位常驻');
+    assert.equal(saved.cast.owner.cardId,'lead');
+  } finally { dispose?.(); }
 });

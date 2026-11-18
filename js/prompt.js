@@ -1,7 +1,7 @@
 // 墨游 · 每轮重新拼装发给模型的内容
 // 顺序：不常变的放前面（规则 → 设定 → 格式），剧情原文在后——以后加缓存时省钱。
 
-import { forContext } from './parse.js';
+import { forContext, optionsForReply, replyForContext } from './parse.js';
 import { INPUT_CONVENTION, PERSONAL_RULES } from './personal.js';
 import { protagonistState, PROTAGONIST_FIELDS } from './protagonist.js';
 import { EMPHASIS_GUIDE } from './inline.js';
@@ -190,21 +190,30 @@ export function memoryText(mem) {
  * 返回 { system, messages, info }，info.parts 是各部分的明细（给查看器用）
  */
 export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2, modules = [], extra = '', globalMemo = '' } = {}) {
-  const { sentCards, present, sentModules } = selectExtras(story, path, modules, extra);
+  const ooc = path.findLast(n => n.role === 'user')?.kind === 'ooc';
+  const relevantPath = ooc ? path : path.filter(n => n.kind !== 'ooc');
+  const { sentCards, present, sentModules } = selectExtras(story, relevantPath, modules, extra);
   const cp = latestCheckpoint(path);
   const parts = [];
   const add = (label, text, kind) => { if (text?.trim()) parts.push({ label, text: text.trim(), kind }); };
-  add('开头', '你正在主持一场文字互动小说。', 'base');
+  add('开头', ooc ? '你现在是场外讨论搭档。只讨论设定、人设、剧情方案或更正。' : '你正在主持一场文字互动小说。', 'base');
   add('规则（这个故事）', story.rules?.trim() ? '【规则】\n' + story.rules.trim() : '', 'rules');
   add('全局备忘', globalMemo?.trim() ? '【全局备忘（所有故事通用）】\n' + globalMemo.trim() : '', 'rules');
-  for (const m of sentModules) add(`规则模块 · ${m.name}${m.mode === 'manual' ? '（情境）' : m.mode === 'keyword' ? '（关键词）' : ''}`, `【规则模块·${m.name}】\n${m.text.trim()}`, 'module');
+  if (!ooc) for (const m of sentModules) add(`规则模块 · ${m.name}${m.mode === 'manual' ? '（情境）' : m.mode === 'keyword' ? '（关键词）' : ''}`, `【规则模块·${m.name}】\n${m.text.trim()}`, 'module');
   add('世界与角色设定', story.world?.trim() ? '【世界与角色设定】\n' + story.world.trim() : '', 'world');
   add('主角', protagonistText(story, path), 'card');
   const coreFirst = [...sentCards].sort((a, b) => (b.core ? 1 : 0) - (a.core ? 1 : 0));
   for (const c of coreFirst) add(`角色卡 · ${c.name}${c.core ? '（常驻）' : '（被提到）'}`, cardText(applyCardState(c, cp?.mem)), 'card');
   if (cp) add(`前情档案 · 整理到第 ${cp.mem.upTo} 章`, memoryText(cp.mem), 'memory');
-  add('玩家输入约定', INPUT_CONVENTION, 'rules');
-  add('输出格式', '【输出格式】\n' + formatContract({ danmu: story.danmu !== false, options: story.options !== false }), 'format');
+  if (ooc) {
+    const chapter = path.findLast(n => n.role === 'assistant' && n.kind !== 'ooc' && n.text?.trim());
+    const options = chapter && story.options !== false ? optionsForReply(chapter).slice(0, 4) : [];
+    if (options.length) add('当前候选动作', '【供讨论的候选动作】\n' + options.map((text, i) => 'ABCD'[i] + '. ' + text).join('\n'), 'world');
+    add('场外模式', '【场外模式】以上剧情和设定仅供讨论。即使玩家说继续或提出剧情动作，也只讨论这项要求，等待玩家从界面返回正文。不要扮演角色、续写、写章节标题、弹幕或选项。讨论里的提案尚未发生。', 'format');
+  } else {
+    add('玩家输入约定', INPUT_CONVENTION, 'rules');
+    add('输出格式', '【输出格式】\n' + formatContract({ danmu: story.danmu !== false, options: story.options !== false }), 'format');
+  }
   const system = parts.map((p) => p.text).join('\n\n');
 
   // 有存档时：对话原文只从存档那一章开始（那一章本身留作衔接），更早的由前情档案代替
@@ -230,8 +239,9 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
       if (isLastUser && fmtTail && n.kind !== 'ooc') c += fmtTail;
       messages.push({ role: 'user', content: c });
     } else if (n.text && n.text.trim()) {
-      const content = n.kind === 'ooc' || rawSet.has(n.id) ? stripReasoning(n.text).trim() : forContext(n.text);
-      if(content)messages.push({ role: 'assistant', content });
+      const content = n.kind === 'ooc' ? stripReasoning(n.text).trim()
+        : (!ooc && rawSet.has(n.id)) ? replyForContext(n) : forContext(n.text);
+      if (content) messages.push({ role: 'assistant', content });
     }
   });
 
@@ -253,7 +263,8 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
     info: {
       systemChars: system.length, historyChars, totalChars: system.length + historyChars, trimmed, count: messages.length,
       parts: parts.map((p) => ({ label: p.label, chars: p.text.length, text: p.text, kind: p.kind })),
-      tail, cards: sentCards.map((c) => c.name), present: present.map((c) => c.name), modules: sentModules.map((m) => m.name),
+      tail, cards: sentCards.map((c) => c.name), present: present.map((c) => c.name), modules: ooc ? [] : sentModules.map((m) => m.name),
+      moduleIds: ooc ? [] : sentModules.map(m => m.id),
       memoryUpTo: cp ? cp.mem.upTo : 0,
     },
   };

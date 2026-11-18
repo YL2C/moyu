@@ -150,7 +150,7 @@ async function newExtra(story, nodes) {
     const p = playbookOf(t);
     const layout = layoutOf(t);
     owner.el.hidden = layout === 'show';
-    owner.configure({label:layout==='chat'?'看谁的手机':layout==='report'?'看谁的恋爱脑报告':layout==='fic'?'和谁的同人文':'视角角色',allowSelf:layout!=='fic',mixed:true});
+    owner.configure({label:layout==='chat'?'看谁的手机':layout==='report'?'看谁的恋爱脑报告':layout==='fic'?'和谁的同人文':'视角角色',allowSelf:layout!=='fic',mixed:true,autoCharacter:true});
     reporter.el.hidden = layout !== 'report';
     companions.el.hidden = layout !== 'show';
     subtypeBox.hidden = !p || ['chat','report'].includes(layout);

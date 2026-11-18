@@ -8,7 +8,8 @@ import { cancelRelayJob } from '../relay.js';
 import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { archiveConn, DEFAULT_EVERY } from './memory.js';
-import { parseReply, paragraphs } from '../parse.js';
+import { getPacks } from '../tavern.js';
+import { parseReply, paragraphs, optionsForReply, replyForContext } from '../parse.js';
 import { stripReasoning } from '../reasoning.js';
 import { CHOICE_LABELS, expandOptionInput, choiceInput, toggleChoice } from '../personal.js';
 import { inlineText } from '../inline.js';
@@ -37,7 +38,7 @@ export async function render(root, { id }) {
     globalMemo: await getGlobalMemo(),
     archiving: null,   // 后台整理前情 { ctrl, text }
     archiveError: null,
-    choiceSource: null,
+    choiceSource: null, playDraft: '', oocDraft: '',
   };
   story.manualOn = story.manualOn || {};
   const manualMods = () => [...st.modules, ...(story.localModules || [])].filter((m) => m.mode === 'manual' && story.modules?.[m.id]);
@@ -66,6 +67,10 @@ export async function render(root, { id }) {
     }
   };
   const isPlayReply = (n) => n.role === 'assistant' && !isOoc(n) && !!n.text?.trim();
+  const playAnchor = () => headPath().findLast(n => !isOoc(n));
+  const branchDirector = () => story.oocHandoff && story.oocHandoff.anchorId === playAnchor()?.id ? story.oocHandoff.text : '';
+  const currentDirector = () => st.director || branchDirector();
+  const optionsFor = (n, parsed) => optionsForReply(n, parsed).slice(0, CHOICE_LABELS.length);
   const chapterCount = (path) => path.filter(isPlayReply).length;
   const saveStory = () => db.put('stories', story).catch(() => {});
   const touch = (n) => { n.updatedAt = Date.now(); };
@@ -90,11 +95,12 @@ export async function render(root, { id }) {
     finally { chipDanmu.disabled = false; updateComposer(); }
   } });
   const chipCont = el('button', { class: 'chip', onclick: () => send('continue', '') }, '继续');
-  // 出戏、导演放在右上角菜单里（避免误触）；开着的时候在输入框上方显示一条状态，点 ✕ 关掉
+  const chipStyle = el('button', { class: 'chip', onclick: () => openStylePresets() }, '文风预设');
+  const chipOoc = el('button', { class: 'chip', role: 'switch', 'aria-label': '出戏', onclick: () => setOoc(!st.ooc) }, '出戏');
   const statusRow = el('div', { class: 'status-row' });
   const composer = el('div', { class: 'composer' },
     statusRow,
-    el('div', { class: 'bar' }, chipDanmu, el('span', { class: 'spacer' }), chipCont),
+    el('div', { class: 'bar' }, chipDanmu, chipStyle, chipOoc, el('span', { class: 'spacer' }), chipCont),
     el('div', { class: 'inrow' }, el('div', { class: 'input-shell' }, ta, chipQuote), sendBtn)
   );
   const fit = autoGrow(ta);
@@ -129,15 +135,19 @@ export async function render(root, { id }) {
     chipDanmu.setAttribute('aria-checked', String(story.danmu !== false));
     const started = headPath().length > 0;
     const busy = !!st.streaming;
+    chipOoc.setAttribute('aria-checked', String(st.ooc));
+    chipOoc.classList.toggle('on', st.ooc);
+    chipOoc.hidden = !started;
+    chipOoc.disabled = busy;
     sendBtn.textContent = busy ? '停止' : (started ? '发送' : '开始');
     sendBtn.classList.toggle('stop', busy);
     statusRow.replaceChildren(...[
-      st.ooc ? el('div', { class: 'status ooc' },
-        el('span', { class: 'lbl', text: '出戏：这一句是场外话，不推进剧情' }),
-        el('button', { 'aria-label': '关掉出戏', onclick: () => { st.ooc = false; updateComposer(); } }, '✕')) : null,
-      st.director.trim() ? el('div', { class: 'status' },
-        el('span', { class: 'lbl', onclick: () => editDirector(), text: '导演：' + st.director.trim() }),
-        el('button', { 'aria-label': '清除导演指令', onclick: () => { st.director = ''; updateComposer(); } }, '✕')) : null,
+      st.ooc ? el('div', { class: 'ooc-actions' },
+        el('button', { class: 'chip', disabled: busy, onclick: () => setOoc(false) }, '回到正文'),
+        el('button', { class: 'chip', disabled: busy, onclick: () => carryConclusion() }, '带结论回正文')) : null,
+      !st.ooc && currentDirector().trim() ? el('div', { class: 'status' },
+        el('span', { class: 'lbl', onclick: () => editDirector(), text: '下一轮导演：' + currentDirector().trim() }),
+        el('button', { 'aria-label': '清除导演指令', onclick: () => saveDirector('') }, '✕')) : null,
       (() => {
         const a = st.archiving || archivingNow(story.id);
         st.extShown = !st.archiving && !!a;
@@ -154,10 +164,149 @@ export async function render(root, { id }) {
         el('button', { 'aria-label': '关掉情境', onclick: () => { story.manualOn[m.id] = false; saveStory(); updateComposer(); } }, '✕'))),
     ].filter(Boolean));
     ta.classList.toggle('ooc', st.ooc);
-    ta.placeholder = '自由输入…';
-    chipCont.style.display = started ? '' : 'none';
+    ta.placeholder = st.ooc ? '场外讨论…' : '自由输入…';
+    chipCont.style.display = started && !st.ooc ? '' : 'none';
     chipCont.disabled = busy;
     chipCont.style.opacity = busy ? .45 : 1;
+  }
+
+  function setOoc(on) {
+    if (st.streaming || st.sending || jobs || st.ooc === on) return;
+    if (on) { st.playDraft = ta.value; ta.value = st.oocDraft; }
+    else { st.oocDraft = ta.value; ta.value = st.playDraft; }
+    st.ooc = on;
+    fit();
+    renderFeed();
+  }
+
+  async function saveDirector(value, persist = false) {
+    if (persist || branchDirector()) {
+      const old = story.oocHandoff;
+      if (value.trim()) story.oocHandoff = { anchorId: playAnchor()?.id, text: value.trim() };
+      else delete story.oocHandoff;
+      try { await db.put('stories', story); }
+      catch { story.oocHandoff = old; return false; }
+      st.director = '';
+    } else st.director = value;
+    updateComposer();
+    return true;
+  }
+
+  async function carryConclusion() {
+    if (!st.ooc || st.streaming || jobs) return;
+    const anchorId = playAnchor()?.id;
+    const path = headPath();
+    const discussion = path.slice(path.findLastIndex(n => !isOoc(n)) + 1).findLast(n => n.role === 'assistant');
+    const value = await promptText({
+      title: '带结论回正文',
+      value: [currentDirector(), stripReasoning(discussion?.text || '')].filter(Boolean).join('\n\n'),
+      hint: '只保留你确认的结论。回正文后，点继续、选择选项或发送时生效。',
+      okText: '确认并回正文',
+    });
+    if (value == null || !st.ooc || anchorId !== playAnchor()?.id) return;
+    if (!value.trim()) { toast('请填写要带回正文的结论'); return; }
+    if (await saveDirector(value, true)) setOoc(false);
+  }
+
+  async function styleSnapshot(ids) {
+    const pack = [...(await getPacks()), ...(story.packs || [])].find(p => p.id === story.stylePreset);
+    if (!pack) return { name: '', names: [] };
+    const names = [...st.modules, ...(story.localModules || [])]
+      .filter(m => m.pack === pack.id && ids.includes(m.id)).map(m => m.name);
+    return { name: pack.name, names };
+  }
+
+  async function openStylePresets() {
+    const [globalPacks, modules] = await Promise.all([getPacks(), getModules()]);
+    st.modules = modules;
+    const all = [...modules, ...(story.localModules || [])];
+    const packs = [...globalPacks, ...(story.packs || [])].filter(p => p.kind === 'preset' && all.some(m => m.pack === p.id));
+    const draft = { ...story, modules: { ...story.modules }, styleSelections: { ...story.styleSelections } };
+    const touched = new Set();
+    const last = headPath().findLast(n => isPlayReply(n) && (n.status === 'done' || n.status === 'partial' || !n.status));
+    const s = sheet({ title: '文风预设' });
+    const list = el('div');
+    function draw() {
+      const chosen = packs.find(p => p.id === draft.stylePreset);
+      const select = el('select', { 'aria-label': '主文风' },
+        el('option', { value: '' }, '未选择主文风'),
+        ...packs.map(p => el('option', { value: p.id }, p.name)));
+      select.value = chosen?.id || '';
+      select.onchange = () => {
+        if (chosen) {
+          const children = all.filter(m => m.pack === chosen.id);
+          draft.styleSelections[chosen.id] = children.filter(m => draft.modules[m.id]).map(m => m.id);
+          for (const m of children) { touched.add(m.id); delete draft.modules[m.id]; }
+        }
+        draft.stylePreset = select.value;
+        if (select.value) {
+          const remembered = draft.styleSelections[select.value];
+          for (const m of all.filter(m => m.pack === select.value)) {
+            touched.add(m.id);
+            draft.modules[m.id] = remembered ? remembered.includes(m.id) : true;
+          }
+        }
+        draw();
+      };
+      const children = all.filter(m => m.pack === draft.stylePreset);
+      const activeCount = el('p', { class: 'hint' });
+      const updateCount = () => { activeCount.textContent = '下一轮启用 ' + children.filter(m => draft.modules[m.id]).length + '/' + children.length + ' 项'; };
+      updateCount();
+      const lastSent = last?.styleSent;
+      list.replaceChildren(
+        el('label', { class: 'field' }, '主文风', select),
+        packs.length ? null : el('p', { class: 'hint', text: '先在设置或本故事规则中导入文风预设。' }),
+        children.length ? activeCount : null,
+        ...children.map(m => {
+          const input = el('input', { type: 'checkbox' });
+          input.checked = !!draft.modules[m.id];
+          input.onchange = () => { touched.add(m.id); draft.modules[m.id] = input.checked; updateCount(); };
+          return el('label', { class: 'switch-row' }, m.name,
+            m.mode === 'keyword' ? el('small', { text: '按关键词触发' }) : m.mode === 'manual' ? el('small', { text: '按情境开关触发' }) : null,
+            input);
+        }),
+        el('div', { class: 'card' },
+          el('strong', { text: '上一轮正文实际发送' }),
+          el('p', { class: 'hint', text: lastSent
+            ? (lastSent.name ? lastSent.name + ' · ' + (lastSent.names.length ? lastSent.names.join('、') : '本轮没有发送子项') : '当时未选择主文风')
+            : '这一轮没有文风发送记录。' })));
+    }
+    draw();
+    s.body.append(list);
+    const save = el('button', { class: 'btn primary', onclick: async () => {
+      save.disabled = true;
+      try {
+        const current = await db.get('stories', story.id);
+        if (!current) throw new Error('故事已不存在');
+        const enabled = { ...current.modules };
+        for (const id of touched) enabled[id] = !!draft.modules[id];
+        const patch = { stylePreset: draft.stylePreset || '', styleSelections: draft.styleSelections, modules: enabled };
+        await db.put('stories', { ...current, ...patch });
+        Object.assign(story, patch);
+        s.close();
+        toast('文风预设已保存，下一轮正文生效');
+      } catch { save.disabled = false; }
+    } }, '保存');
+    s.foot.append(el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'), save);
+  }
+
+  async function editOption(n, index, text) {
+    const label = CHOICE_LABELS[index];
+    const value = await promptText({
+      title: '修改选项 ' + label, value: text, okText: '保存',
+      hint: '下次选择这个选项时会使用修改后的文字。',
+    });
+    if (value == null) return;
+    if (!value.trim()) { toast('选项不能为空'); return; }
+    if (st.streaming || nodes.get(n.id) !== n || playAnchor()?.id !== n.id) {
+      toast('章节已变化，请重新打开选项'); return;
+    }
+    const current = await db.get('nodes', n.id);
+    if (!current || current.text !== n.text) { toast('章节已变化，请重新打开选项'); return; }
+    const next = { ...current, optionEdits: { ...current.optionEdits, [label]: value.trim() } };
+    await db.put('nodes', next);
+    nodes.set(n.id, next);
+    renderFeed({ keepScroll: true });
   }
 
   // ───── 渲染 ─────
@@ -253,11 +402,19 @@ export async function render(root, { id }) {
       }
       if (isLast && !live && !picking && story.options !== false && p.options.length) {
         const box = el('div', { class: 'options' });
-        p.options.slice(0, CHOICE_LABELS.length).forEach((o, i) => box.append(el('button', {
-          'data-choice': CHOICE_LABELS[i], 'aria-pressed': String(choiceInput(ta.value).labels.includes(CHOICE_LABELS[i])),
-          class: choiceInput(ta.value).labels.includes(CHOICE_LABELS[i]) ? 'selected' : '',
-          onclick: () => { st.ooc = false; st.choiceSource = n.id; ta.value = toggleChoice(ta.value, CHOICE_LABELS[i]); fit(); updateComposer(); syncChoices(); },
-        }, el('span', { class: 'k', text: CHOICE_LABELS[i] }), o)));
+        optionsFor(n, p).forEach((text, i) => {
+          const label = CHOICE_LABELS[i];
+          const selected = choiceInput(ta.value).labels.includes(label);
+          box.append(el('div', { class: 'option-row' },
+            el('button', {
+              'data-choice': label, 'aria-pressed': String(selected), class: selected ? 'selected' : '',
+              onclick: () => { st.choiceSource = n.id; ta.value = toggleChoice(ta.value, label); fit(); syncChoices(); },
+            }, el('span', { class: 'k', text: label }), text),
+            el('button', {
+              class: 'option-edit', 'aria-label': '修改选项 ' + label,
+              onclick: () => editOption(n, i, text).catch(e => toast(e.message)),
+            }, '✎')));
+        });
         g.append(box);
       }
       // 模型没写选项（或格式认不出）：一键补四个，只发这一章，花费很小
@@ -313,6 +470,7 @@ export async function render(root, { id }) {
       tools.append(el('button', { class: 'btn small primary', onclick: () => resumePending() }, '接回后台生成'),
         el('button', { class: 'btn small', onclick: async () => {
           if (st.streaming) { stop(); return; }
+    if (jobs || st.sending) return;
           try {
             await cancelRelayJob(n.relayJob, n.relayContext?.server);
             delete n.relayJob; delete n.relayContext;
@@ -345,13 +503,19 @@ export async function render(root, { id }) {
   }
 
   function renderFeed({ keepScroll = false, focusId = null } = {}) {
-    if (st.choiceSource && st.choiceSource !== story.headId) {
+    if (!st.ooc && st.choiceSource && st.choiceSource !== playAnchor()?.id) {
       ta.value = choiceInput(ta.value).extra; st.choiceSource = null; fit();
     }
     const stick = !focusId && (!keepScroll || nearBottom());
-    const path = headPath();
+    const fullPath = headPath();
+    const anchorIndex = fullPath.findLastIndex(n => !isOoc(n));
+    const path = st.ooc
+      ? fullPath.slice(anchorIndex + 1)
+      : fullPath.filter(n => !isOoc(n) || n.relayJob || st.streaming?.id === n.id);
     feed.replaceChildren();
-    if (!path.length) {
+    if (st.ooc && !path.length) {
+      feed.append(el('div', { class: 'empty', text: '场外讨论 · 正文停在当前章节' }));
+    } else if (!path.length) {
       feed.append(el('div', { class: 'empty' },
         el('div', { style: { fontSize: '17px', color: 'var(--text)', marginBottom: '8px' }, text: story.title || '未命名故事' }),
         story.world?.trim() ? '设定已就绪。' : '还没写设定，GM 会自由发挥。可以点右上角“⋯”补上。',
@@ -403,29 +567,31 @@ export async function render(root, { id }) {
     if (st.streaming) { stop(); return; }
     const started = headPath().length > 0;
     if (!started) { await send('start', ta.value); return; }
-    const head = nodes.get(story.headId);
-    const options = story.options !== false && head?.role === 'assistant' && !isOoc(head) ? parseReply(head.text || '').options : [];
+    const head = playAnchor();
+    const options = story.options !== false && head?.role === 'assistant' ? optionsFor(head) : [];
     const text = st.ooc ? ta.value : expandOptionInput(ta.value, options);
     if (!text.trim()) { toast(st.ooc ? '写点要说的话' : '写点什么，或者点“继续”'); return; }
     await send(st.ooc ? 'ooc' : 'play', text);
   }
 
   async function send(kind, text, { parentId, director } = {}) {
-    if (st.streaming) return;
+    if (st.streaming || jobs || st.sending) return;
     if (headPath().some((n) => n.relayJob)) { toast('先接回后台生成，或在章节下方停止它'); return; }
+    st.sending = true;
     const head = story.headId ? nodes.get(story.headId) : null;
     const u = {
       id: uid(), storyId: story.id, parentId: parentId !== undefined ? parentId : (head ? head.id : null), role: 'user', kind,
-      text: String(text || '').trim(), director: (director ?? st.director).trim(), createdAt: Date.now(),
+      text: String(text || '').trim(), director: kind === 'ooc' ? '' : (director ?? currentDirector()).trim(), createdAt: Date.now(),
     };
     touch(u);
     nodes.set(u.id, u);
-    try { await db.put('nodes', u); } catch { nodes.delete(u.id); return; }
+    try { await db.put('nodes', u); } catch { nodes.delete(u.id); st.sending = false; return; }
+    if (kind !== 'ooc' && parentId === undefined && branchDirector()) delete story.oocHandoff;
     story.headId = u.id;
     st.undoHead = null;
     await saveStory();
-    if (parentId === undefined) { ta.value = ''; fit(); st.director = ''; st.ooc = false; }
-    await generate(u);
+    if (parentId === undefined) { ta.value = ''; fit(); if (kind !== 'ooc') st.director = ''; }
+    try { await generate(u); } finally { st.sending = false; }
   }
 
   /**
@@ -491,6 +657,7 @@ export async function render(root, { id }) {
       ctx.messages.push({ role: 'assistant', content: base }, { role: 'user', content: rewriteNote != null ? rewriteMsg(rewriteNote) : CONTINUE_MSG });
     }
     st.lastCtx = ctx;
+    const styleSent = saved?.styleSent || (!resumeJob && a.kind !== 'ooc' ? await styleSnapshot(ctx.info.moduleIds).catch(() => null) : null);
     if (ctx.info.trimmed) toast(`剧情太长，最早的 ${ctx.info.trimmed} 条没有发给模型`);
 
     const ctrl = new AbortController();
@@ -511,7 +678,7 @@ export async function render(root, { id }) {
         outputBoundary,
         onJob: async (jobId, server) => {
           a.relayJob = jobId;
-          a.relayContext = { server, connectionId: conn.id, base, continuation, usageKind, outputBoundary,
+          a.relayContext = { server, styleSent, connectionId: conn.id, base, continuation, usageKind, outputBoundary,
             inChars: ctx.info.totalChars + (continueNode ? base.length : 0),
             connection: Object.fromEntries(['format', 'model', 'stream', 'priceMode', 'pricePerCall', 'priceIn', 'priceOut', 'priceCache', 'currency'].map((k) => [k, conn[k]])) };
           try { await db.put('nodes', a); }
@@ -556,6 +723,7 @@ export async function render(root, { id }) {
       }
     } finally {
       document.removeEventListener('visibilitychange', onHide);
+      if (styleSent && a.text?.trim()) a.styleSent = styleSent;
       if (st.pendingFrame) { cancelAnimationFrame(st.pendingFrame); st.pendingFrame = 0; }
       a.thinking = false;
       st.streaming = null;
@@ -702,7 +870,7 @@ export async function render(root, { id }) {
   function editReply(n) {
     const s = sheet({ title: '修改这一章' });
     const area = el('textarea', { style: { minHeight: '46vh' } });
-    area.value = n.text || '';
+    area.value = replyForContext(n);
     s.body.append(el('div', { class: 'field' }, area,
       el('div', { class: 'hint', text: '第一行“# ”后面是标题；【弹幕】和【选项】下面的内容会照常显示。改完下一轮模型看到的就是这个版本。' })));
     s.foot.append(
@@ -712,6 +880,7 @@ export async function render(root, { id }) {
         onclick: async () => {
           if (!area.value.trim()) { toast('内容不能为空'); return; }
           n.text = area.value;
+          delete n.optionEdits;
           n.edited = true;
           if (n.status === 'error') { n.status = 'done'; n.error = null; }
           touch(n);
@@ -895,12 +1064,12 @@ export async function render(root, { id }) {
   // ───── 其他 ─────
   async function editDirector() {
     const v = await promptText({
-      title: '导演指令', value: st.director,
+      title: '导演指令', value: currentDirector(),
       placeholder: '例：这一轮让他主动出手；节奏放慢一点；这轮写短些',
       hint: '只对下一轮生效，不会写进规则，也不会出现在正文里。',
       okText: '好',
     });
-    if (v != null) { st.director = v; updateComposer(); }
+    if (v != null) await saveDirector(v);
   }
 
   async function pickConnection() {
@@ -923,7 +1092,7 @@ export async function render(root, { id }) {
     const leaves = branchList().length;
     const started = headPath().length > 0;
     const k = await menu(story.title || '故事', [
-      started ? { key: 'ooc', label: st.ooc ? '退出出戏' : '出戏', hint: '下一句是场外话：问设定、商量走向，不推进剧情' } : null,
+      started ? { key: 'ooc', label: st.ooc ? '退出出戏' : '出戏', hint: '问设定、商量走向，不推进剧情' } : null,
       { key: 'dir', label: st.director.trim() ? '修改导演指令' : '导演指令', hint: '只对下一轮生效的要求，不写进规则' },
       ...manualMods().map((m) => ({ key: 'mod:' + m.id, label: `情境：${m.name}${story.manualOn[m.id] ? '  ✓ 开着' : '（关着）'}`, hint: story.manualOn[m.id] ? '点一下关掉' : '点一下打开，之后每轮都带上这个模块' })),
       { key: 'edit', label: '世界设定与规则', hint: '世界设定、开场、弹幕/选项开关、规则和模块；角色在底部“角色”里' },
@@ -942,7 +1111,7 @@ export async function render(root, { id }) {
       await saveStory();
       updateComposer();
       toast(story.manualOn[mid] ? '已打开，下一轮起带上' : '已关掉');
-    } else if (k === 'ooc') { st.ooc = !st.ooc; updateComposer(); if (st.ooc) ta.focus(); }
+    } else if (k === 'ooc') setOoc(!st.ooc);
     else if (k === 'dir') editDirector();
     else if (k === 'edit') go(`story/${encodeURIComponent(story.id)}`);
     else if (k === 'memory') go(`memory/${encodeURIComponent(story.id)}`);

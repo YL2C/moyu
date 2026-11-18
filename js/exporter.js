@@ -1,7 +1,7 @@
 // 墨游 · 导出游玩记录：当前这条线的正文，给人看、给别的工具用（不是备份，导不回墨游）
 
 import { db } from './db.js';
-import { parseReply } from './parse.js';
+import { parseReply, optionsForReply } from './parse.js';
 import { extraBlocks } from './fanwai.js';
 import { latestCheckpoint, memoryText, applyCardState } from './prompt.js';
 import { el, sheet, toast, saveFile } from './util.js';
@@ -47,7 +47,7 @@ export async function buildTranscript(storyId, opts = {}) {
     const ch = { no, title: p.title || '', you: youText(lastUser), text: (p.body || '').trim() };
     if (lastUser?.director?.trim()) ch.director = lastUser.director.trim();
     if (o.danmu && p.danmu.length) ch.danmu = p.danmu.map((d) => ({ name: d.name, text: d.text }));
-    if (o.options && p.options.length) ch.options = p.options;
+    if (o.options && p.options.length) ch.options = optionsForReply(n, p);
     chapters.push(ch);
   }
   const out = {

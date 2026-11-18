@@ -145,3 +145,21 @@ export function forContext(raw) {
   const head = p.title ? `# ${p.title}\n` : '';
   return (head + p.body).trim() || stripReasoning(raw).trim();
 }
+
+
+export function optionsForReply(node, parsed = parseReply(node.text || '')) {
+  return parsed.options.map((text, index) => node.optionEdits?.['ABCDEF'[index]] || text);
+}
+
+export function replyForContext(node) {
+  const raw = stripReasoning(node.text || '').trim();
+  if (!node.optionEdits || !Object.keys(node.optionEdits).length) return raw;
+  const parsed = parseReply(raw);
+  const options = optionsForReply(node, parsed);
+  return [
+    parsed.title ? '# ' + parsed.title : '',
+    parsed.body,
+    parsed.danmu.length ? '【弹幕】\n' + parsed.danmu.map(x => x.name ? x.name + '：' + x.text : x.text).join('\n') : '',
+    options.length ? '【选项】\n' + options.map((text, i) => 'ABCDEF'[i] + '. ' + text).join('\n') : '',
+  ].filter(Boolean).join('\n\n');
+}

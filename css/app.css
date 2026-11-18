@@ -247,6 +247,10 @@ a { color: var(--accent); }
   text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 10px;
   padding: 10px 12px; font-size: 14.5px; line-height: 1.55; cursor: pointer; color: var(--text);
 }
+.option-row { display: flex; gap: 6px; align-items: stretch; }
+.option-row [data-choice] { flex: 1; min-width: 0; }
+.options .option-edit { flex: none; min-width: 44px; text-align: center; color: var(--accent); }
+.ooc-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .options button:active { background: var(--accent-soft); }
 .options button.selected { border-color: var(--accent); background: var(--accent-soft); }
 .options button .k { color: var(--accent); font-weight: 600; margin-right: 6px; }

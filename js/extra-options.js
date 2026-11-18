@@ -16,18 +16,21 @@ export async function connectionSelect() {
   select.value = list.some(c=>c.id===saved) ? saved : list[0]?.id || '';
   return select;
 }
-export function personPicker(story, label, {mixed = true, allowSelf = true} = {}) {
+export function personPicker(story, label, {mixed = true, allowSelf = true, autoCharacter = false} = {}) {
   const select = el('select');
   const free = el('input', {placeholder:'没建卡的人物，直接写名字',hidden:true});
   const title = el('label');
   const selfName = story.protagonist?.name?.trim() || '主角';
   const choices = new Map();
-  const configure = ({label:nextLabel=label,mixed:nextMixed=mixed,allowSelf:nextSelf=allowSelf}={}) => {
+  const configure = ({label:nextLabel=label,mixed:nextMixed=mixed,allowSelf:nextSelf=allowSelf,autoCharacter:nextAuto=autoCharacter}={}) => {
     const previous=select.value;
-    label=nextLabel;mixed=nextMixed;allowSelf=nextSelf;
+    label=nextLabel;mixed=nextMixed;allowSelf=nextSelf;autoCharacter=nextAuto;
     title.textContent=label; select.setAttribute('aria-label',label); free.setAttribute('aria-label',label+'姓名');
-    select.replaceChildren(); choices.clear(); choices.set('',{kind:'auto',name:''});
-    select.append(el('option',{value:''},'自动安排'));
+    const otherCards = (story.cards || []).filter(c => c.name?.trim() && c.name.trim() !== selfName);
+    const first = autoCharacter && (otherCards.find(c => c.core) || otherCards[0]);
+    select.replaceChildren(); choices.clear();
+    choices.set('',first ? {kind:'character',cardId:first.id || '',name:first.name.trim()} : {kind:'auto',name:''});
+    select.append(el('option',{value:''},first ? '自动安排 · ' + first.name.trim() : '自动安排'));
     if(allowSelf){choices.set('__self',{kind:'self',name:selfName});select.append(el('option',{value:'__self'},'主角（你）'+(selfName!=='主角'?' · '+selfName:'')));}
     const group=el('optgroup',{label:'角色卡'});
     (story.cards || []).forEach((c,i)=>{
@@ -61,7 +64,7 @@ export function companionPicker(story) {
 }
 export function castNames(cast = {}) { return [cast.protagonist,cast.owner,cast.partner,cast.subject,cast.reporter,...(cast.companions || [])].filter(p=>p?.name).map(p=>p.name); }
 export function castText(cast = {}, layout = '') {
-  const person = p => p?.kind==='mixed'?'不同人':p?.name?(p.kind==='self'?'主角（你）：':'')+p.name:'从当前剧情相关人物中自动安排';
+  const person = p => p?.kind==='mixed'?'不同人':p?.name?(p.kind==='self'?'主角（你）：':'')+p.name:'从所选时间点前的剧情或设定中选一位相关人物，避开玩家主角';
   const self=cast.protagonist?.name || '主角（你）';
   const center='【关系中心】'+self+'默认参与本篇番外，是玩家主角；所选另一位人物不替代主角。所有玩法围绕主角及所选人物的关系展开，不能擅自换人。';
   if(layout==='show')return center+'\n【和谁参加恋综】'+(cast.companions?.length?cast.companions.map(person).join('、'):'其他随行人根据剧情安排')+'。主角与所有所选人物共同参加，所选人物须持续参与且有独立反应；可有竞争、合作与误会，多人同行不自动代表多人恋爱。';
