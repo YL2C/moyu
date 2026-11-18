@@ -243,16 +243,20 @@ a { color: var(--accent); }
 
 /* 选项 */
 .options { display: flex; flex-direction: column; gap: 8px; margin: 14px 0 6px; font-family: var(--ui-font); }
+.option-row {
+  display: flex; align-items: center; border: 1px solid var(--line); background: var(--card); border-radius: 10px;
+}
+.option-row:has(button.selected) { border-color: var(--accent); background: var(--accent-soft); }
 .options button {
-  text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 10px;
+  text-align: left; border: 0; background: transparent; border-radius: 9px;
   padding: 10px 12px; font-size: 14.5px; line-height: 1.55; cursor: pointer; color: var(--text);
 }
-.option-row { display: flex; gap: 6px; align-items: stretch; }
-.option-row [data-choice] { flex: 1; min-width: 0; }
-.options .option-edit { flex: none; min-width: 44px; text-align: center; color: var(--accent); }
-.ooc-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.option-row [data-choice] { flex: 1; align-self: stretch; min-width: 0; padding-right: 0; overflow-wrap: anywhere; }
+.options .option-edit {
+  flex: none; display: grid; place-items: center; width: 34px; height: 34px; margin-right: 3px;
+  padding: 0; font-size: 14px; line-height: 1; color: var(--text2);
+}
 .options button:active { background: var(--accent-soft); }
-.options button.selected { border-color: var(--accent); background: var(--accent-soft); }
 .options button .k { color: var(--accent); font-weight: 600; margin-right: 6px; }
 
 /* 回复工具条 */
@@ -285,6 +289,17 @@ a { color: var(--accent); }
   padding: 5px 12px; font-size: 13px; color: var(--text2); cursor: pointer; white-space: nowrap;
 }
 .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.style-select { margin-bottom: 0; }
+.style-receipt { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ooc-panel {
+  max-width: 720px; margin: 0 auto; padding: 8px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--bg2);
+}
+.ooc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 6px; font-size: 13px; }
+.ooc-feed { max-height: min(24vh, 168px); overflow-y: auto; overscroll-behavior: contain; margin-bottom: 6px; }
+.ooc-feed .turn { margin-bottom: 6px; }
+.ooc-feed .you { margin-top: 4px; }
+:root.kb .ooc-feed { max-height: min(16vh, 108px); }
 .status-row { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 6px; }
 .status-row:not(:empty) { margin-bottom: 6px; }
 .status {
@@ -295,20 +310,19 @@ a { color: var(--accent); }
 .status .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .status button { flex: none; border: 0; background: transparent; color: inherit; font-size: 14px; padding: 4px 8px; cursor: pointer; }
 .composer .inrow { display: flex; gap: 8px; align-items: center; max-width: 720px; margin: 0 auto; }
+.composer .inrow[hidden] { display: none; }
 .composer .bar { max-width: 720px; margin-left: auto; margin-right: auto; }
 .composer textarea {
   flex: 1; min-width: 0; min-height: 44px; max-height: 38vh; resize: none; border: 1px solid var(--line); background: var(--card);
   border-radius: 12px; padding: 9px 12px; font-size: 16px; line-height: 24px; outline: none;
 }
 .composer textarea:focus { border-color: var(--accent); }
-.composer textarea.ooc { border-style: dashed; }
 .composer textarea::placeholder { font-size: 13px; color: var(--text3); opacity: 1; }
 .composer .input-shell {
   display: flex; align-items: center; flex: 1; min-width: 0;
   border: 1px solid var(--line); border-radius: 12px; background: var(--card);
 }
 .composer .input-shell:focus-within { border-color: var(--accent); }
-.composer .input-shell:has(textarea.ooc) { border-style: dashed; }
 .composer .input-shell textarea { order: 0; border: 0; min-height: 42px; background: transparent; padding-left: 12px; padding-right: 4px; }
 .bracket-btn {
   order: 1; flex: none; width: 40px; height: 42px; padding: 0; border: 0; border-radius: 12px;

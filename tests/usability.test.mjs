@@ -740,26 +740,39 @@ test('实际游玩缺少正文边界时不写入剧情或后续上下文，原�
   }finally{dispose();}
 });
 
-test('选项独立编辑，场外模式连聊两轮，确认结论后手动继续', async () => {
+test('选项框内独立编辑，正文页内出戏连聊两轮，确认结论后手动继续', async () => {
   const {story} = await seedStory();
   let dispose = await play.render(root,{id:story.id});
   try {
-    root.querySelector('[aria-label="修改选项 B"]').click();
+    const edit = root.querySelector('[aria-label="修改选项 B"]');
+    const option = root.querySelector('[data-choice=B]');
+    assert.equal(edit.parentElement, option.parentElement);
+    assert.equal(getComputedStyle(edit).width, '34px');
+    edit.click();
+    assert.equal(option.getAttribute('aria-pressed'), 'false');
     document.querySelector('[role="dialog"] textarea').value = '把信交给同伴';
     button('保存', document.querySelector('[role="dialog"]')).click();
     await wait(() => root.querySelector('[data-choice=B]')?.textContent.includes('把信交给同伴'));
 
     root.querySelector('[data-choice=B]').click();
+    const input = root.querySelector('.input-shell textarea');
     root.querySelector('[aria-label=出戏]').click();
-    assert.equal(root.querySelector('[data-choice=B]'), null);
-    const input = root.querySelector('textarea');
+    const panel = root.querySelector('.composer .ooc-panel');
+    const oocInput = panel.querySelector('textarea');
+    const oocSend = () => panel.querySelector('[aria-label="发送场外消息"]').click();
+    assert.equal(panel.hidden, false);
+    assert.ok(root.querySelector('.feed').textContent.includes('林舟已经毕业'));
+    assert.equal(root.querySelector('[data-choice=B]').getAttribute('aria-pressed'), 'true');
+    assert.equal(input.value, 'B');
     responses.push('建议先讨论误会原因，不发生新事件。', '他暂时还不知道真相。');
-    input.value = '场外讨论专用文字'; button('发送').click();
+    oocInput.value = '场外讨论专用文字'; oocSend();
     await wait(() => requests.length === 1 && !dispose.busy());
-    assert.equal(input.placeholder, '场外讨论…');
+    assert.equal(oocInput.placeholder, '场外讨论…');
+    assert.ok(panel.textContent.includes('建议先讨论误会原因'));
+    assert.ok(!root.querySelector('.feed').textContent.includes('场外讨论专用文字'));
     assert.ok(requests[0].body.messages[0].content.includes('场外模式'));
     assert.ok(!requests[0].body.messages[0].content.includes('【输出格式】'));
-    input.value = '那就先讲讲他的动机'; button('发送').click();
+    oocInput.value = '那就先讲讲他的动机'; oocSend();
     await wait(() => requests.length === 2 && !dispose.busy());
     assert.equal(root.querySelector('[aria-label=出戏]').getAttribute('aria-checked'), 'true');
 
@@ -768,10 +781,9 @@ test('选项独立编辑，场外模式连聊两轮，确认结论后手动继�
     assert.ok(dialog.querySelector('textarea').value.includes('他暂时还不知道真相'));
     dialog.querySelector('textarea').value = '下一轮只写试探，不公开真相。';
     button('确认并回正文', dialog).click();
-    await wait(() => root.querySelector('[data-choice=B]') && root.textContent.includes('下一轮只写试探'));
+    await wait(() => panel.hidden && root.textContent.includes('下一轮只写试探'));
     assert.equal(requests.length, 2);
     assert.equal(input.value, 'B');
-    assert.ok(!root.textContent.includes('场外讨论专用文字'));
 
     dispose(); root.replaceChildren(); dispose = await play.render(root,{id:story.id});
     assert.ok(root.textContent.includes('下一轮只写试探'));
@@ -787,7 +799,7 @@ test('选项独立编辑，场外模式连聊两轮，确认结论后手动继�
   } finally { dispose(); }
 });
 
-test('文风切换整组默认启用、记住子项，上轮发送记录刷新后仍可核对', async () => {
+test('文风入口显示开关，弹层只选主文风，记住从故事规则选择的子项', async () => {
   const {story} = await seedStory();
   await db.kvSet('packs', [{id:'style-a',name:'龙族文风预设',kind:'preset'},{id:'style-b',name:'另一个文风',kind:'preset'},{id:'world',name:'世界书',kind:'lore'}]);
   await saveModules([
@@ -796,34 +808,70 @@ test('文风切换整组默认启用、记住子项，上轮发送记录刷新�
     {id:'b1',pack:'style-b',name:'其他写法',text:'其他写法规则',mode:'always'},
   ]);
   let dispose = await play.render(root,{id:story.id});
+  const chip = () => root.querySelector('[aria-haspopup=dialog]');
   const show = async () => {
-    button('文风预设').click();
+    chip().click();
     await wait(() => document.querySelector('[aria-label=主文风]'));
     return document.querySelector('[role=dialog]');
   };
   const selectPreset = val => {
     const select = document.querySelector('[aria-label=主文风]');
-    select.value = val; select.dispatchEvent(new Event('change'));
+    select.value = val;
+  };
+  const save = async (s) => {
+    button('保存',s).click();
+    await wait(() => !document.querySelector('[role=dialog]'));
   };
   try {
+    assert.equal(chip().textContent, '文风预设：关');
     let s = await show();
     assert.equal(s.querySelector('[aria-label=主文风] option[value=world]'), null);
     selectPreset('style-a');
-    assert.equal([...s.querySelectorAll('input:checked')].length, 2);
-    s.querySelectorAll('input[type=checkbox]')[1].click();
-    selectPreset('style-b'); selectPreset('style-a');
-    assert.equal([...s.querySelectorAll('input:checked')].length, 1);
-    button('保存',s).click();
-    await wait(() => !document.querySelector('[role=dialog]'));
+    assert.equal(s.querySelectorAll('input[type=checkbox]').length, 0);
+    await save(s);
+    assert.equal(chip().textContent, '文风预设：开');
+    const stored = await db.get('stories', story.id);
+    assert.deepEqual([stored.modules.a1, stored.modules.a2], [true, true]);
+    await db.put('stories', {...stored, modules: {...stored.modules, a2: false}});
+    s = await show(); selectPreset(''); await save(s);
+    assert.equal(chip().textContent, '文风预设：关');
+    s = await show(); selectPreset('style-b'); await save(s);
+    s = await show(); selectPreset('style-a'); await save(s);
+    assert.equal(chip().textContent, '文风预设：开');
     button('继续').click();
     await wait(() => requests.length === 1 && !dispose.busy());
     assert.ok(requests[0].body.messages[0].content.includes('文风甲规则'));
     assert.ok(!requests[0].body.messages[0].content.includes('文风乙规则'));
     dispose(); root.replaceChildren(); dispose = await play.render(root,{id:story.id});
     s = await show();
-    assert.ok(s.textContent.includes('龙族文风预设 · 甲文风'));
-    assert.ok(!s.textContent.includes('龙族文风预设 · 甲文风、乙文风'));
+    assert.ok(s.textContent.includes('上一轮实发 · 龙族文风预设 · 1 项'));
+    assert.ok(!s.textContent.includes('甲文风'));
     button('取消',s).click();
+  } finally { dispose(); }
+});
+
+test('出戏后台生成重新打开时在正文内接回，章节和选项一直可见', async () => {
+  const story = await seedRelayExtra();
+  let offline = true;
+  const calls = extraRelayMock(() => {
+    if (offline) throw new TypeError('offline');
+    return extraSSE('接回的场外回复。');
+  });
+  let dispose = await play.render(root,{id:story.id});
+  try {
+    root.querySelector('[aria-label=出戏]').click();
+    root.querySelector('.ooc-panel textarea').value = '这段角色动机是什么？';
+    root.querySelector('[aria-label="发送场外消息"]').click();
+    await wait(() => button('接回后台生成', root.querySelector('.ooc-panel')) && !dispose.busy());
+    assert.ok(root.querySelector('.feed [data-choice=A]'));
+    dispose(); root.replaceChildren(); offline = false;
+    dispose = await play.render(root,{id:story.id});
+    const panel = root.querySelector('.ooc-panel');
+    assert.equal(panel.hidden, false);
+    await wait(() => panel.textContent.includes('接回的场外回复') && !dispose.busy());
+    assert.ok(root.querySelector('.feed [data-choice=A]'));
+    assert.equal(calls.filter(c => c.method === 'POST').length, 1);
+    assert.ok(!calls.some(c => c.method === 'DELETE'));
   } finally { dispose(); }
 });
 
