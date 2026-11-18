@@ -954,6 +954,32 @@ test('出戏后台生成重新打开时在正文内接回，章节和选项一�
   } finally { dispose(); }
 });
 
+test('游玩页连续两轮写入缓存用量，花费可查看真实命中数', async () => {
+  const {story} = await seedStory();
+  await db.put('connections', { id:'qa-conn', format:'anthropic', apiKey:'fixture-key', model:'claude-sonnet-4-6', promptCache:true, stream:false });
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, 'https://api.anthropic.com/v1/messages');
+    requests.push({body:JSON.parse(init.body)});
+    const hit = requests.length === 2;
+    return Response.json({ content:[{ type:'text', text:'[MOYU_FINAL]\n# 下一章\n\n故事继续。\n[/MOYU_FINAL]' }], stop_reason:'end_turn',
+      usage:{ input_tokens:500, cache_read_input_tokens:hit ? 4100 : 0, cache_creation_input_tokens:hit ? 0 : 4100, output_tokens:36 } });
+  };
+  const dispose = await play.render(root, {id:story.id});
+  try {
+    for (let turns = 1; turns <= 2; turns++) {
+      button('继续',root).click();
+      await wait(() => requests.length === turns && !dispose.busy());
+    }
+    assert.deepEqual(requests[0].body.system[0], requests[1].body.system[0]);
+    const rows = await db.kvGet('usageLog',[]);
+    assert.deepEqual(rows.map(x => [x.input,x.cached,x.written,x.cacheMode]),[[4600,0,4100,'claude'],[4600,4100,0,'claude']]);
+    root.querySelector('[aria-label="更多"]').click();
+    await wait(() => document.querySelector('.menu-list'));
+    [...document.querySelectorAll('.menu-list button')].find(b => b.firstChild.textContent === '花费').click();
+    await wait(() => document.querySelector('[role="dialog"] .sb')?.textContent.includes('命中 4.1千'));
+  } finally { dispose(); }
+});
+
 test('讨论回复与整理草稿通过服务器接回，分开保存且只请求原任务', async () => {
   const story = await seedRelayExtra();
   const d = newDiscussion(story.id,story.title);

@@ -16,17 +16,20 @@ function num(v) {
 export function normalizeUsage(raw, { inChars = 0, outChars = 0 } = {}) {
   // 有的中转站会返回全是 0 的用量：当成没返回，按字数粗估
   const zero = raw && !Number(raw.input_tokens || raw.prompt_tokens || 0) && !Number(raw.output_tokens || raw.completion_tokens || 0) &&
-    !Number(raw.cache_read_input_tokens || 0) && !Number(raw.cache_creation_input_tokens || 0);
+    !Number(raw.cache_read_input_tokens || 0) && !Number(raw.cache_creation_input_tokens || 0) && !Number(raw.promptTokenCount || raw.candidatesTokenCount || 0);
   if (zero && (inChars || outChars)) raw = null;
   if (raw && (raw.input_tokens != null || raw.output_tokens != null)) {
     const cacheRead = raw.cache_read_input_tokens || 0;
     const cacheWrite = raw.cache_creation_input_tokens || 0;
-    return { input: (raw.input_tokens || 0) + cacheRead + cacheWrite, cached: cacheRead, output: raw.output_tokens || 0, est: false };
+    return { input: (raw.input_tokens || 0) + cacheRead + cacheWrite, cached: cacheRead, written: cacheWrite,
+      cacheReported: raw.cache_read_input_tokens != null || raw.cache_creation_input_tokens != null, output: raw.output_tokens || 0, est: false };
   }
   if (raw && (raw.prompt_tokens != null || raw.completion_tokens != null)) {
-    const cached = raw.prompt_tokens_details?.cached_tokens ?? raw.prompt_cache_hit_tokens ?? 0;
-    return { input: raw.prompt_tokens || 0, cached, output: raw.completion_tokens || 0, est: false };
+    const cached = raw.prompt_tokens_details?.cached_tokens ?? raw.prompt_cache_hit_tokens;
+    return { input: raw.prompt_tokens || 0, cached: cached ?? 0, cacheReported: cached != null, output: raw.completion_tokens || 0, est: false };
   }
+  if (raw?.promptTokenCount != null) return { input: raw.promptTokenCount, cached: raw.cachedContentTokenCount || 0,
+    cacheReported: raw.cachedContentTokenCount != null, output: (raw.candidatesTokenCount || 0) + (raw.thoughtsTokenCount || 0), est: false };
   // 中文大约一字一个 token 上下，只作粗估
   return { input: Math.round(inChars), cached: 0, output: Math.round(outChars), est: true };
 }
@@ -49,11 +52,16 @@ export function priceLabel(conn) {
 /** 按次：每次请求固定价；按 token：单位是每百万 token。没填价格返回 null */
 export function computeCost(u, conn) {
   if (!u || !hasPrice(conn)) return null;
+  if (u.storageSeconds && priceMode(conn) === 'call') return null;
   if (priceMode(conn) === 'call') return { amount: num(conn.pricePerCall) || 0, currency: conn.currency || 'CNY', est: false, perCall: true };
   const ip = num(conn.priceIn) ?? 0;
   const op = num(conn.priceOut) ?? 0;
   const cp = num(conn.priceCache) ?? ip;
-  const amount = ((Math.max(0, u.input - u.cached)) * ip + u.cached * cp + u.output * op) / 1e6;
+  const cached = u.cached || 0;
+  const written = u.written || 0;
+  const wp = num(conn.priceCacheWrite) ?? ip;
+  const storeCost = u.storageSeconds ? u.input * (u.storageSeconds / 3600) * (num(conn.priceCacheStorage) ?? 0) : 0;
+  const amount = (Math.max(0, u.input - cached - written) * ip + cached * cp + written * wp + u.output * op + storeCost) / 1e6;
   return { amount, currency: conn.currency || 'CNY', est: !!u.est };
 }
 
@@ -93,14 +101,16 @@ export async function addSpend(cost, usage) {
  * 每次调用模型都记一笔：kind（正文/整理前情/拆角色卡/补选项/番外…）、用量、金额。
  * 进月度合计，也进“最近的调用”清单（最多 300 条），方便看 token 花在哪了。
  */
-export async function recordUsage({ kind = '正文', storyId = '', model = '', usage = null, cost = null, requestId = null } = {}) {
+export async function recordUsage({ kind = '正文', storyId = '', model = '', usage = null, cost = null, requestId = null, cacheMode = '' } = {}) {
   const m = await db.kvUpdate(['usageLog', 'spend'], (values) => {
     const log = values.usageLog || [];
     const all = values.spend || {};
     const k = monthKey();
     const month = all[k] || { CNY: 0, USD: 0, input: 0, output: 0, count: 0 };
     if (requestId && log.some((x) => x.requestId === requestId)) return { values: {}, result: month };
-    log.push({ at: Date.now(), kind, storyId, model, input: usage?.input || 0, cached: usage?.cached || 0, output: usage?.output || 0, est: !!usage?.est, cost, ...(requestId ? { requestId } : {}) });
+    log.push({ at: Date.now(), kind, storyId, model, input: usage?.input || 0, cached: usage?.cached || 0, output: usage?.output || 0,
+      written: usage?.written || 0, cacheReported: !!usage?.cacheReported, storageSeconds: usage?.storageSeconds || 0, cacheMode,
+      est: !!usage?.est, cost, ...(requestId ? { requestId } : {}) });
     while (log.length > 300) log.shift();
     if (cost) month[cost.currency] = (month[cost.currency] || 0) + cost.amount;
     if (usage) { month.input += usage.input || 0; month.output += usage.output || 0; }

@@ -662,7 +662,8 @@ export async function render(root, { id }) {
     try { await db.put('nodes', a); } catch {}
     await saveStory();
 
-    const ctx = buildContext(story, pathTo(a.parentId), { modules: st.modules, extra: extraDirector || '', globalMemo: st.globalMemo });
+    const ctxPath = pathTo(a.parentId);
+    const ctx = buildContext(story, ctxPath, { modules: st.modules, extra: extraDirector || '', globalMemo: st.globalMemo });
     if (extraDirector?.trim()) {
       const last = ctx.messages[ctx.messages.length - 1];
       if (last && last.role === 'user') last.content += directorBlock(extraDirector);
@@ -682,6 +683,7 @@ export async function render(root, { id }) {
 
     let lastSave = 0;
     let usageRaw = null;
+    let cacheMode = saved?.cacheMode || '';
     let pendingRelay = false;
     let autoResume = false;
     const persist = () => db.put('nodes', a).catch(() => {});
@@ -690,13 +692,23 @@ export async function render(root, { id }) {
     try {
       const r = await streamWithRetry(conn, {
         system: ctx.system, messages: ctx.messages, signal: ctrl.signal,
+        cachePrefix: ctx.cachePrefix,
+        cacheScope: JSON.stringify([story.id, ctxPath[0]?.id, latestCheckpoint(ctxPath)?.node.id]),
         resumeJob, relayServer: saved?.server || '',
         outputBoundary,
+        onCache: ({ mode, created }) => {
+          if (mode !== undefined) cacheMode = mode;
+          if (!created) return;
+          const input = created.tokens ?? approxTokens(ctx.cachePrefix.length);
+          const usage = { input, output: 0, storageSeconds: created.seconds, est: created.tokens == null };
+          void recordUsage({ kind: '创建 Gemini 缓存', storyId: story.id, model: conn.model, usage,
+            cost: computeCost(usage, conn), cacheMode: 'vertex-explicit' });
+        },
         onJob: async (jobId, server) => {
           a.relayJob = jobId;
-          a.relayContext = { server, styleSent, connectionId: conn.id, base, continuation, usageKind, outputBoundary,
+          a.relayContext = { server, styleSent, connectionId: conn.id, base, continuation, usageKind, outputBoundary, cacheMode,
             inChars: ctx.info.totalChars + (continueNode ? base.length : 0),
-            connection: Object.fromEntries(['format', 'model', 'stream', 'priceMode', 'pricePerCall', 'priceIn', 'priceOut', 'priceCache', 'currency'].map((k) => [k, conn[k]])) };
+            connection: Object.fromEntries(['format', 'model', 'stream', 'priceMode', 'pricePerCall', 'priceIn', 'priceOut', 'priceCache', 'priceCacheWrite', 'currency'].map((k) => [k, conn[k]])) };
           try { await db.put('nodes', a); }
           catch { throw new ApiError('storage', '无法保存后台任务', { hint: '请先检查设备存储空间，再重试。' }); }
         },
@@ -751,10 +763,11 @@ export async function render(root, { id }) {
         const c = computeCost(u, conn);
         // 续写/从某段重写：把这次的花费累加到同一条上
         if (continuation && a.usageN) {
-          a.usageN = { input: a.usageN.input + u.input, cached: (a.usageN.cached || 0) + u.cached, output: a.usageN.output + u.output, est: a.usageN.est || u.est };
+          a.usageN = { input: a.usageN.input + u.input, cached: (a.usageN.cached || 0) + u.cached, written: (a.usageN.written || 0) + (u.written || 0),
+            cacheReported: a.usageN.cacheReported || u.cacheReported, output: a.usageN.output + u.output, est: a.usageN.est || u.est };
           a.cost = c && a.cost && a.cost.currency === c.currency ? { ...c, amount: a.cost.amount + c.amount, est: a.cost.est || c.est } : (c || a.cost || null);
         } else { a.usageN = u; a.cost = c; }
-        await recordUsage({ kind: usageKind, storyId: story.id, model: conn?.model || a.model, usage: u, cost: c,
+        await recordUsage({ kind: usageKind, storyId: story.id, model: conn?.model || a.model, usage: u, cost: c, cacheMode,
           requestId: a.relayJob ? (a.relayContext?.server || '') + '/' + a.relayJob : null });
       }
       if (!pendingRelay) { delete a.relayJob; delete a.relayContext; relayRetry = 0; clearTimeout(relayTimer); }
@@ -1151,7 +1164,7 @@ export async function render(root, { id }) {
     const cutoff = logged.length ? logged[0].at - 600000 : Infinity;
     const older = [...nodes.values()]
       .filter((n) => n.role === 'assistant' && n.usageN && (n.createdAt || 0) < cutoff)
-      .map((n) => ({ at: n.createdAt || 0, kind: n.kind === 'ooc' ? '出戏' : '正文', model: n.model || '', input: n.usageN.input || 0, cached: n.usageN.cached || 0, output: n.usageN.output || 0, est: !!n.usageN.est, cost: n.cost || null }));
+      .map((n) => ({ input: 0, output: 0, ...n.usageN, at: n.createdAt || 0, kind: n.kind === 'ooc' ? '出戏' : '正文', model: n.model || '', cost: n.cost || null }));
     const log = [...older, ...logged].sort((a, b) => a.at - b.at);
     const month = await getMonthSpend();
     const budget = await getBudget();
@@ -1172,6 +1185,15 @@ export async function render(root, { id }) {
     const play = by.get('正文');
     const avgIn = play?.count ? Math.round(play.input / play.count) : 0;
     const noPrice = !hasPrice(st.conn);
+    const usageText = (x) => {
+      const input = `${x.est ? '约' : ''}入 ${fmtTokens(x.input)}`;
+      if (x.storageSeconds) return `${input} · 保留 ${x.storageSeconds} 秒`;
+      const mode = { claude: 'Claude 缓存', 'vertex-explicit': 'Gemini 显式', 'vertex-implicit': 'Gemini 隐式' }[x.cacheMode];
+      const cache = x.cacheReported || x.cached || x.written
+        ? `命中 ${fmtTokens(x.cached || 0)} · 写入 ${fmtTokens(x.written || 0)} · 未缓存 ${fmtTokens(Math.max(0, x.input - (x.cached || 0) - (x.written || 0)))}`
+        : mode ? '接口未报告缓存用量' : '';
+      return [input, mode, cache, `出 ${fmtTokens(x.output)}`].filter(Boolean).join(' · ');
+    };
     // 按次计价：没记上金额的早期调用，按现在的单价补算一个参考数
     const callMode = priceMode(st.conn) === 'call';
     const perCall = callMode ? Number(st.conn.pricePerCall) || 0 : 0;
@@ -1181,14 +1203,14 @@ export async function render(root, { id }) {
       el('div', { class: 'card' },
         el('div', { style: { fontSize: '22px', fontWeight: '600' } }, callMode ? `${CUR[st.conn.currency || 'CNY']}${(tot.count * perCall).toFixed(2)}` : money(tot) ? (tot.est ? '约 ' : '') + money(tot) : (noPrice ? '没设计价方式，算不出金额' : '—')),
         el('div', { class: 'hint', style: { whiteSpace: 'pre-wrap' } }, (callEst ? callEst + '\n' : '') + `共 ${tot.count} 次调用 · 输入 ${fmtTokens(tot.input)} · 输出 ${fmtTokens(tot.output)} token` +
-          (avgIn ? `\n正文平均每轮发出去 ${fmtTokens(avgIn)} token（规则、设定、角色卡、前情和最近几章原文，每轮都要重发）` : ''))),
+          (avgIn ? `\n正文平均每轮 ${fmtTokens(avgIn)} 输入 token（含缓存命中）` : ''))),
       ...(by.size ? [el('div', { class: 'card' }, ...[...by.entries()].map(([k, g]) => el('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'nowrap', fontSize: '14px', padding: '3px 0' } },
         el('span', { text: `${k} × ${g.count}` }),
         el('span', { style: { color: 'var(--text2)' }, text: `入 ${fmtTokens(g.input)} · 出 ${fmtTokens(g.output)}${money(g) ? ' · ' + money(g) : ''}` }))))] : []),
       log.length ? el('div', { class: 'section-title', text: '最近的调用' }) : null,
       log.length ? el('div', { class: 'card', style: { padding: '8px 14px' } }, ...log.slice(-30).reverse().map((x) => el('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'nowrap', fontSize: '13px', padding: '4px 0', borderBottom: '1px solid var(--line)' } },
         el('span', { style: { whiteSpace: 'nowrap' }, text: `${new Date(x.at).toTimeString().slice(0, 5)} ${x.kind}` }),
-        el('span', { style: { color: 'var(--text2)', textAlign: 'right' }, text: `${x.est ? '约' : ''}入 ${fmtTokens(x.input)}${x.cached ? `（缓存 ${fmtTokens(x.cached)}）` : ''} · 出 ${fmtTokens(x.output)}${x.cost ? ' · ' + fmtMoney(x.cost) : ''}` })))) : null,
+        el('span', { style: { color: 'var(--text2)', textAlign: 'right' }, text: `${usageText(x)}${x.cost ? ' · ' + fmtMoney(x.cost) : ''}` })))) : null,
       el('div', { class: 'section-title', text: '本月（所有故事）' }),
       el('div', { class: 'card' },
         el('div', { style: { fontSize: '22px', fontWeight: '600' } }, money(month) || (month.count ? '没设计价方式，算不出金额' : '—')),
@@ -1197,6 +1219,7 @@ export async function render(root, { id }) {
       el('div', { class: 'hint', style: { whiteSpace: 'pre-wrap' } },
         [noPrice ? '金额要在“设置 → 连接 → 编辑”里选计价方式：按次（每次多少钱）或按 token（每百万 token 多少钱）。不设就只统计次数和 token。' : '',
           tot.est ? '带“约”的是按字数粗估的：这个接口没有返回真实用量。' : '',
+          log.some(x => x.storageSeconds) ? 'Gemini 缓存存储费按保留时间和你填的存储价估算，留空时只估缓存创建用的输入费。' : '',
           '金额按你设的价格估算，实际扣费以中转站或官方后台的日志为准。'].filter(Boolean).join('\n'))
     );
     s.foot.append(el('button', { class: 'btn ghost', onclick: () => { s.close(); go('settings'); } }, '去设价格 / 提醒线'), el('button', { class: 'btn primary', onclick: () => s.close() }, '关闭'));

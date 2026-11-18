@@ -9,6 +9,7 @@
 import { resolveVertex, parseServiceAccount, vertexBaseUrl, VERTEX_MODELS } from './vertex.js';
 import { getRelay, relayFetch, RelayError } from './relay.js';
 import { inspectReasoning, stripReasoning, extractFinalOutput, FINAL_BOUNDARY_GUIDE } from './reasoning.js';
+import { acquireVertexCache, vertexCacheTarget, forgetVertexCache, isCacheRejection } from './prompt-cache.js';
 
 export const FORMAT_LABEL = { auto: '自动识别', openai: 'OpenAI 兼容', anthropic: 'Claude 原生', vertex: 'Google Vertex AI（服务账号 JSON）' };
 
@@ -238,7 +239,7 @@ function parseNonStream(format, j) {
   const ch = j.choices?.[0];
   const internal=['analysis','reasoning','thinking'].includes(ch?.message?.channel);
   const text = internal?'':partsText(ch?.message?.content);
-  return { text, finish: ch?.finish_reason, usage: j.usage || null, thinking: internal || !!(ch?.message?.reasoning_content || ch?.message?.reasoning) };
+  return { text, finish: ch?.finish_reason, usage: j.usage || j.usageMetadata || null, thinking: internal || !!(ch?.message?.reasoning_content || ch?.message?.reasoning) };
 }
 
 // ───────────── 发请求 ─────────────
@@ -276,8 +277,15 @@ export async function streamChat(conn, opts = {}) {
     if(text!==visible){const delta=text.slice(visible.length);visible=text;opts.onText?.(delta,visible);}
   };
   try {
-    const system=opts.outputBoundary?[opts.system,FINAL_BOUNDARY_GUIDE].filter(Boolean).join('\n\n'):opts.system;
-    const result=await streamChatRaw(conn,{...opts,system,onText:(_delta,full)=>{received=true;publish(full,true);},onThinking:thinkingOnce});
+    let cachePrefix = opts.cachePrefix && opts.system?.startsWith(opts.cachePrefix) ? opts.cachePrefix : '';
+    let system = opts.system;
+    if (opts.outputBoundary) {
+      if (cachePrefix) {
+        system = [FINAL_BOUNDARY_GUIDE, system].join('\n\n');
+        cachePrefix = [FINAL_BOUNDARY_GUIDE, cachePrefix].join('\n\n');
+      } else system = [system, FINAL_BOUNDARY_GUIDE].filter(Boolean).join('\n\n');
+    }
+    const result=await streamChatRaw(conn,{...opts,system,cachePrefix,onText:(_delta,full)=>{received=true;publish(full,true);},onThinking:thinkingOnce});
     publish(result.text,false);
     if(opts.outputBoundary&&!extractFinalOutput(rawOutput).found){const e=new ApiError('output_format','接口没有返回可识别的最终正文',{hint:'已拦住未分隔的内容，不会自动重试。可以展开“原始信息”查看本次返回，或重新生成一个版本。',detail:rawOutput});e.usage=result.usage;throw e;}
     if(!visible.trim())throw emptyError(result.finish,thinking);
@@ -287,7 +295,8 @@ export async function streamChat(conn, opts = {}) {
     throw e;
   }
 }
-async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000 }) {
+async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000, cachePrefix = '', cacheScope = '', onCache = () => {} }) {
+  const vertex = conn?.format === 'vertex';
   if (!resumeJob) { checkConn(conn); conn = await effectiveConn(conn); }
   const format = guessFormat(conn);
   const url = resumeJob ? '' : normalizeUrl(format, conn.baseUrl);
@@ -296,6 +305,39 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, o
   const ctrl = linkAbort(signal);
   const config = resumeJob || (conn.viaRelay && !direct) ? await getRelay() : null;
   const viaRelay = !!resumeJob || !!(config?.on && conn.viaRelay && !direct);
+  const request = (target, init, relayOptions = {}) => viaRelay
+    ? relayFetch(target, init, { config, ...relayOptions }) : fetch(target, init);
+  let useBody = body;
+  let vertexCache = null;
+  let cacheMode = '';
+  if (!resumeJob && cachePrefix) {
+    const suffix = system.slice(cachePrefix.length).trim();
+    const target = vertex ? vertexCacheTarget(url, conn.model) : null;
+    if (target) {
+      cacheMode = 'vertex-implicit';
+      if (conn.promptCache === true) {
+        const acquired = await acquireVertexCache(target, {
+          prefix: cachePrefix, scope: cacheScope, signal: ctrl.signal,
+          request: (endpoint, init) => request(endpoint, { ...init, headers: headersFor(format, conn, endpoint) }),
+        }).catch(() => null);
+        vertexCache = acquired?.cache;
+        if (acquired?.created) onCache({ created: acquired.created });
+        if (vertexCache) {
+          useBody = { ...body,
+            messages: tidyMessages([...(suffix ? [{ role: 'user', content: suffix }] : []), ...body.messages.slice(1)]),
+            extra_body: { google: { cached_content: vertexCache.name } },
+          };
+          cacheMode = 'vertex-explicit';
+        }
+      }
+    } else if (conn.promptCache === true && format === 'anthropic' && isOfficialAnthropic(url) &&
+        /^claude-(?:3-(?:haiku|sonnet|opus)|(?:haiku|sonnet|opus|fable|mythos)-[345])(?:-|\.|$)/.test(conn.model)) {
+      useBody = { ...body, system: [{ type: 'text', text: cachePrefix, cache_control: { type: 'ephemeral' } },
+        ...(suffix ? [{ type: 'text', text: suffix }] : [])] };
+      cacheMode = 'claude';
+    }
+    if (cacheMode) onCache({ mode: cacheMode });
+  }
   let timer = null;
   let timedOut = false;
   const arm = (ms) => { clearTimeout(timer); timer = setTimeout(() => { timedOut = true; ctrl.abort('idle'); }, ms); };
@@ -312,8 +354,17 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, o
   arm(firstByteMs);
   let res;
   try {
-    const init = { method: 'POST', headers: headersFor(format, conn, url), body: JSON.stringify(body), signal: ctrl.signal };
-    res = viaRelay ? await relayFetch(url, init, { config, onJob, resumeJob, relayServer }) : await fetch(url, init);
+    const send = b => request(url, { method: 'POST', headers: headersFor(format, conn, url), body: JSON.stringify(b), signal: ctrl.signal }, { onJob, resumeJob, relayServer });
+    if (ctrl.signal.aborted) throw abortedErr();
+    res = await send(useBody);
+    if (useBody !== body && [400, 403, 404].includes(res.status)) {
+      const raw = await res.text().catch(() => '');
+      if (!isCacheRejection(res.status, raw)) throw httpError(res.status, raw, url);
+      if (vertexCache) forgetVertexCache(vertexCache);
+      onCache({ mode: vertexCache ? 'vertex-implicit' : '' });
+      arm(firstByteMs);
+      res = await send(body);
+    }
   } catch (e) {
     clearTimeout(timer);
     if (ctrl.signal.aborted) throw abortedErr();
@@ -383,7 +434,7 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, o
           if (internal || delta.reasoning_content || delta.reasoning) { sawThinking = true; onThinking(); }
           if (ch.finish_reason) finish = ch.finish_reason;
         }
-        if (j.usage) usage = j.usage;
+        if (j.usage || j.usageMetadata) usage = j.usage || j.usageMetadata;
       };
       for (;;) {
         const { value, done } = await reader.read();
@@ -432,6 +483,7 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, o
     flagged: /content_filter|refusal|safety/i.test(f),
   };
 }
+
 
 /** 自动重试：只对“还没收到任何正文”的网络/限流/服务端错误重试一次 */
 export async function streamWithRetry(conn, opts, { retries = 1, onRetry = () => {}, onConnPatch = () => {} } = {}) {

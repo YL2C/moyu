@@ -78,13 +78,18 @@ const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boo
 const asList = (t) => lines(t).map((l) => (/^[-*•·]/.test(l) ? l.replace(/^[-*•·]\s*/, '- ') : '- ' + l)).join('\n');
 
 /** 主角（玩家扮演的“你”）：名字、性别、外貌身份等。番外换成第三人称时最容易写错性别，所以每处都带上 */
-export function protagonistText(story, path = []) {
+function protagonistProgress(story, path) {
+  return Object.entries(protagonistState(story?.protagonist || {}, path))
+    .map(([key, entry]) => `当前·${PROTAGONIST_FIELDS[key]}：${entry.value}`);
+}
+
+export function protagonistText(story, path = [], { withProgress = true } = {}) {
   const p = story?.protagonist || {};
   const lines = [
     p.name?.trim() ? `名字：${p.name.trim()}` : '',
     p.gender?.trim() ? `性别：${p.gender.trim()}${/女/.test(p.gender) ? '（用“她”）' : /男/.test(p.gender) ? '（用“他”）' : ''}` : '',
     p.note?.trim() ? p.note.trim() : '',
-    ...Object.entries(protagonistState(p, path)).map(([key, entry]) => `当前·${PROTAGONIST_FIELDS[key]}：${entry.value}`),
+    ...(withProgress ? protagonistProgress(story, path) : []),
   ].filter(Boolean);
   if (!lines.length) return '';
   return '【主角（玩家扮演的“你”）】\n' + lines.join('\n') + '\n写到主角时，性别、称呼都按这里来，第三人称视角也一样。';
@@ -199,20 +204,30 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
   add('开头', ooc ? '你现在是场外讨论搭档。只讨论设定、人设、剧情方案或更正。' : '你正在主持一场文字互动小说。', 'base');
   add('规则（这个故事）', story.rules?.trim() ? '【规则】\n' + story.rules.trim() : '', 'rules');
   add('全局备忘', globalMemo?.trim() ? '【全局备忘（所有故事通用）】\n' + globalMemo.trim() : '', 'rules');
-  if (!ooc) for (const m of sentModules) add(`规则模块 · ${m.name}${m.mode === 'manual' ? '（情境）' : m.mode === 'keyword' ? '（关键词）' : ''}`, `【规则模块·${m.name}】\n${m.text.trim()}`, 'module');
+  const dynamicModule = m => m.mode === 'manual' || m.mode === 'keyword';
+  const addModule = m => add(`规则模块 · ${m.name}${m.mode === 'manual' ? '（情境）' : m.mode === 'keyword' ? '（关键词）' : ''}`, `【规则模块·${m.name}】\n${m.text.trim()}`, 'module');
+  if (!ooc) sentModules.filter(m => !dynamicModule(m)).forEach(addModule);
   add('世界与角色设定', story.world?.trim() ? '【世界与角色设定】\n' + story.world.trim() : '', 'world');
-  add('主角', protagonistText(story, path), 'card');
+  if (!ooc) {
+    add('玩家输入约定', INPUT_CONVENTION, 'rules');
+    add('输出格式', '【输出格式】\n' + formatContract({ danmu: story.danmu !== false, options: story.options !== false }), 'format');
+  }
+  add('主角', protagonistText(story, path, { withProgress: ooc }), 'card');
   const coreFirst = [...sentCards].sort((a, b) => (b.core ? 1 : 0) - (a.core ? 1 : 0));
-  for (const c of coreFirst) add(`角色卡 · ${c.name}${c.core ? '（常驻）' : '（被提到）'}`, cardText(applyCardState(c, cp?.mem)), 'card');
+  const addCard = c => add(`角色卡 · ${c.name}${c.core ? '（常驻）' : '（被提到）'}`, cardText(applyCardState(c, cp?.mem)), 'card');
+  coreFirst.filter(c => ooc || c.core).forEach(addCard);
   if (cp) add(`前情档案 · 整理到第 ${cp.mem.upTo} 章`, memoryText(cp.mem), 'memory');
+  const prefix = ooc ? '' : parts.map(p => p.text).join('\n\n');
   if (ooc) {
     const chapter = path.findLast(n => n.role === 'assistant' && n.kind !== 'ooc' && n.text?.trim());
     const options = chapter && story.options !== false ? optionsForReply(chapter).slice(0, 4) : [];
     if (options.length) add('当前候选动作', '【供讨论的候选动作】\n' + options.map((text, i) => 'ABCD'[i] + '. ' + text).join('\n'), 'world');
     add('场外模式', '【场外模式】以上剧情和设定仅供讨论。即使玩家说继续或提出剧情动作，也只讨论这项要求，等待玩家从界面返回正文。不要扮演角色、续写、写章节标题、弹幕或选项。讨论里的提案尚未发生。', 'format');
   } else {
-    add('玩家输入约定', INPUT_CONVENTION, 'rules');
-    add('输出格式', '【输出格式】\n' + formatContract({ danmu: story.danmu !== false, options: story.options !== false }), 'format');
+    const progress = protagonistProgress(story, path);
+    if (progress.length) add('主角当前状态', '【主角当前状态】\n' + progress.join('\n'), 'card');
+    coreFirst.filter(c => !c.core).forEach(addCard);
+    sentModules.filter(dynamicModule).forEach(addModule);
   }
   const system = parts.map((p) => p.text).join('\n\n');
 
@@ -260,6 +275,7 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
   return {
     system,
     messages,
+    ...(prefix ? { cachePrefix: prefix } : {}),
     info: {
       systemChars: system.length, historyChars, totalChars: system.length + historyChars, trimmed, count: messages.length,
       parts: parts.map((p) => ({ label: p.label, chars: p.text.length, text: p.text, kind: p.kind })),

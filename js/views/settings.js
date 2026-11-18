@@ -308,9 +308,13 @@ export async function render(root, { section }) {
     const temp = el('input', { type: 'number', min: '0', max: '2', step: '0.05', placeholder: '留空' }); temp.value = c.temperature ?? '';
     const streamSw = el('input', { type: 'checkbox' }); streamSw.checked = c.stream !== false;
     const viaRelay = el('input', { type: 'checkbox' }); viaRelay.checked = !!c.viaRelay;
+    const promptCache = el('input', { type: 'checkbox', 'aria-label': '正文提示缓存' }); promptCache.checked = c.promptCache === true;
     const priceIn = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '不填' }); priceIn.value = c.priceIn ?? '';
     const priceOut = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '不填' }); priceOut.value = c.priceOut ?? '';
     const priceCache = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '同输入价' }); priceCache.value = c.priceCache ?? '';
+    const priceCacheWrite = el('input', { type: 'number', min: '0', step: 'any', placeholder: '同输入价' }); priceCacheWrite.value = c.priceCacheWrite ?? '';
+    const priceCacheStorage = el('input', { type: 'number', min: '0', step: 'any', placeholder: '不填写则不估算' }); priceCacheStorage.value = c.priceCacheStorage ?? '';
+    const cachePriceField = el('div', { class: 'field' });
     const currency = el('select'); currency.append(el('option', { value: 'CNY' }, '人民币 ¥'), el('option', { value: 'USD' }, '美元 $')); currency.value = c.currency || 'CNY';
     const perCall = el('input', { type: 'number', min: '0', step: '0.001', placeholder: '例：0.05' }); perCall.value = c.pricePerCall ?? '';
     // 计价方式：按次 / 按 token / 不算钱（以前填过 token 单价的默认按 token）
@@ -352,6 +356,8 @@ export async function render(root, { section }) {
     regionField.append(vertexUrl);
     const showFmt = () => {
       const v = isV();
+      cachePriceField.replaceChildren(el('label', { text: v ? '缓存存储价（每百万 token 每小时）' : '缓存写入价（每百万 token）' }), v ? priceCacheStorage : priceCacheWrite);
+      cachePriceField.hidden = !v && fmt.value !== 'anthropic';
       baseField.style.display = keyField.style.display = v ? 'none' : '';
       saField.style.display = regionField.style.display = v ? '' : 'none';
       model.placeholder = v ? '例：gemini-3.8-flash' : '例：claude-sonnet-4-6、deepseek-chat';
@@ -364,9 +370,12 @@ export async function render(root, { section }) {
       region: region.value.trim() || 'global',
       model: model.value.trim(), maxTokens: Number(maxT.value) || 8000, mt8000: true, temperature: temp.value === '' ? '' : Number(temp.value),
       stream: streamSw.checked, viaRelay: viaRelay.checked,
+      promptCache: promptCache.checked,
       priceIn: priceIn.value === '' ? '' : Number(priceIn.value),
       priceOut: priceOut.value === '' ? '' : Number(priceOut.value),
       priceCache: priceCache.value === '' ? '' : Number(priceCache.value),
+      priceCacheWrite: priceCacheWrite.value === '' ? '' : Number(priceCacheWrite.value),
+      priceCacheStorage: priceCacheStorage.value === '' ? '' : Number(priceCacheStorage.value),
       currency: currency.value,
       priceMode: pMode,
       pricePerCall: perCall.value === '' ? '' : Number(perCall.value),
@@ -428,7 +437,7 @@ export async function render(root, { section }) {
         });
         if (r.patch) Object.assign(c, r.patch);
         if (r.ok && r.format && fmt.value === 'auto') {
-          fmt.value = r.format; refreshUrl();
+          fmt.value = r.format; showFmt(); refreshUrl();
           log.append(el('div', { class: 's ok', text: `已识别为「${FORMAT_LABEL[r.format]}」格式，保存后生效。` }));
         }
         if (r.models?.length) setFetched(r.models);
@@ -462,12 +471,14 @@ export async function render(root, { section }) {
       (tokenBox.append(el('div', { class: 'row', style: { alignItems: 'flex-start', flexWrap: 'nowrap' } },
         el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '输入价' }), priceIn),
         el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '输出价' }), priceOut),
-        el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '缓存命中价' }), priceCache))), tokenBox),
+        el('div', { class: 'field', style: { flex: 1 } }, el('label', { text: '缓存命中价' }), priceCache)), cachePriceField), tokenBox),
       el('div', { class: 'field' }, el('label', { text: '货币' }), currency),
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '流式输出', el('small', { text: '边写边显示。测试提示流式有问题时再关掉。' })),
         el('label', { class: 'switch' }, streamSw, el('span'))),
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '经服务器转发', relayWarning),
         el('label', { class: 'switch' }, viaRelay, el('span'))),
+      el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '正文提示缓存', el('small', { text: '适用于官方 Claude 和支持显式缓存的 Vertex Gemini。Google 会把固定前缀保存约 5 分钟，并可能收取存储费。' })),
+        el('label', { class: 'switch' }, promptCache, el('span'))),
       el('div', { style: { marginTop: '12px' } }, testBtn),
       log
     );
