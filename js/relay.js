@@ -1,6 +1,7 @@
 import { db } from './db.js';
 
 const HINT = '检查设置里的服务器地址和口令；也可以在连接里关掉“经服务器转发”改直连。';
+const EXPIRED_HINT = '转发结果最多保留 30 分钟，缓存满时旧结果可能提前清理。已收到的文字已保留，可以续写或重新生成。';
 export class RelayError extends Error {
   constructor(kind, message, { hint = HINT, status = 0 } = {}) { super(message); this.kind = kind; this.hint = hint; this.status = status; }
 }
@@ -72,7 +73,7 @@ export async function relayFetch(url, init, { config, resumeJob = null, relaySer
   const cleanup = () => signal?.removeEventListener('abort', onAbort);
   const state = async () => {
     const res = await call(config, '/jobs/' + encodeURIComponent(id), { signal });
-    if (res.status === 404) throw new RelayError('relay_expired', '后台生成任务已过期或服务器已重启', { status: 404, hint: '服务器只保留完成后 30 分钟的结果。已收到的内容会保留，可以续写或重试。' });
+    if (res.status === 404) throw new RelayError('relay_expired', '后台生成任务已无法取回', { status: 404, hint: EXPIRED_HINT });
     if (!res.ok) throw new RelayError('relay_network', '暂时无法查询转发任务', { status: res.status });
     return res.json();
   };
@@ -82,6 +83,12 @@ export async function relayFetch(url, init, { config, resumeJob = null, relaySer
         body: JSON.stringify({ url, method: init.method, headers: Object.fromEntries(new Headers(init.headers)), body: init.body }), signal });
       if (!res.ok) {
         const error = await res.json().catch(() => ({}));
+        if (res.status === 503 && String(error.error || '').startsWith('转发任务已满')) {
+          throw new RelayError('relay_capacity', '转发服务器暂时接不了新任务', {
+            status: 503,
+            hint: '本次请求还未发给模型。等一些后台任务结束后再试，或在这条连接中关闭“经服务器转发”改为直连。',
+          });
+        }
         throw new RelayError('relay_job', error.error || '转发服务器没有接受任务', { status: res.status });
       }
       id = (await res.json()).id;
@@ -90,7 +97,7 @@ export async function relayFetch(url, init, { config, resumeJob = null, relaySer
       if (signal?.aborted) { onAbort(); signal.throwIfAborted(); }
     }
     const res = await call(config, '/jobs/' + encodeURIComponent(id) + '/stream?from=0', { signal });
-    if (res.status === 404) throw new RelayError('relay_expired', '后台生成任务已过期或服务器已重启', { status: 404, hint: '服务器只保留完成后 30 分钟的结果。已收到的内容会保留，可以续写或重试。' });
+    if (res.status === 404) throw new RelayError('relay_expired', '后台生成任务已无法取回', { status: 404, hint: EXPIRED_HINT });
     if (!res.ok) throw new RelayError('relay_network', '连不上转发服务器的生成任务', { status: res.status });
     if (res.headers.get('X-Job-State') === 'error') {
       const job = await state();

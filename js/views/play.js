@@ -1322,6 +1322,11 @@ export async function render(root, { id }) {
   };
   destroy.busy = () => jobs > 0;
   destroy.onIdle = (fn) => { idleCbs.add(fn); return () => idleCbs.delete(fn); };
+  // 转发任务切页时只脱离前台订阅，服务器继续生成；回来后按已保存编号接回。
+  destroy.background = () => {
+    const node = st.streaming && nodes.get(st.streaming.id);
+    if (node?.relayJob && !st.streaming.ctrl.signal.aborted) st.streaming.ctrl.abort('leave');
+  };
   // 从后台切回来：连接、模块可能在设置里改过，重新拿一下；别处改过的章节重新画
   destroy.show = async () => {
     try { [st.packs, st.modules] = await Promise.all([getPacks(), getModules()]); } catch {}

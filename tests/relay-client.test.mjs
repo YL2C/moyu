@@ -91,6 +91,21 @@ test('创建任务时网络不确定，不自动重发导致重复调用', async
   assert.equal(requests, 1);
 });
 
+test('转发任务满时说明请求尚未发给模型，不自动重发或改走直连', async (t) => {
+  const requests = [];
+  setup(t, async (url) => {
+    requests.push(url);
+    return response(JSON.stringify({ error: '转发任务已满，请稍后再试' }), 503);
+  });
+  await assert.rejects(streamWithRetry(conn, { messages: [] }), (error) => {
+    assert.equal(error.kind, 'relay_capacity');
+    assert.equal(error.status, 503);
+    assert.match(error.hint, /本次请求还未发给模型/);
+    return true;
+  });
+  assert.deepEqual(requests, [config.url + '/jobs']);
+});
+
 test('任务创建响应损坏时也不自动重复创建', async (t) => {
   let requests = 0;
   setup(t, async () => { requests++; return response('{"id":'); });

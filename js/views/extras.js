@@ -83,7 +83,8 @@ async function renderList(root, story, nodes) {
     const v = curVersion(x);
     const first = v?.text ? (extraBlocks(v.text).blocks[0] || '') : '';
     return el('div', { class: 'card story-card', onclick: () => go(`extra/${encodeURIComponent(story.id)}/${encodeURIComponent(x.id)}`) },
-      el('div', { class: 't' }, el('span', { text: extraTitle(x) }), (x.versions?.length || 0) > 1 ? el('span', { class: 'badge', text: `${x.versions.length} 个版本` }) : null),
+      el('div', { class: 't' }, el('span', { text: extraTitle(x) }),
+        v?.relayJob ? el('span', { class: 'badge', text: '后台生成中' }) : (x.versions?.length || 0) > 1 ? el('span', { class: 'badge', text: `${x.versions.length} 个版本` }) : null),
       el('div', { class: 'm', text: metaLine(x) }),
       first ? el('div', { class: 'm clamp', style: { color: 'var(--text3)' }, text: first.replace(/\s+/g, ' ').slice(0, 80) }) : null,
       el('div', { class: 'd', text: ago(x.updatedAt) }));
@@ -551,6 +552,11 @@ async function renderReader(root, story, nodes, extraId) {
   const destroy = () => { destroyed = true; unwatch(); clearTimeout(relayTimer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('online', onOnline); if (st.streaming) st.streaming.ctrl.abort('leave'); };
   destroy.busy = () => jobs > 0;
   destroy.onIdle = (fn) => { idleCbs.add(fn); return () => idleCbs.delete(fn); };
+  // 只有已经拿到服务器任务编号的请求才能安全脱离页面；直连请求保持原来的驻留逻辑。
+  destroy.background = () => {
+    const live = st.streaming?.version;
+    if (live?.relayJob && !st.streaming.ctrl.signal.aborted) st.streaming.ctrl.abort('leave');
+  };
   destroy.show = () => { draw(); reconnect(); };
   return destroy;
 }

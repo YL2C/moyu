@@ -433,9 +433,11 @@ test('番外正在生成时离开再重进保留同一版本；主动停止只�
   let dispose=await extras.render(root,{id:story.id,extraId:'relay-extra'});
   try{
     await wait(()=>root.textContent.includes('已经收到的片段'));
-    dispose();await wait(()=>!dispose.busy());
+    assert.equal(typeof dispose.background,'function');
+    dispose.background();await wait(()=>!dispose.busy());
     assert.equal(calls.filter(c=>c.method==='DELETE').length,0);
     assert.equal((await db.get('extras','relay-extra')).versions[0].relayJob,'extra-task');
+    dispose();
     root.replaceChildren();dispose=await extras.render(root,{id:story.id,extraId:'relay-extra'});
     await wait(()=>root.textContent.includes('接回后内容'));
     button('停止').click();await wait(()=>!dispose.busy());

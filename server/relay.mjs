@@ -7,7 +7,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 const denied = new BlockList();
 for (const [ip, mask] of [
   ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
@@ -140,6 +140,14 @@ export function createRelayServer({
       jobs.delete(id);
     }
   };
+  const oldestCachedJob = () => {
+    let oldest = null;
+    for (const job of jobs.values()) {
+      if (job.endedAt == null || job.listeners.size) continue;
+      if (!oldest || job.endedAt < oldest.endedAt) oldest = job;
+    }
+    return oldest;
+  };
   const gc = setInterval(sweep, 60_000); gc.unref();
   const json = (res, status, data) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data));
@@ -161,7 +169,7 @@ export function createRelayServer({
     try {
       sweep();
       if (req.method === 'POST' && path.pathname === '/jobs') {
-        if (jobs.size >= maxJobs) throw problem(503, '转发任务已满，请稍后再试');
+        if (jobs.size >= maxJobs && !oldestCachedJob()) throw problem(503, '转发任务已满，请稍后再试');
         if (Number(req.headers['content-length']) > maxBody) throw problem(413, '请求超过 2 MB');
         const buffers = []; let size = 0;
         for await (const data of req) {
@@ -174,7 +182,12 @@ export function createRelayServer({
         if (!input || input.method !== 'POST' || typeof input.body !== 'string') throw problem(400, '只接受 POST 和字符串 body');
         const headers = requestHeaders(input.headers);
         const target = await checkedTarget(input.url, lookup);
-        if (jobs.size >= maxJobs) throw problem(503, '转发任务已满，请稍后再试');
+        if (jobs.size >= maxJobs) {
+          // 新请求校验通过后才腾位置；正在生成或仍有客户端读取的任务不清理。
+          const cached = oldestCachedJob();
+          if (!cached) throw problem(503, '转发任务已满，请稍后再试');
+          jobs.delete(cached.id);
+        }
         const job = { id: randomUUID(), state: 'running', upstreamStatus: null, contentType: '', chunks: [], bytes: 0,
           createdAt: now(), endedAt: null, error: null, abort: new AbortController(), listeners: new Set(), host: target.url.hostname };
         job.ready = new Promise((resolve) => { job.readyResolve = resolve; });

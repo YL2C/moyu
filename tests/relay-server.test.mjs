@@ -112,6 +112,29 @@ test('限制请求、返回大小、任务数及完成后的保留时间', async
   time = 100; assert.equal((await req('/jobs/' + id)).status, 404);
 });
 
+test('缓存占满时清理最早结束的任务，保留新结果和正在生成的任务', async (t) => {
+  let time = 0;
+  const { create, req, calls } = await fixture(t, { maxJobs: 3, now: () => time });
+  const active = await create();
+  const oldest = await create();
+  const recent = await create();
+  calls[1].stream.end('旧结果');
+  assert.equal(await (await req('/jobs/' + oldest + '/stream')).text(), '旧结果');
+  time = 1;
+  calls[2].stream.end('新结果');
+  assert.equal(await (await req('/jobs/' + recent + '/stream')).text(), '新结果');
+
+  const invalid = await req('/jobs', { method: 'POST', body: '{}' });
+  assert.equal(invalid.status, 400);
+  assert.equal((await req('/jobs/' + oldest)).status, 200);
+  const next = await create();
+
+  assert.equal((await req('/jobs/' + oldest)).status, 404);
+  assert.equal((await (await req('/jobs/' + active)).json()).state, 'running');
+  assert.equal((await (await req('/jobs/' + next)).json()).state, 'running');
+  assert.equal(await (await req('/jobs/' + recent + '/stream')).text(), '新结果');
+});
+
 test('from 范围校验，拒绝重定向和敏感的代理请求头', async (t) => {
   const { create, req, calls } = await fixture(t);
   assert.equal((await req('/jobs', { method: 'POST', body: JSON.stringify({ ...payload, headers: { Host: 'localhost' } }) })).status, 400);

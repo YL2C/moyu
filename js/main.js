@@ -36,6 +36,9 @@ function retire(entry) {
       if (parked.get(entry.key) === entry) { parked.delete(entry.key); dispose(entry); }
       if (current) placeTabs(current.name);
     });
+    // 转发任务已经保存任务编号后，切页只断开当前页面的读取连接。
+    // 上游仍在服务器继续生成；回到原页后按编号重放，避免移动端掐断隐藏页长连接。
+    try { api.background?.(); } catch {}
     return;
   }
   dispose(entry);
