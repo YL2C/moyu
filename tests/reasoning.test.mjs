@@ -111,6 +111,31 @@ test('没有正文标记时仅提示异常并保留原始返回，不自动重�
   assert.equal(calls,1);assert.equal(count,0);
 });
 
+test('完整的无标记章节在流结束后入档，思考和供应商拦截保持隔离', async t => {
+  const chapter = '# 纸上的地址\n\n你拿起信封，窗外的雨声慢慢盖过了脚步声。\n\n一盏远处的灯亮起来，映出街角那扇熟悉的绿门。';
+  let ended = false;
+  let calls = 0;
+  mock(t, async () => {
+    calls++;
+    if (calls > 1) return new Response(JSON.stringify({ choices: [{ message: { content: chapter }, finish_reason: 'content_filter' }] }), { headers: { 'Content-Type': 'application/json' } });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(events(['<think>HIDDEN</think>', chapter])));
+      },
+      pull(controller) { ended = true; controller.close(); },
+    });
+    return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+  });
+  const seen = [];
+  const result = await streamChat(conn, { outputBoundary: true, onText: (_, full) => { assert.ok(ended); seen.push(full); } });
+  assert.equal(result.text, chapter);
+  assert.deepEqual(seen, [chapter]);
+  await assert.rejects(streamChat(conn, { outputBoundary: true }), e => e.kind === 'blocked' && !e.detail.includes(chapter));
+  const { extractUnmarkedStory } = await import('../js/reasoning.js');
+  assert.equal(extractUnmarkedStory(chapter.replace('纸上的地址', '写作计划')), '');
+  assert.equal(extractUnmarkedStory('先分析一下。\n\n' + chapter), '');
+});
+
 test('等待正文时发生网络错误也不能通过partial泄漏未标记前缀',async t=>{
   let sent=false;mock(t,async()=>new Response(new ReadableStream({pull(c){if(!sent){sent=true;c.enqueue(new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:'Unmarked planning text. 临时标记'}}]})+'\n\n'));}else c.error(new Error('drop'));}}),{headers:{'Content-Type':'text/event-stream'}}));
   await assert.rejects(streamChat(conn,{outputBoundary:true}),e=>e.kind==='network'&&e.partial==='');

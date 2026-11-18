@@ -807,15 +807,57 @@ test('已存档思考标签在正文和番外原文/排版阅读中隐藏，原�
   try{assert.ok(!root.textContent.includes('EXTRA_SECRET'));assert.ok(root.querySelector('.ex-bubble'));button('原文').click();assert.ok(!root.querySelector('.extra-raw').textContent.includes('EXTRA_SECRET'));assert.ok((await db.get('extras','tagged-extra')).versions[0].text.includes('EXTRA_SECRET'));}finally{end();}
 });
 
-test('实际游玩缺少正文边界时不写入剧情或后续上下文，原始返回仅供主动展开',async()=>{
+test('未标记的回复在手动确认前不入档，确认后接回原章节，无重复调用或记账',async()=>{
   const {story}=await seedStory();const raw="I'm drafting the next scene.\n临时标记";let calls=0;
   globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({choices:[{message:{content:raw},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:15}}),{headers:{'Content-Type':'application/json'}});};
   const dispose=await play.render(root,{id:story.id});
   try{root.querySelector('.options [data-choice]').click();button('发送').click();await wait(()=>!dispose.busy()&&calls===1);
     const updated=await db.get('stories',story.id);const n=await db.get('nodes',updated.headId);
-    assert.equal(n.text,'');assert.equal(n.error.kind,'output_format');assert.equal(n.error.detail,raw);assert.ok(root.textContent.includes('接口没有返回可识别'));
+    assert.equal(n.text,'');assert.equal(n.error.kind,'output_format');assert.equal(n.error.detail,raw);assert.ok(root.textContent.includes('回复缺少正文标记'));
     assert.ok(!root.querySelector('.gm').textContent.includes('临时标记'));
-    const {buildContext}=await import('../js/prompt.js');const ctx=buildContext(updated,[n]);assert.ok(!ctx.messages.some(m=>m.content.includes('drafting')));
+    const ctx=buildContext(updated,[n]);assert.ok(!ctx.messages.some(m=>m.content.includes('drafting')));
+    button('接回本次回复',root).click();
+    let preview=document.querySelector('[role=dialog]');
+    assert.equal(preview.querySelector('textarea').value,raw);
+    button('取消',preview).click();
+    assert.equal((await db.get('nodes',n.id)).text,'');
+    button('接回本次回复',root).click();
+    preview=document.querySelector('[role=dialog]');
+    const recovered='# 找到地址\n\n你展开了旧地图。';
+    preview.querySelector('textarea').value=recovered;
+    const {getUsageLog}=await import('../js/cost.js');
+    const usageBefore=await getUsageLog(story.id);
+    button('保存为本章',preview).click();
+    await wait(()=>!dispose.busy()&&root.textContent.includes('你展开了旧地图'));
+    const saved=await db.get('nodes',n.id);
+    assert.equal(saved.text,recovered);assert.equal(saved.status,'done');assert.equal(saved.error,null);
+    assert.equal((await db.get('stories',story.id)).lastTitle,'找到地址');
+    assert.ok(buildContext(updated,[saved]).messages.some(m=>m.content.includes('你展开了旧地图')));
+    assert.deepEqual(await getUsageLog(story.id),usageBefore);
+    assert.equal(calls,1);
+  }finally{dispose();}
+});
+
+test('旧版被误拦的番外可以接回到原版本，续写前文与截断状态保留',async()=>{
+  const {story}=await seedStory();
+  const text='# 楼下\n\n你把钥匙留在门口。';
+  await db.put('extras',{id:'recover-extra',storyId:story.id,tplName:'番外',cur:0,versions:[
+    {id:'v1',text,status:'partial',error:{kind:'output_format',detail:'<think>HIDDEN</think>楼道的灯忽然亮了。',finish:'length'}},
+    {id:'v2',text:'另一个版本',status:'done'}
+  ]});
+  const dispose=await extras.render(root,{id:story.id,extraId:'recover-extra'});
+  try{
+    button('接回本次回复',root).click();
+    const preview=document.querySelector('[role=dialog]');
+    assert.equal(preview.querySelector('textarea').value,'楼道的灯忽然亮了。');
+    button('保存到当前版本',preview).click();
+    await wait(()=>!dispose.busy()&&root.textContent.includes('楼道的灯忽然亮了。'));
+    const saved=await db.get('extras','recover-extra');
+    assert.equal(saved.versions[0].text,text+'\n\n楼道的灯忽然亮了。');
+    assert.equal(saved.versions[0].status,'partial');
+    assert.equal(saved.versions[0].error,null);
+    assert.equal(saved.versions[1].text,'另一个版本');
+    assert.equal(requests.length,0);
   }finally{dispose();}
 });
 

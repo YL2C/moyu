@@ -14,6 +14,28 @@ export function extractFinalOutput(value,{streaming=false}={}) {
   return {text:text.trim(),found:true};
 }
 
+const DRAFT_HEADING = /^(?:#{1,6}\s+)?(?:\[|【)?\s*(?:analysis|reasoning|thinking|(?:writing |story )?plan|outline|写作计划|写作思路|思考|推理|分析|自检|提纲|大纲)(?=\s*(?:[:：\]】]|$))/i;
+
+// A complete chapter can still be identified when a model follows the older Markdown
+// format. Inspect the whole reply after completion, never an in-progress prefix.
+export function extractUnmarkedStory(value) {
+  const text = String(value || '').trim().replace(/\r\n/g, '\n');
+  const firstBreak = text.indexOf('\n');
+  if (firstBreak < 0 || !/^#[ \t]+\S/.test(text)) return '';
+  if (text.split('\n').some(line => DRAFT_HEADING.test(line.trim()))) return '';
+  const body = text.slice(firstBreak + 1);
+  const prose = body.split(/\n\s*\n/).filter(block => {
+    const paragraph = block.trim();
+    return paragraph.length >= 16 && !/^(?:[#【\[>\x60]|[-*+]\s|\d+[.)、]\s*|[A-Z][.)、]\s*)/.test(paragraph)
+      && /[。！？.!?…][”’"'」』）)]*$/.test(paragraph);
+  });
+  return prose.length >= 2 ? text : '';
+}
+
+export function recoverableOutput(error) {
+  return error?.kind === 'output_format' ? stripReasoning(error.detail).trim() : '';
+}
+
 export function inspectReasoning(value, { streaming = false } = {}) {
   const source=String(value || '');
   const tags=/<\s*(\/?)\s*(think|thinking|analysis|reasoning)(?=[\s/>])[^>]*>/gi;

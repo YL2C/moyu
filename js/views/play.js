@@ -10,7 +10,7 @@ import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { archiveConn, DEFAULT_EVERY } from './memory.js';
 import { getPacks } from '../tavern.js';
 import { parseReply, paragraphs, optionsForReply, replyForContext } from '../parse.js';
-import { stripReasoning } from '../reasoning.js';
+import { recoverableOutput, stripReasoning } from '../reasoning.js';
 import { CHOICE_LABELS, expandOptionInput, choiceInput, toggleChoice } from '../personal.js';
 import { inlineText } from '../inline.js';
 import { openExportDialog } from '../exporter.js';
@@ -477,8 +477,10 @@ export async function render(root, { id }) {
       return tools;
     }
     const hasText = !!n.text?.trim();
+    const recoverable = recoverableOutput(n.error);
+    if (recoverable) tools.append(el('button', { class: 'btn small primary', onclick: () => recoverReply(n, recoverable) }, '接回本次回复'));
     if (!hasText && n.status === 'error') {
-      tools.append(el('button', { class: 'btn small primary', onclick: () => retry(n) }, '重试'));
+      tools.append(el('button', { class: 'btn small' + (recoverable ? '' : ' primary'), onclick: () => retry(n) }, '重试'));
     } else {
       tools.append(el('button', { class: 'btn small', onclick: () => regenerate(n) }, '重写这轮'));
       if (n.status === 'partial' || (n.error && hasText)) tools.append(el('button', { class: 'btn small primary', onclick: () => cont(n) }, '续写'));
@@ -495,6 +497,38 @@ export async function render(root, { id }) {
       }, metaText));
     }
     return tools;
+  }
+
+  async function recoverReply(n, value) {
+    const available = () => !destroyed && !jobs && !st.streaming && !st.sending && story.headId === n.id && !n.relayJob;
+    if (!available()) return;
+    const error = n.error;
+    const draft = await promptText({
+      title: '接回本次回复', value, focus: false, okText: '保存为本章',
+      hint: '核对并删去任何写作说明。保存后，这段文字会加入当前章节。',
+    });
+    if (draft == null || !available() || n.error !== error) return;
+    const accepted = stripReasoning(draft).trim();
+    if (!accepted) { toast('请保留要接回的正文'); return; }
+    const text = [n.text?.trimEnd(), accepted].filter(Boolean).join('\n\n');
+    const next = { ...n, text, status: /^(length|max_tokens)$/i.test(error.finish || '') ? 'partial' : 'done',
+      error: null, finish: error.finish || null, stopped: false, updatedAt: Date.now() };
+    jobs++;
+    try {
+      await db.put('nodes', next);
+      Object.assign(n, next);
+      const { title } = parseReply(text);
+      if (title) story.lastTitle = title;
+      story.chapters = chapterCount(headPath());
+      story.updatedAt = Date.now();
+      await saveStory();
+      if (!destroyed) toast('本次回复已接回');
+    } catch { toast('没能保存，可以再点一次接回'); }
+    finally {
+      jobs--;
+      if (!destroyed) renderFeed({ keepScroll: true });
+      if (!jobs) idleCbs.forEach((fn) => { try { fn(); } catch {} });
+    }
   }
 
   function renderFeed({ keepScroll = false, focusId = null } = {}) {
@@ -751,12 +785,12 @@ export async function render(root, { id }) {
       }
     } finally {
       document.removeEventListener('visibilitychange', onHide);
-      if (styleSent && a.text?.trim()) a.styleSent = styleSent;
+      if (styleSent && (a.text?.trim() || a.error?.kind === 'output_format')) a.styleSent = styleSent;
       if (st.pendingFrame) { cancelAnimationFrame(st.pendingFrame); st.pendingFrame = 0; }
       a.thinking = false;
       st.streaming = null;
       // 用量与花费：这一次请求写出了内容才记账
-      const outChars = Math.max(0, (a.text || '').length - base.length);
+      const outChars = Math.max(0, (a.text || '').length - base.length) + recoverableOutput(a.error).length;
       if (!pendingRelay && (outChars > 0 || usageRaw)) {
         const inChars = a.relayContext?.inChars ?? ctx.info.totalChars + (continueNode ? base.length : 0);
         const u = normalizeUsage(usageRaw, { inChars, outChars });

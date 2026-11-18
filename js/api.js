@@ -8,7 +8,7 @@
 
 import { resolveVertex, parseServiceAccount, vertexBaseUrl, VERTEX_MODELS } from './vertex.js';
 import { getRelay, relayFetch, RelayError } from './relay.js';
-import { inspectReasoning, stripReasoning, extractFinalOutput, FINAL_BOUNDARY_GUIDE } from './reasoning.js';
+import { inspectReasoning, stripReasoning, extractFinalOutput, extractUnmarkedStory, FINAL_BOUNDARY_GUIDE } from './reasoning.js';
 import { acquireVertexCache, vertexCacheTarget, forgetVertexCache, isCacheRejection } from './prompt-cache.js';
 
 export const FORMAT_LABEL = { auto: '自动识别', openai: 'OpenAI 兼容', anthropic: 'Claude 原生', vertex: 'Google Vertex AI（服务账号 JSON）' };
@@ -31,7 +31,8 @@ export class ApiError extends Error {
     this.partial = partial;
   }
   toJSON() {
-    return { kind: this.kind, message: this.message, hint: this.hint, status: this.status, detail: this.detail, url: this.url };
+    return { kind: this.kind, message: this.message, hint: this.hint, status: this.status, detail: this.detail, url: this.url,
+      ...(this.kind === 'output_format' && this.finish ? { finish: this.finish } : {}) };
   }
 }
 
@@ -209,10 +210,12 @@ function streamError(errObj, partial) {
   return new ApiError('server', '生成到一半出错了', { hint: '可以点“续写”接着写，或者重试。', detail: msg, partial });
 }
 
+const BLOCKED_FINISH = /content_filter|safety|blocked|prohibited/i;
+
 function emptyError(finish, sawThinking) {
   const f = String(finish || '');
   if (/refusal/i.test(f)) return new ApiError('refusal', '模型拒绝了这次请求', { hint: '这轮内容被模型拒绝了。可以换个说法、换个模型，或者重试。', detail: `结束原因：${f}` });
-  if (/content_filter|safety|blocked|prohibited/i.test(f)) return new ApiError('blocked', '内容被安全策略拦截', { hint: '这家接口拦下了这轮内容。可以换个说法或换个模型。', detail: `结束原因：${f}` });
+  if (BLOCKED_FINISH.test(f)) return new ApiError('blocked', '内容被安全策略拦截', { hint: '这家接口拦下了这轮内容。可以换个说法或换个模型。', detail: `结束原因：${f}` });
   if (/length|max_tokens/i.test(f) && sawThinking) return new ApiError('empty', '输出上限被思考过程用完了', { hint: '在连接设置里把“输出上限”调大（例如 8000 以上）。', detail: `结束原因：${f}` });
   if(sawThinking)return new ApiError('empty','模型只返回了思考内容，没有正文',{hint:'思考内容已隐藏。请检查接口的思考输出配置，或重新生成。',detail:f?`结束原因：${f}`:'没有收到最终回答'});
   return new ApiError('empty', '模型返回了空内容', {
@@ -268,13 +271,19 @@ function checkConn(conn) {
 export async function streamChat(conn, opts = {}) {
   let visible='',received=false,thinking=false,rawOutput='';
   const thinkingOnce=()=>{received=true;if(!thinking){thinking=true;opts.onThinking?.();}};
+  const publishText = (text) => {
+    if (text === visible) return;
+    const delta = text.slice(visible.length);
+    visible = text;
+    opts.onText?.(delta, visible);
+  };
   const publish=(full,streaming)=>{
     const cleaned=inspectReasoning(full,{streaming});
     rawOutput=cleaned.text;
     if(cleaned.hidden)thinkingOnce();
     const text=opts.outputBoundary?extractFinalOutput(cleaned.text,{streaming}).text:cleaned.text;
     if(opts.outputBoundary&&!text&&full)thinkingOnce();
-    if(text!==visible){const delta=text.slice(visible.length);visible=text;opts.onText?.(delta,visible);}
+    publishText(text);
   };
   try {
     let cachePrefix = opts.cachePrefix && opts.system?.startsWith(opts.cachePrefix) ? opts.cachePrefix : '';
@@ -287,7 +296,21 @@ export async function streamChat(conn, opts = {}) {
     }
     const result=await streamChatRaw(conn,{...opts,system,cachePrefix,onText:(_delta,full)=>{received=true;publish(full,true);},onThinking:thinkingOnce});
     publish(result.text,false);
-    if(opts.outputBoundary&&!extractFinalOutput(rawOutput).found){const e=new ApiError('output_format','接口没有返回可识别的最终正文',{hint:'已拦住未分隔的内容，不会自动重试。可以展开“原始信息”查看本次返回，或重新生成一个版本。',detail:rawOutput});e.usage=result.usage;throw e;}
+    if (opts.outputBoundary && !extractFinalOutput(rawOutput).found) {
+      const fallback = !result.flagged && !result.truncated ? extractUnmarkedStory(rawOutput) : '';
+      if (fallback) publishText(fallback);
+      else {
+        const error = result.flagged || !rawOutput.trim()
+          ? emptyError(result.finish, thinking)
+          : new ApiError('output_format', '回复缺少正文标记', {
+            hint: '模型返回了文字。你可以先核对内容，再决定是否接回本次回复，或者重新生成。',
+            detail: rawOutput,
+          });
+        error.usage = result.usage;
+        error.finish = result.finish;
+        throw error;
+      }
+    }
     if(!visible.trim())throw emptyError(result.finish,thinking);
     return {...result,text:visible};
   } catch(e) {
@@ -480,7 +503,7 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, o
     finish,
     usage,
     truncated: /^(length|max_tokens)$/i.test(f),
-    flagged: /content_filter|refusal|safety/i.test(f),
+    flagged: /refusal/i.test(f) || BLOCKED_FINISH.test(f),
   };
 }
 

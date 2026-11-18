@@ -1,6 +1,6 @@
 // 墨游 · 小工具
 
-export const APP_VERSION = '0.6.16-personal.13';
+export const APP_VERSION = '0.6.16-personal.14';
 
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -101,7 +101,7 @@ export function menu(title, items) {
 }
 
 /** 一行或多行文字输入，返回字符串（取消返回 null） */
-export function promptText({ title, value = '', placeholder = '', hint = '', okText = '确定', multiline = true }) {
+export function promptText({ title, value = '', placeholder = '', hint = '', okText = '确定', multiline = true, focus = true }) {
   return new Promise((resolve) => {
     let result = null;
     const s = sheet({ title, onClose: () => resolve(result) });
@@ -114,7 +114,7 @@ export function promptText({ title, value = '', placeholder = '', hint = '', okT
       el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'),
       el('button', { class: 'btn primary', onclick: () => { result = input.value; s.close(); } }, okText)
     );
-    setTimeout(() => input.focus(), 60);
+    if (focus) setTimeout(() => input.focus(), 60);
   });
 }
 

@@ -7,7 +7,7 @@ import { inlineText } from '../inline.js';
 import { streamWithRetry, ApiError, guessFormat } from '../api.js';
 import { extraConnection, connectionSelect, personPicker, companionPicker, castSummary } from '../extra-options.js';
 import { renderExtraLayout } from '../extra-layout.js';
-import { stripReasoning } from '../reasoning.js';
+import { recoverableOutput, stripReasoning } from '../reasoning.js';
 import { playbookOf, layoutOf, FIC_AXES } from '../extra-playbooks.js';
 import { cancelRelayJob } from '../relay.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage } from '../cost.js';
@@ -287,7 +287,7 @@ async function renderReader(root, story, nodes, extraId) {
     if (!live && v) {
       if (v.stopped && v.text?.trim()) content.append(el('div', { class: 'note', text: '已停止，这篇没写完。' }));
       else if (v.status === 'partial' && !v.error) content.append(el('div', { class: 'note', text: '达到输出上限，没写完。可以点“接着写”。' }));
-      if (v.error) content.append(errorBox(v.error));
+      if (v.error) content.append(errorBox(v));
     }
     const tools = el('div', { class: 'tools', style: { margin: '14px 0 30px' } });
     if (live) tools.append(el('button', { class: 'btn small danger', onclick: () => st.streaming?.ctrl.abort('user') }, '停止'));
@@ -326,11 +326,48 @@ async function renderReader(root, story, nodes, extraId) {
     if (keep) scroller.scrollTop = scroller.scrollHeight;
   }
 
-  function errorBox(err) {
+  function errorBox(v) {
+    const err = v.error;
     const box = el('div', { class: 'err' }, el('div', { class: 'h', text: '⚠ ' + (err.message || '出错了') }));
     if (err.hint) box.append(el('div', { class: 'hint', text: err.hint }));
+    const recoverable = recoverableOutput(err);
+    if (recoverable && !v.relayJob) {
+      const raw = el('details', {}, el('summary', { text: '原始信息' }), el('pre', { text: recoverable }));
+      box.append(el('div', { class: 'row' },
+        el('button', { class: 'btn small primary', onclick: () => recoverVersion(v, recoverable) }, '接回本次回复')),
+      raw);
+      return box;
+    }
     if (err.detail) box.append(el('pre', { text: [err.url, err.detail].filter(Boolean).join('\n') }));
     return box;
+  }
+
+  async function recoverVersion(v, value) {
+    const available = () => !destroyed && !jobs && !st.streaming && !pendingVersion() && curVersion(x) === v;
+    if (!available()) return;
+    const error = v.error;
+    const draft = await promptText({
+      title: '接回本次回复', value, focus: false, okText: '保存到当前版本',
+      hint: '核对并删去任何写作说明。保存后，这段文字会加入当前番外版本。',
+    });
+    if (draft == null || !available() || v.error !== error) return;
+    const accepted = stripReasoning(draft).trim();
+    if (!accepted) { toast('请保留要接回的正文'); return; }
+    const next = { ...v, text: [v.text?.trimEnd(), accepted].filter(Boolean).join('\n\n'),
+      status: /^(length|max_tokens)$/i.test(error.finish || '') ? 'partial' : 'done', error: null, stopped: false };
+    jobs++;
+    try {
+      const updatedAt = Date.now();
+      await db.put('extras', { ...x, updatedAt, versions: x.versions.map(version => version === v ? next : version) });
+      Object.assign(v, next);
+      x.updatedAt = updatedAt;
+      if (!destroyed) toast('本次回复已接回');
+    } catch { toast('没能保存，可以再点一次接回'); }
+    finally {
+      jobs--;
+      if (!destroyed) draw();
+      if (!jobs) idleCbs.forEach((fn) => { try { fn(); } catch {} });
+    }
   }
 
   async function chooseApi() {
@@ -480,7 +517,7 @@ async function renderReader(root, story, nodes, extraId) {
       if (st.frame) { cancelAnimationFrame(st.frame); st.frame = 0; }
       st.streaming = null;
       v.thinking = false;
-      const outChars = Math.max(0, (v.text || '').length - base.length);
+      const outChars = Math.max(0, (v.text || '').length - base.length) + recoverableOutput(v.error).length;
       if (!pendingRelay && (outChars > 0 || usageRaw)) {
         const u = normalizeUsage(usageRaw, { inChars: v.relayContext?.inChars ?? ctx.info.totalChars + base.length, outChars });
         const c = computeCost(u, conn);
