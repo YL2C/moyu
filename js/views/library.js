@@ -1,17 +1,66 @@
 // 墨游 · 故事列表
 
 import { db, exportStory } from '../db.js';
-import { el, ago, menu, saveFile, toast } from '../util.js';
+import { el, ago, menu, promptText, saveFile, toast, uid } from '../util.js';
 import { getConnections, go, getCurrentStory, setCurrentStory } from '../state.js';
 import { openExportDialog } from '../exporter.js';
 import { openStoryEditor } from './story-edit.js';
 
+const COPY_SETTINGS = [
+  'world', 'opening', 'rules', 'protagonist', 'cards', 'localModules', 'packs',
+  'modules', 'manualOn', 'stylePreset', 'styleSelections', 'options', 'danmu',
+  'connectionId', 'memConnId', 'memEvery', 'schema',
+];
+
+function restartCopy(source, title) {
+  const settings = structuredClone(Object.fromEntries(
+    COPY_SETTINGS.filter(key => Object.hasOwn(source, key)).map(key => [key, source[key]]),
+  ));
+  if (settings.protagonist) {
+    delete settings.protagonist.stateEntries;
+    delete settings.protagonist.updateUndo;
+  }
+  for (const card of settings.cards || []) {
+    if (card.auto) {
+      // Retain the character's description while clearing state from the old run.
+      delete card.auto;
+      delete card.now;
+      delete card.relation;
+      delete card.arc;
+    }
+  }
+  const now = Date.now();
+  return { ...settings, id: uid(), title, headId: null, chapters: 0, createdAt: now, updatedAt: now };
+}
+
 export async function render(root) {
   const [stories, conns] = await Promise.all([db.all('stories'), getConnections()]);
   stories.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  let copying = false;
 
   const list = el('div');
   const wrap = el('div', { class: 'wrap' });
+
+  async function duplicate(s) {
+    if (copying) return;
+    copying = true;
+    try {
+      const defaultTitle = (s.title || '未命名故事') + '（重开）';
+      const title = await promptText({
+        title: '复制故事并重新开局', value: defaultTitle, multiline: false, focus: false, okText: '复制并重开',
+        hint: '保留设定、角色卡和开场。章节、前情、番外与讨论留在原故事。',
+      });
+      if (title === null) return;
+      const source = await db.get('stories', s.id);
+      if (!source) { toast('原故事已不存在'); return; }
+      const copy = restartCopy(source, title.trim() || defaultTitle);
+      await db.put('stories', copy);
+      toast('已复制设定，可以开始新故事');
+      go('play/' + encodeURIComponent(copy.id));
+    } finally {
+      copying = false;
+    }
+  }
 
   if (!conns.length) {
     wrap.append(el('div', { class: 'card notice' },
@@ -45,12 +94,14 @@ export async function render(root) {
         const k = await menu(s.title, [
           { key: 'chars', label: '角色' },
           { key: 'edit', label: '世界设定与规则' },
+          { key: 'duplicate', label: '复制故事并重新开局' },
           { key: 'transcript', label: '导出游玩记录', hint: 'JSON 或纯文本；可选带弹幕、选项、番外' },
           { key: 'export', label: '备份这个故事', hint: '完整存档，可以传到别的设备或发给朋友再导回墨游（不含密钥）' },
           { key: 'del', label: '删除', danger: true },
         ]);
         if (k === 'edit') go(`story/${encodeURIComponent(s.id)}`);
         else if (k === 'chars') go(`chars/${encodeURIComponent(s.id)}`);
+        else if (k === 'duplicate') await duplicate(s).catch(() => toast('复制故事失败，请重试'));
         else if (k === 'transcript') openExportDialog(s.id, s.title);
         else if (k === 'export') {
           const data = await exportStory(s.id);

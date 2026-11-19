@@ -28,6 +28,7 @@ const settings = await import('../js/views/settings.js');
 const discussion = await import('../js/views/discuss.js');
 const chars = await import('../js/views/chars.js');
 const storyView = await import('../js/views/story.js');
+const libraryView = await import('../js/views/library.js');
 let requests = [], responses = [], root;
 const options = '\n\n【选项】\nA. 查看地图\nB. 收好信件\nC. 询问路人\nD. 留在原地';
 const wait = async fn => { for (let i=0;i<300;i++) { if(await fn()) return; await new Promise(r=>setTimeout(r,10)); } throw new Error('等待状态超时'); };
@@ -48,6 +49,67 @@ beforeEach(async () => {
   await db.kvSet('relay',{on:false});
   globalThis.fetch=async(url,init)=>{ requests.push({url,body:JSON.parse(init.body)}); let answer=responses.shift()??('# 新进展\n\n你收好了信。'+options);if(JSON.parse(init.body).messages[0]?.content.includes('【正文边界协议】'))answer='[MOYU_FINAL]\n'+answer+'\n[/MOYU_FINAL]';
     return new Response(JSON.stringify({choices:[{message:{content:answer},finish_reason:'stop'}],usage:{prompt_tokens:20,completion_tokens:20}}),{headers:{'Content-Type':'application/json'}}); };
+});
+
+test('故事列表可复制现有设定重新开局，剧情和分支与原故事隔离', async () => {
+  const {story}=await seedStory();
+  Object.assign(story,{
+    opening:'从旧火车站的清晨开场。', connectionId:'qa-conn', memConnId:'qa-conn', danmu:false, options:false,
+    chapters:1,lastTitle:'毕业之后',oocHandoff:{anchorId:'a1',text:'原故事讨论结论'},
+    modules:{'local-1':true,'global-1':false},manualOn:{'local-1':true},stylePreset:'pack-1',styleSelections:{'pack-1':['local-1']},
+    localModules:[{id:'local-1',name:'火车站',text:'保留老站钟。',mode:'manual',pack:'pack-1'}],
+    packs:[{id:'pack-1',cardIds:['npc-1']}],moduleDeleteUndo:{mods:[{id:'removed'}]},
+    cards:[{id:'npc-1',name:'林夏',initial:'列车员',now:'开局在值班'},{id:'npc-2',name:'陆遥',initial:'修钟人',auto:{from:1,to:1},now:'旧剧情状态',arc:'第1章登场',relation:'旧剧情关系'}],
+  });
+  story.protagonist.stateEntries=[{sourceNodeId:'a1',field:'status',value:'旧剧情主角状态'}];
+  story.protagonist.updateUndo={entries:[],sourceNodeId:'a1'};
+  await db.put('stories',story);
+  await db.put('extras',{id:'old-extra',storyId:story.id,versions:[]});
+  const disc=newDiscussion(story.id,'原故事讨论'); await saveDiscussion(disc);
+  await libraryView.render(root);
+  const openCopy=async()=>{
+    root.querySelector('.story-card [aria-label="更多"]').click();
+    button('复制故事并重新开局').click();
+    await wait(()=>!!button('复制并重开'));
+    return document.querySelector('[role=dialog]');
+  };
+  let dialog=await openCopy();
+  assert.equal(dialog.querySelector('input').value,'测试故事（重开）');
+  button('取消',dialog).click();
+  assert.equal((await db.all('stories')).length,1);
+  dialog=await openCopy();
+  dialog.querySelector('input').value='新的第一章';
+  button('复制并重开',dialog).click();
+  await wait(()=>location.hash.startsWith('#/play/'));
+  const id=decodeURIComponent(location.hash.slice('#/play/'.length));
+  const copy=await db.get('stories',id);
+  assert.notEqual(id,story.id);
+  assert.equal(copy.title,'新的第一章');
+  for(const key of ['world','opening','rules','connectionId','memConnId','memEvery','modules','manualOn','stylePreset','styleSelections','localModules','packs','options','danmu']) {
+    assert.deepEqual(copy[key],story[key],key);
+  }
+  assert.equal(copy.headId,null);
+  assert.equal(copy.chapters,0);
+  for (const key of ['lastTitle','oocHandoff','moduleDeleteUndo']) assert.equal(copy[key],undefined,key);
+  assert.deepEqual(copy.protagonist,{name:'林舟',gender:'男',note:'初始是大学生。'});
+  assert.deepEqual(copy.cards,[story.cards[0],{id:'npc-2',name:'陆遥',initial:'修钟人'}]);
+  assert.deepEqual(await db.byStory(id),[]);
+  assert.deepEqual(await db.extrasOf(id),[]);
+  assert.ok((await exportDiscussions()).every(d=>d.storyId!==id));
+  assert.equal(requests.length,0);
+  root.replaceChildren();
+  const dispose=await play.render(root,{id});
+  try {
+    assert.equal(root.querySelector('.input-shell textarea').value,story.opening);
+    button('开始').click();
+    await wait(async()=>requests.length===1&&!dispose.busy()&&(await db.get('stories',id)).chapters===1);
+    const sent=JSON.stringify(requests[0].body);
+    assert.ok(sent.includes(story.opening));
+    for(const prior of ['毕业之后','旧剧情主角状态','旧剧情状态','原故事讨论结论']) assert.ok(!sent.includes(prior),prior);
+    assert.deepEqual(await db.get('stories',story.id),story);
+    assert.equal((await db.byStory(story.id)).length,2);
+    assert.equal((await db.extrasOf(story.id)).length,1);
+  } finally {dispose();}
 });
 
 test('多选以点选顺序显示加号，取消或改写后保留补充，发送展开所有全文', () => {
