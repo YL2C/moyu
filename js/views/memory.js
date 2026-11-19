@@ -83,7 +83,7 @@ export async function render(root, { id }) {
     }, '重新整理最近一次') : null;
     if (redoBtn) redoBtn.disabled = !!running || !!ext;
     wrap.append(el('div', { class: 'card' },
-      el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '每几章自动整理一次', el('small', { text: '0 = 不自动，只手动整理。整理在后台进行，不耽误继续玩。' })), every),
+      el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '每几章自动整理一次', el('small', { text: '设为 0 时手动整理。前情和正文按顺序请求，可以切页。' })), every),
       el('div', { class: 'field', style: { margin: '6px 0 10px' } }, el('label', { text: '整理用的连接' }), connSel,
         el('div', { class: 'hint', text: '可以换一个便宜点的模型来整理；但便宜模型更容易漏细节或编造，你在意准确的话建议用和正文一样的。' })),
       el('div', { class: 'row' }, runBtn, redoBtn), status));

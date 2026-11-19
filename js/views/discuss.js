@@ -475,12 +475,12 @@ async function renderChat(root, id) {
   const refreshTasks = async () => {
     if (destroyed) return;
     const a = pendingReply();
-    if (a && !replyBusy && !jobs) void collectReply(a);
+    if (a && !replyBusy && !jobs) void collectReply(a, () => resumeTask(replyKey(a), { manual: false }));
     for (const kind of Object.keys(tasks)) {
       const saved = await getTask(keyFor(kind));
       if (destroyed) return;
       setDraft(kind, saved);
-      if (taskPending(saved)) void resumeTask(keyFor(kind)).then(t => setDraft(kind, t)).catch(report);
+      if (taskPending(saved)) void resumeTask(keyFor(kind), { manual: false }).then(t => setDraft(kind, t)).catch(report);
     }
   };
   const onTask = ({detail: { key, task }}) => {

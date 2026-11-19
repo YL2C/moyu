@@ -125,6 +125,17 @@ export async function getUsageLog(storyId) {
   return storyId ? log.filter((x) => x.storyId === storyId) : log;
 }
 
+export function recordRequest(entry) {
+  return db.kvUpdate(['requestLog'], ({ requestLog }) => ({
+    values: { requestLog: [...(requestLog || []), { at: Date.now(), ...entry }].slice(-300) },
+  })).catch(() => {});
+}
+
+export async function getRequestLog(storyId) {
+  const log = (await db.kvGet('requestLog', [])) || [];
+  return storyId ? log.filter((entry) => entry.storyId === storyId) : log;
+}
+
 export async function getMonthSpend(k = monthKey()) {
   const all = (await db.kvGet('spend', null)) || {};
   return all[k] || { CNY: 0, USD: 0, input: 0, output: 0, count: 0 };

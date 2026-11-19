@@ -10,6 +10,8 @@ import { resolveVertex, parseServiceAccount, vertexBaseUrl, VERTEX_MODELS } from
 import { getRelay, relayFetch, RelayError } from './relay.js';
 import { inspectReasoning, stripReasoning, extractFinalOutput, extractUnmarkedStory, FINAL_BOUNDARY_GUIDE } from './reasoning.js';
 import { acquireVertexCache, vertexCacheTarget, forgetVertexCache, isCacheRejection } from './prompt-cache.js';
+import { db } from './db.js';
+import { recordRequest } from './cost.js';
 
 export const FORMAT_LABEL = { auto: '自动识别', openai: 'OpenAI 兼容', anthropic: 'Claude 原生', vertex: 'Google Vertex AI（服务账号 JSON）' };
 
@@ -152,11 +154,14 @@ function errText(raw) {
 }
 
 const QUOTA_RE = /(insufficient|quota|balance|credit|billing|余额|额度|欠费|用尽)/i;
+const CAPACITY_RE = /\bresource[_ -]exhausted\b|\brate[_ -]limit(?:ed|[_ -]error|[_ -]exceeded)\b/i;
+const rateLimit = (details) => new ApiError('ratelimit', '模型容量紧张，请稍后手动重试或换模型', details);
 
 function httpError(status, raw, url) {
   const msg = errText(raw);
   const detail = `HTTP ${status}\n${String(raw || '').slice(0, 1500)}`;
   const o = { status, detail, url };
+  if (status === 429 || CAPACITY_RE.test(raw)) return rateLimit(o);
   if (status === 401 || status === 403) {
     if (QUOTA_RE.test(msg)) return new ApiError('quota', '余额或额度不足', { ...o, hint: '去中转站或官方后台看看余额。有的中转站会按“输入长度＋输出上限”先预扣额度，余额还剩一些也可能报这个：可以把连接的“输出上限”调小（比如 4000）再试。' });
     return new ApiError('auth', '密钥无效或没有权限', { ...o, hint: '检查密钥有没有复制完整、有没有过期。中转站的密钥只能配它自己的地址。' });
@@ -167,8 +172,8 @@ function httpError(status, raw, url) {
     return new ApiError('notfound', '地址不对（404）', { ...o, hint: `实际请求的地址是 ${url} 。检查地址结尾（中转站一般是 /v1），或者把接口格式改成“自动识别”。` });
   }
   if (status === 405) return new ApiError('notfound', '地址不对（这个地址不接受这种请求）', { ...o, hint: '可能选错了接口格式，试试“自动识别”。' });
+  if (status === 408) return new ApiError('timeout', '接口请求超时', o);
   if (status === 413) return new ApiError('toolong', '内容太长，接口拒收', { ...o, hint: '故事太长了，超出了接口能接收的大小。' });
-  if (status === 429) return new ApiError('ratelimit', '请求太频繁', { ...o, hint: '等几秒再试。如果一直这样，可能是额度用完了，去后台看看。' });
   if (status === 529) return new ApiError('overloaded', '模型服务繁忙', { ...o, hint: '官方服务器忙，过一会儿再试。' });
   if (status >= 500) {
     const hint = status === 502 || status === 503 || status === 504
@@ -177,7 +182,7 @@ function httpError(status, raw, url) {
     return new ApiError('server', `接口那边出错了（${status}）`, { ...o, hint });
   }
   // 400 / 422 等：尽量猜出是哪个参数
-  if (/stream_options|include_usage/i.test(msg)) return new ApiError('no_stream_options', '这个接口不支持返回用量', { ...o, hint: '会自动改成不要用量再试一次，花费改按字数估算。' });
+  if (/stream_options|include_usage/i.test(msg)) return new ApiError('no_stream_options', '这个接口不支持返回用量', { ...o, hint: '已记住这条连接的兼容方式。后续会省略用量参数，花费按字数估算。' });
   if (/model/i.test(msg) && /(not ?found|not exist|does not exist|invalid|unknown|not supported|无可用渠道|不存在|不支持)/i.test(msg)) {
     return new ApiError('model', '模型名不对，或这个接口没有这个模型', { ...o, hint: '在连接设置里点“获取模型列表”核对一下。' });
   }
@@ -205,6 +210,9 @@ function streamError(errObj, partial) {
   const e = errObj?.error ?? errObj ?? {};
   const msg = typeof e === 'string' ? e : (e.message || JSON.stringify(e));
   const type = (e && e.type) || '';
+  const status = Number(e.statusCode || e.status || e.code || errObj?.status) || 0;
+  if (status === 429 || CAPACITY_RE.test(JSON.stringify(e))) return rateLimit({ status, detail: msg, partial });
+  if (/stream_options|include_usage/i.test(msg) && !partial) return httpError(status || 400, msg, '');
   if (/overloaded/i.test(type + msg)) return new ApiError('overloaded', '模型服务繁忙', { hint: '过一会儿再试。已收到的部分会保留。', detail: msg, partial });
   if (QUOTA_RE.test(msg)) return new ApiError('quota', '余额或额度不足', { hint: '去中转站或官方后台看看余额。有的中转站会按“输入长度＋输出上限”先预扣额度，余额还剩一些也可能报这个：可以把连接的“输出上限”调小（比如 4000）再试。', detail: msg, partial });
   return new ApiError('server', '生成到一半出错了', { hint: '可以点“续写”接着写，或者重试。', detail: msg, partial });
@@ -233,7 +241,8 @@ function partsText(content) {
 }
 
 function parseNonStream(format, j) {
-  if (j && j.error) throw streamError(j, '');
+  const errorEvent = Array.isArray(j) ? j.find((item) => item?.error) : j;
+  if (errorEvent?.error || errorEvent?.type === 'error') throw streamError(errorEvent, '');
   if (format === 'anthropic') {
     const text = (j.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
     const thinking = (j.content || []).some((b) => b.type === 'thinking');
@@ -318,7 +327,7 @@ export async function streamChat(conn, opts = {}) {
     throw e;
   }
 }
-async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000, cachePrefix = '', cacheScope = '', onCache = () => {} }) {
+async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000, cachePrefix = '', cacheScope = '', onCache = () => {}, requestStats = null }) {
   const vertex = conn?.format === 'vertex';
   if (!resumeJob) { checkConn(conn); conn = await effectiveConn(conn); }
   const format = guessFormat(conn);
@@ -328,8 +337,17 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, o
   const ctrl = linkAbort(signal);
   const config = resumeJob || (conn.viaRelay && !direct) ? await getRelay() : null;
   const viaRelay = !!resumeJob || !!(config?.on && conn.viaRelay && !direct);
-  const request = (target, init, relayOptions = {}) => viaRelay
-    ? relayFetch(target, init, { config, ...relayOptions }) : fetch(target, init);
+  const request = (target, init, relayOptions = {}, type = 'generation') => {
+    const onSubmit = () => {
+      if (!requestStats) return;
+      requestStats.posts++;
+      if (type === 'cache') requestStats.cachePosts++;
+      if (viaRelay) requestStats.relayPosts++;
+    };
+    if (viaRelay) return relayFetch(target, init, { config, ...relayOptions, onSubmit });
+    onSubmit();
+    return fetch(target, init);
+  };
   let useBody = body;
   let vertexCache = null;
   let cacheMode = '';
@@ -338,11 +356,23 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, o
     const target = vertex ? vertexCacheTarget(url, conn.model) : null;
     if (target) {
       cacheMode = 'vertex-implicit';
-      if (conn.promptCache === true) {
+      if (conn.promptCache === true && (!requestStats || requestStats.posts === 0)) {
+        let cacheLimit;
         const acquired = await acquireVertexCache(target, {
           prefix: cachePrefix, scope: cacheScope, signal: ctrl.signal,
-          request: (endpoint, init) => request(endpoint, { ...init, headers: headersFor(format, conn, endpoint) }),
+          request: async (endpoint, init) => {
+            const res = await request(endpoint, { ...init, headers: headersFor(format, conn, endpoint) }, {}, 'cache').catch((error) => {
+              if (error.status === 429) cacheLimit = rateLimit({ status: 429, detail: error.message });
+              throw error;
+            });
+            if (!res.ok && requestStats) {
+              const error = httpError(res.status, await res.clone().text().catch(() => ''), endpoint);
+              if (error.kind === 'ratelimit') cacheLimit = error;
+            }
+            return res;
+          },
         }).catch(() => null);
+        if (cacheLimit) throw cacheLimit;
         vertexCache = acquired?.cache;
         if (acquired?.created) onCache({ created: acquired.created });
         if (vertexCache) {
@@ -382,16 +412,21 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, o
     res = await send(useBody);
     if (useBody !== body && [400, 403, 404].includes(res.status)) {
       const raw = await res.text().catch(() => '');
-      if (!isCacheRejection(res.status, raw)) throw httpError(res.status, raw, url);
+      const error = httpError(res.status, raw, url);
+      if (error.kind === 'ratelimit' || !isCacheRejection(res.status, raw)) throw error;
       if (vertexCache) forgetVertexCache(vertexCache);
       onCache({ mode: vertexCache ? 'vertex-implicit' : '' });
+      if (resumeJob || requestStats?.posts >= 2) throw error;
       arm(firstByteMs);
       res = await send(body);
     }
   } catch (e) {
     clearTimeout(timer);
     if (ctrl.signal.aborted) throw abortedErr();
-    if (e instanceof RelayError) throw new ApiError(e.kind, e.message, e);
+    if (e instanceof RelayError) {
+      if (e.status === 429 && e.kind !== 'relay_throttled') throw rateLimit({ status: 429, detail: e.message });
+      throw new ApiError(e.kind, e.message, e);
+    }
     if (e instanceof ApiError) throw e;
     if (viaRelay) throw new ApiError('relay_network', '连不上转发服务器', { hint: '任务可能已创建。请先检查网络和转发设置，避免重复请求模型。' });
     throw networkError(url, e);
@@ -428,7 +463,8 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, o
         sawData = true;
         let j;
         try { j = JSON.parse(d); } catch { return; }
-        if (j.error || j.type === 'error') throw streamError(j, text);
+        const errorEvent = Array.isArray(j) ? j.find((item) => item?.error) : j;
+        if (errorEvent?.error || errorEvent?.type === 'error') throw streamError(errorEvent, text);
         if (format === 'anthropic') {
           if (j.type === 'content_block_delta') {
             if (j.delta?.type === 'text_delta' && j.delta.text) { text += j.delta.text; onText(j.delta.text, text); }
@@ -508,25 +544,94 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, o
 }
 
 
-/** 自动重试：只对“还没收到任何正文”的网络/限流/服务端错误重试一次 */
-export async function streamWithRetry(conn, opts, { retries = 1, onRetry = () => {}, onConnPatch = () => {} } = {}) {
-  let attempt = 0;
-  for (;;) {
-    try {
-      return await streamChat(conn, opts);
-    } catch (e) {
-      if (e instanceof ApiError && e.kind === 'no_stream_options' && conn.usageOpt !== false) {
-        conn = { ...conn, usageOpt: false };
-        onConnPatch({ usageOpt: false });
-        continue;
+const transientErrors = new Set(['network', 'timeout', 'server', 'overloaded']);
+let storyQueue = Promise.resolve();
+const detachedStoryJobs = new Map();
+
+export function holdStoryJob(id) {
+  if (detachedStoryJobs.has(id)) return;
+  let release;
+  const done = new Promise((resolve) => { release = resolve; });
+  const timer = setTimeout(() => releaseStoryJob(id), 15 * 60 * 1000);
+  detachedStoryJobs.set(id, { done, release, timer });
+}
+
+export function releaseStoryJob(id) {
+  const job = detachedStoryJobs.get(id);
+  if (!job) return;
+  clearTimeout(job.timer);
+  detachedStoryJobs.delete(id);
+  job.release();
+}
+
+function retryDelay(signal) {
+  return new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
+    const timer = setTimeout(done, 4000);
+    signal?.addEventListener('abort', done, { once: true });
+    if (signal?.aborted) done();
+  });
+}
+
+function waitForStoryJobs(signal) {
+  const pending = Promise.all([...detachedStoryJobs.values()].map((job) => job.done));
+  if (!signal) return pending;
+  return new Promise((resolve) => {
+    const done = () => { signal.removeEventListener('abort', done); resolve(); };
+    signal.addEventListener('abort', done, { once: true });
+    pending.then(done);
+    if (signal.aborted) done();
+  });
+}
+
+export function streamWithRetry(conn, opts, settings = {}) {
+  const run = async () => {
+    if (settings.queueStory === 'archive') {
+      while (!opts.signal?.aborted && detachedStoryJobs.size) {
+        await waitForStoryJobs(opts.signal);
       }
-      const retriable = e instanceof ApiError && ['network', 'ratelimit', 'server', 'overloaded'].includes(e.kind) && !e.partial && !e.receivedOutput;
-      if (!retriable || attempt >= retries || opts.signal?.aborted) throw e;
-      attempt++;
-      onRetry(e, attempt);
-      await new Promise((r) => setTimeout(r, e.kind === 'ratelimit' ? 4000 : 2000));
-      if (opts.signal?.aborted) throw new ApiError('aborted', '已停止');
     }
+    return runRequest(conn, opts, settings);
+  };
+  if (!settings.queueStory || opts.resumeJob) return run();
+  const queued = storyQueue.then(run);
+  storyQueue = queued.catch(() => {});
+  return queued;
+}
+
+async function runRequest(conn, opts, { retries = 1, onRetry = () => {}, onConnPatch = () => {}, requestKind = '', storyId = '' }) {
+  const stats = { posts: 0, cachePosts: 0, relayPosts: 0 };
+  const memoKey = !opts.resumeJob && conn?.id != null ? 'usageOptUnsupported.' + JSON.stringify([conn.id, conn.baseUrl || '']) : '';
+  let outcome;
+  try {
+    if (memoKey && conn.usageOpt !== false && await db.kvGet(memoKey, false).catch(() => false)) {
+      conn = { ...conn, usageOpt: false };
+      onConnPatch({ usageOpt: false });
+    }
+    for (let attempt = 0; ; attempt++) {
+      if (opts.signal?.aborted) throw new ApiError('aborted', '已停止');
+      try {
+        return await streamChat(conn, { ...opts, requestStats: stats });
+      } catch (error) {
+        const cleanFailure = !opts.signal?.aborted && !opts.resumeJob && !error.partial && !error.receivedOutput;
+        const available = cleanFailure && attempt === 0 && stats.posts < 2;
+        if (cleanFailure && error.kind === 'no_stream_options' && conn.usageOpt !== false) {
+          conn = { ...conn, usageOpt: false };
+          if (memoKey) await db.kvSet(memoKey, true).catch(() => {});
+          onConnPatch({ usageOpt: false });
+          if (available) continue;
+        }
+        if (!available || retries < 1 || !transientErrors.has(error.kind)) throw error;
+        onRetry(error, 1);
+        await retryDelay(opts.signal);
+      }
+    }
+  } catch (error) {
+    outcome = error;
+    throw error;
+  } finally {
+    if (requestKind) await recordRequest({ ...stats, kind: requestKind, storyId, model: conn?.model || '',
+      outcome: outcome?.kind || (outcome ? 'error' : 'ok'), status: outcome?.status || 0 });
   }
 }
 

@@ -3,7 +3,7 @@
 import { db, exportStory } from '../db.js';
 import { el, uid, toast, menu, promptText, sheet, saveFile, autoGrow, insertAtCursor, approxTokens } from '../util.js';
 import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo, watchStory } from '../state.js';
-import { streamWithRetry, ApiError } from '../api.js';
+import { streamWithRetry, ApiError, holdStoryJob, releaseStoryJob } from '../api.js';
 import { cancelRelayJob } from '../relay.js';
 import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
@@ -14,7 +14,7 @@ import { recoverableOutput, stripReasoning } from '../reasoning.js';
 import { CHOICE_LABELS, expandOptionInput, choiceInput, toggleChoice } from '../personal.js';
 import { inlineText } from '../inline.js';
 import { openExportDialog } from '../exporter.js';
-import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage, getMonthSpend, getBudget, hasPrice, priceMode, CUR, getUsageLog } from '../cost.js';
+import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage, getMonthSpend, getBudget, hasPrice, priceMode, CUR, getUsageLog, getRequestLog } from '../cost.js';
 
 export async function render(root, { id }) {
   const story = await db.get('stories', id);
@@ -443,7 +443,8 @@ export async function render(root, { id }) {
       '\n\n请只为这一章的结尾写 4 个参考选项，格式：\n【选项】\nA. ……\nB. ……\nC. ……\nD. ……\n' +
       '要求：四个方向明显不同的具体行动（可以带一个马上会发生的事件），写行动不写结果，不泄露隐藏信息。只输出这五行。';
     try {
-      const r = await streamWithRetry(conn, { system, messages: [{ role: 'user', content: user }], maxTokens: 3000 });
+      const r = await streamWithRetry(conn, { system, messages: [{ role: 'user', content: user }], maxTokens: 3000 },
+        { queueStory: 'play', requestKind: '补选项', storyId: story.id });
       const u = normalizeUsage(r.usage, { inChars: system.length + user.length, outChars: r.text.length });
       recordUsage({ kind: '补选项', storyId: story.id, model: conn.model, usage: u, cost: computeCost(u, conn) });
       let opts = parseReply(r.text).options;
@@ -468,6 +469,7 @@ export async function render(root, { id }) {
           if (jobs || st.sending) return;
           try {
             await cancelRelayJob(n.relayJob, n.relayContext?.server);
+            releaseStoryJob(n.relayJob);
             delete n.relayJob; delete n.relayContext;
             n.stopped = !!n.text?.trim(); n.status = n.stopped ? 'partial' : 'error';
             n.error = n.stopped ? null : { kind: 'stopped', message: '已停止', hint: '可以点“重试”。' };
@@ -480,7 +482,14 @@ export async function render(root, { id }) {
     const recoverable = recoverableOutput(n.error);
     if (recoverable) tools.append(el('button', { class: 'btn small primary', onclick: () => recoverReply(n, recoverable) }, '接回本次回复'));
     if (!hasText && n.status === 'error') {
-      tools.append(el('button', { class: 'btn small' + (recoverable ? '' : ' primary'), onclick: () => retry(n) }, '重试'));
+      const wait = retryWait(n.retryAfter);
+      const button = el('button', { class: 'btn small' + (recoverable ? '' : ' primary'), onclick: () => retry(n) }, wait ? `重试（${wait} 秒）` : '重试');
+      button.disabled = wait > 0;
+      if (wait && !retryTimer) retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (!destroyed && !st.streaming) renderFeed({ keepScroll: true });
+      }, Math.min(1000, n.retryAfter - Date.now() + 10));
+      tools.append(button);
     } else {
       tools.append(el('button', { class: 'btn small', onclick: () => regenerate(n) }, '重写这轮'));
       if (n.status === 'partial' || (n.error && hasText)) tools.append(el('button', { class: 'btn small primary', onclick: () => cont(n) }, '续写'));
@@ -653,12 +662,14 @@ export async function render(root, { id }) {
   // 后台任务断线后的自动接回：次数有上限，接上并有新内容就清零
   let relayRetry = 0;
   let relayTimer = null;
+  let retryTimer = null;
+  const retryWait = (until) => Math.max(0, Math.ceil(((until || 0) - Date.now()) / 1000));
   const scheduleResume = () => {
     clearTimeout(relayTimer);
     if (destroyed || relayRetry >= 40) return;
     const wait = Math.min(10000, 1500 * 2 ** Math.min(relayRetry, 3));
     relayRetry++;
-    relayTimer = setTimeout(() => { if (!destroyed && document.visibilityState === 'visible') void resumePending(); }, wait);
+    relayTimer = setTimeout(() => { if (!destroyed && document.visibilityState === 'visible') void resumePending(false); }, wait);
   };
   const idleCbs = new Set();
   async function generate(...args) {
@@ -667,7 +678,7 @@ export async function render(root, { id }) {
     try { return await generateInner(...args); }
     finally {
       jobs--;
-      if (reconnectRequested && !destroyed) { reconnectRequested = false; void resumePending(); }
+      if (reconnectRequested && !destroyed) { reconnectRequested = false; void resumePending(false); }
       if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} });
     }
   }
@@ -688,6 +699,7 @@ export async function render(root, { id }) {
     const usageKind = saved?.usageKind || (a.kind === 'ooc' ? '出戏' : continueNode ? '续写' : '正文');
     a.status = 'streaming';
     a.error = null; a.stopped = false; a.flagged = false; a.thinking = false;
+    delete a.retryAfter;
     a.model = conn?.model || a.model || '';
     touch(a);
     nodes.set(a.id, a);
@@ -739,6 +751,8 @@ export async function render(root, { id }) {
             cost: computeCost(usage, conn), cacheMode: 'vertex-explicit' });
         },
         onJob: async (jobId, server) => {
+          if (a.relayJob && a.relayJob !== jobId) releaseStoryJob(a.relayJob);
+          holdStoryJob(jobId);
           a.relayJob = jobId;
           a.relayContext = { server, styleSent, connectionId: conn.id, base, continuation, usageKind, outputBoundary, cacheMode,
             inChars: ctx.info.totalChars + (continueNode ? base.length : 0),
@@ -756,8 +770,8 @@ export async function render(root, { id }) {
         },
         onThinking: () => { if (!a.thinking && !a.text) { a.thinking = true; updateLive(a); } },
       }, {
+        queueStory: 'play', requestKind: resumeJob ? '接回正文' : reuse ? '重试正文' : usageKind, storyId: story.id,
         onRetry: (e) => toast(`${e.message}，自动重试中…`),
-        onConnPatch: (p) => { if (conn) { Object.assign(conn, p); db.put('connections', { ...conn }).catch(() => {}); } },
       });
       a.text = base + r.text;
       a.status = r.truncated ? 'partial' : 'done';
@@ -770,11 +784,13 @@ export async function render(root, { id }) {
       const received = base + (e?.partial || '');
       a.text = a.relayJob && previousText.length > received.length ? previousText : received;
       const hasText = !!a.text.trim();
-      pendingRelay = !!a.relayJob && (['relay_network', 'relay_auth', 'relay_config'].includes(err.kind) || (err.kind === 'aborted' && ['leave', 'reconnect'].includes(ctrl.signal.reason)));
+      pendingRelay = !!a.relayJob && (['relay_network', 'relay_auth', 'relay_config', 'relay_throttled'].includes(err.kind) || (err.kind === 'aborted' && ['leave', 'reconnect'].includes(ctrl.signal.reason)));
       if (pendingRelay) {
         a.status = 'streaming';
         autoResume = err.kind === 'relay_network';
-        a.error = { ...err, message: autoResume && relayRetry < 40 ? '连接断了，正在自动接回…' : '后台生成待接回', hint: '服务器仍会继续生成。恢复网络后会自动接回，也可以点“接回后台生成”；完成后 30 分钟内可以取回。' };
+        a.error = err.kind === 'relay_throttled'
+          ? { ...err, hint: '请稍等再手动接回，原任务仍可取回。' }
+          : { ...err, message: autoResume && relayRetry < 40 ? '连接断了，正在自动接回…' : '后台生成待接回', hint: '服务器仍会继续生成。恢复网络后会自动接回，也可以点“接回后台生成”；完成后 30 分钟内可以取回。' };
       } else if (err.kind === 'aborted') {
         a.stopped = hasText;
         a.status = hasText ? 'partial' : 'error';
@@ -782,6 +798,7 @@ export async function render(root, { id }) {
       } else {
         a.status = hasText ? 'partial' : 'error';
         a.error = err;
+        if (!resumeJob || err.kind === 'ratelimit') a.retryAfter = Date.now() + 10000;
       }
     } finally {
       document.removeEventListener('visibilitychange', onHide);
@@ -804,7 +821,7 @@ export async function render(root, { id }) {
         await recordUsage({ kind: usageKind, storyId: story.id, model: conn?.model || a.model, usage: u, cost: c, cacheMode,
           requestId: a.relayJob ? (a.relayContext?.server || '') + '/' + a.relayJob : null });
       }
-      if (!pendingRelay) { delete a.relayJob; delete a.relayContext; relayRetry = 0; clearTimeout(relayTimer); }
+      if (!pendingRelay) { releaseStoryJob(a.relayJob); delete a.relayJob; delete a.relayContext; relayRetry = 0; clearTimeout(relayTimer); }
       else if ((a.text || '').length > previousText.length) relayRetry = 0;
       if (autoResume) scheduleResume();
       touch(a);
@@ -851,9 +868,11 @@ export async function render(root, { id }) {
 
   function stop() { st.streaming?.ctrl.abort('user'); }
 
-  function resumePending() {
+  function resumePending(manual = true) {
     if (destroyed || jobs || st.streaming) return;
     const node = headPath().findLast((n) => n.relayJob);
+    if (node) holdStoryJob(node.relayJob);
+    if (!manual && node?.error?.kind === 'relay_throttled') return;
     const user = node && nodes.get(node.parentId);
     if (node && user) return generate(user, { reuse: node, resumeJob: node.relayJob });
   }
@@ -868,6 +887,7 @@ export async function render(root, { id }) {
     if (later > 0) toast(`原来后面的 ${later} 章留在旧版本那条分支里`);
   }
   async function retry(n) {
+    if (retryWait(n.retryAfter)) return;
     const u = nodes.get(n.parentId);
     if (u) await generate(u, { reuse: n });
   }
@@ -1192,7 +1212,7 @@ export async function render(root, { id }) {
 
   async function showCost() {
     const s = sheet({ title: '花费' });
-    const logged = await getUsageLog(story.id);
+    const [logged, requests] = await Promise.all([getUsageLog(story.id), getRequestLog(story.id)]);
     // 记账清单是新加的：更早的几章从章节上记的用量补进来
     // （记账发生在一章写完时，章节是开始写时建的，所以留 10 分钟余量，免得第一笔重复算）
     const cutoff = logged.length ? logged[0].at - 600000 : Infinity;
@@ -1241,6 +1261,13 @@ export async function render(root, { id }) {
       ...(by.size ? [el('div', { class: 'card' }, ...[...by.entries()].map(([k, g]) => el('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'nowrap', fontSize: '14px', padding: '3px 0' } },
         el('span', { text: `${k} × ${g.count}` }),
         el('span', { style: { color: 'var(--text2)' }, text: `入 ${fmtTokens(g.input)} · 出 ${fmtTokens(g.output)}${money(g) ? ' · ' + money(g) : ''}` }))))] : []),
+      requests.length ? el('div', { class: 'section-title', text: '最近操作的请求次数' }) : null,
+      requests.length ? el('div', { class: 'card' }, ...requests.slice(-30).reverse().map((x) =>
+        el('div', { class: 'hint', text: [
+          new Date(x.at).toTimeString().slice(0, 5), x.kind, x.model, `${x.posts} 次请求`,
+          x.cachePosts ? `含 ${x.cachePosts} 次缓存请求` : '', x.relayPosts ? '经转发' : '',
+          x.status ? `HTTP ${x.status}` : ({ ok: '完成', ratelimit: '限流', aborted: '已停止' }[x.outcome] || '失败'),
+        ].filter(Boolean).join(' · ') }))) : null,
       log.length ? el('div', { class: 'section-title', text: '最近的调用' }) : null,
       log.length ? el('div', { class: 'card', style: { padding: '8px 14px' } }, ...log.slice(-30).reverse().map((x) => el('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'nowrap', fontSize: '13px', padding: '4px 0', borderBottom: '1px solid var(--line)' } },
         el('span', { style: { whiteSpace: 'nowrap' }, text: `${new Date(x.at).toTimeString().slice(0, 5)} ${x.kind}` }),
@@ -1356,15 +1383,15 @@ export async function render(root, { id }) {
     relayRetry = 0;
     if (node?.relayJob) { reconnectRequested = true; st.streaming.ctrl.abort('reconnect'); }
     else if (jobs) reconnectRequested = true; // 上一次正在收尾，收完马上接回
-    else void resumePending();
+    else void resumePending(false);
   };
-  const onOnline = () => { relayRetry = 0; if (!destroyed && !jobs && document.visibilityState === 'visible') void resumePending(); };
+  const onOnline = () => { relayRetry = 0; if (!destroyed && !jobs && document.visibilityState === 'visible') void resumePending(false); };
   window.addEventListener('online', onOnline);
   document.addEventListener('visibilitychange', onVisible);
   st.ooc = oocPath().some(n => n.relayJob);
   renderFeed();
   requestAnimationFrame(fit);
-  void resumePending();
+  void resumePending(false);
   const destroy = () => {
     destroyed = true;
     clearInterval(archTimer);
@@ -1374,6 +1401,7 @@ export async function render(root, { id }) {
     document.removeEventListener('visibilitychange', onVisible);
     window.removeEventListener('online', onOnline);
     clearTimeout(relayTimer);
+    clearTimeout(retryTimer);
     unwatch();
     if (st.streaming) st.streaming.ctrl.abort('leave');
   };
@@ -1393,7 +1421,7 @@ export async function render(root, { id }) {
     updateComposer();
     requestAnimationFrame(fit);
     if (st.ooc) requestAnimationFrame(fitOoc);
-    void resumePending();
+    void resumePending(false);
   };
   return destroy;
 }

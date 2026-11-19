@@ -9,6 +9,7 @@ const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', 
 for (const key of ['window','document','Node','Event','CustomEvent','localStorage','location','FileReader']) globalThis[key] = dom.window[key];
 globalThis.indexedDB = indexedDB; globalThis.IDBKeyRange = IDBKeyRange;
 globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
+globalThis.CSS = { escape: value => String(value).replace(/[^\w-]/g, (c) => '\\' + c) };
 globalThis.requestAnimationFrame = fn => setTimeout(fn, 0); globalThis.cancelAnimationFrame = clearTimeout;
 globalThis.confirm = () => true;
 dom.window.HTMLElement.prototype.scrollIntoView = function() {};
@@ -41,7 +42,7 @@ async function seedStory() {
 }
 beforeEach(async () => {
   for(const store of ['stories','nodes','extras','connections']) for(const item of await db.all(store)) await db.del(store,item.id);
-  for(const key of ['modules','packs','disc.index','relay','defaultConn','globalMemo','modules.undo','fwTemplates','fwBase','fwPlaybooksV1','extraConnectionId','usageLog','spend']) await db.kvSet(key,null);
+  for(const key of ['modules','packs','disc.index','relay','defaultConn','globalMemo','modules.undo','fwTemplates','fwBase','fwPlaybooksV1','extraConnectionId','usageLog','requestLog','spend']) await db.kvSet(key,null);
   Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
   localStorage.clear(); document.body.innerHTML='<div id="fixture"></div><div id="toast"></div>'; root=document.querySelector('#fixture');
   requests=[]; responses=[];
@@ -904,6 +905,29 @@ test('已存档思考标签在正文和番外原文/排版阅读中隐藏，原�
   await db.put('extras',{id:'tagged-extra',storyId:story.id,tplName:'他的聊天记录',layout:'chat',anchorNo:1,cur:0,versions:[{id:'v1',text:'<think>EXTRA_SECRET</think># 手机\n【聊天】\n我｜许秋｜收到。\n【/】',layoutVersion:1,status:'done'}]});
   root.replaceChildren();const end=await extras.render(root,{id:story.id,extraId:'tagged-extra'});
   try{assert.ok(!root.textContent.includes('EXTRA_SECRET'));assert.ok(root.querySelector('.ex-bubble'));button('原文').click();assert.ok(!root.querySelector('.extra-raw').textContent.includes('EXTRA_SECRET'));assert.ok((await db.get('extras','tagged-extra')).versions[0].text.includes('EXTRA_SECRET'));}finally{end();}
+});
+
+test('正文限流只发送一次，重试按钮冷却并且重新进页面仍有效', async () => {
+  const { story } = await seedStory();
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return Response.json({ error: { status: 'RESOURCE_EXHAUSTED' } }, { status: 429 }); };
+  let dispose = await play.render(root, { id: story.id });
+  try {
+    root.querySelector('.options [data-choice]').click();
+    button('发送').click();
+    await wait(() => calls === 1 && !dispose.busy());
+    assert.ok(root.textContent.includes('模型容量紧张，请稍后手动重试或换模型'));
+    const retry = () => [...root.querySelectorAll('button')].find((b) => b.textContent.startsWith('重试（'));
+    assert.ok(retry()?.disabled);
+    retry().click();
+    assert.equal(calls, 1);
+    dispose();
+    root.replaceChildren();
+    dispose = await play.render(root, { id: story.id });
+    assert.ok(retry()?.disabled);
+    const { getRequestLog } = await import('../js/cost.js');
+    assert.deepEqual((await getRequestLog(story.id)).map((r) => [r.posts, r.status]), [[1, 429]]);
+  } finally { dispose(); }
 });
 
 test('未标记的回复在手动确认前不入档，确认后接回原章节，无重复调用或记账',async()=>{

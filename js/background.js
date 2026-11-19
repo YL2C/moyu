@@ -42,6 +42,7 @@ async function collect(key, task, signal, start = null) {
   let queued = Promise.resolve();
   task.state = 'running';
   delete task.error;
+  delete task.errorKind;
   await save(key, task);
   try {
     const previous = task.text.length;
@@ -63,7 +64,7 @@ async function collect(key, task, signal, start = null) {
           queued = queued.then(() => db.kvSet(storageKey(key), snapshot)).catch(() => {});
         }
       },
-    });
+    }, { requestKind: start ? task.account?.kind : '接回后台生成', storyId: task.account?.storyId });
     task.text = r.text;
     const usage = normalizeUsage(r.usage, { inChars: task.inChars, outChars: r.text.length });
     task.cost = computeCost(usage, task.connection);
@@ -72,9 +73,10 @@ async function collect(key, task, signal, start = null) {
   } catch (error) {
     if (error.partial?.length > task.text.length) task.text = error.partial;
     const canReconnect = task.job && !signal.aborted &&
-      ['relay_network', 'relay_auth', 'relay_config'].includes(error.kind);
+      ['relay_network', 'relay_auth', 'relay_config', 'relay_throttled'].includes(error.kind);
     task.state = canReconnect ? 'pending' : 'error';
     task.error = error.message || String(error);
+    task.errorKind = error.kind;
   }
   if (!taskPending(task)) { delete task.job; delete task.server; }
   await queued;
@@ -97,10 +99,11 @@ export function startTask(key, { id = uid(), conn, system, messages, maxTokens, 
   });
 }
 
-export function resumeTask(key) {
+export function resumeTask(key, { manual = true } = {}) {
   return exclusive(key, async signal => {
     const task = await getTask(key);
     if (!taskPending(task)) return task;
+    if (!manual && task.errorKind === 'relay_throttled') return task;
     if (task.job) return collect(key, task, signal);
     // Without a job number the creation result is unknown. Never resend it automatically.
     task.state = 'error';

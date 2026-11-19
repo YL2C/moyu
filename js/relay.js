@@ -59,7 +59,7 @@ export async function cancelRelayJob(id, server) {
 }
 
 /** 返回 fetch 形状的 Response；重放从 0 开始，继续复用原有模型解析器。 */
-export async function relayFetch(url, init, { config, resumeJob = null, relayServer = '', onJob = () => {} } = {}) {
+export async function relayFetch(url, init, { config, resumeJob = null, relayServer = '', onJob = () => {}, onSubmit = () => {} } = {}) {
   config ||= await getRelay();
   if (!config.on || !config.url || !config.token) throw new RelayError('relay_config', '请先在设置里启用服务器转发');
   if (relayServer && relayUrl(config.url) !== relayUrl(relayServer)) throw new RelayError('relay_config', '这一章在另一台转发服务器上，请恢复原来的服务器设置后接回');
@@ -74,11 +74,13 @@ export async function relayFetch(url, init, { config, resumeJob = null, relaySer
   const state = async () => {
     const res = await call(config, '/jobs/' + encodeURIComponent(id), { signal });
     if (res.status === 404) throw new RelayError('relay_expired', '后台生成任务已无法取回', { status: 404, hint: EXPIRED_HINT });
+    if (res.status === 429) throw new RelayError('relay_throttled', '转发服务器暂时限制接回', { status: 429 });
     if (!res.ok) throw new RelayError('relay_network', '暂时无法查询转发任务', { status: res.status });
     return res.json();
   };
   try {
     if (!id) {
+      onSubmit();
       const res = await call(config, '/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, method: init.method, headers: Object.fromEntries(new Headers(init.headers)), body: init.body }), signal });
       if (!res.ok) {
@@ -98,6 +100,7 @@ export async function relayFetch(url, init, { config, resumeJob = null, relaySer
     }
     const res = await call(config, '/jobs/' + encodeURIComponent(id) + '/stream?from=0', { signal });
     if (res.status === 404) throw new RelayError('relay_expired', '后台生成任务已无法取回', { status: 404, hint: EXPIRED_HINT });
+    if (res.status === 429) throw new RelayError('relay_throttled', '转发服务器暂时限制接回', { status: 429 });
     if (!res.ok) throw new RelayError('relay_network', '连不上转发服务器的生成任务', { status: res.status });
     if (res.headers.get('X-Job-State') === 'error') {
       const job = await state();

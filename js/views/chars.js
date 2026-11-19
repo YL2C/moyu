@@ -529,7 +529,7 @@ export async function render(root, { id }) {
     for (const kind of taskKeys) void getTask(taskKey(kind)).then(saved => {
       if (destroyed) return;
       track(kind, saved);
-      if (taskPending(saved)) return resumeTask(taskKey(kind)).then(t => track(kind, t));
+      if (taskPending(saved)) return resumeTask(taskKey(kind), { manual: false }).then(t => track(kind, t));
     }).catch(report);
   };
   window.addEventListener('moyu:background', onTask);

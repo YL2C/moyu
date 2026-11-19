@@ -299,11 +299,17 @@ async function renderReader(root, story, nodes, extraId) {
         prev.disabled = i <= 0; next.disabled = i >= x.versions.length - 1;
         tools.append(el('span', { class: 'ver' }, prev, `${i + 1}/${x.versions.length}`, next));
       }
+      const wait = retryWait(v?.retryAfter);
+      if (wait && !retryTimer) retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (!destroyed && !st.streaming) draw();
+      }, Math.min(1000, v.retryAfter - Date.now() + 10));
       if (v?.relayJob) {
         tools.append(el('button', { class: 'btn small primary', onclick: () => resumePending() }, '接回后台生成'),
           el('button', { class: 'btn small', onclick: () => stopPending(v) }, '停止后台生成'));
       } else tools.append(...[
-        el('button', { class: 'btn small', onclick: () => generate('new') }, v ? '重新生成一个版本' : '开始写'),
+        el('button', { class: 'btn small', disabled: wait > 0, onclick: () => generate('new') }, v ? '重新生成一个版本' : '开始写'),
+        wait ? el('span', { class: 'meta', text: `${wait} 秒后可重试` }) : null,
         v ? el('button', { class: 'btn small', onclick: async () => {
           const r = await promptText({ title: '换个要求重写', value: v?.request ?? x.request, placeholder: '这次想看什么？', okText: '重写' });
           if (r == null) return;
@@ -397,16 +403,19 @@ async function renderReader(root, story, nodes, extraId) {
   let reconnectRequested = false;
   let relayRetry = 0;
   let relayTimer = null;
+  let retryTimer = null;
+  const retryWait = (until) => Math.max(0, Math.ceil(((until || 0) - Date.now()) / 1000));
   const pendingVersion = () => (x.versions || []).find((v) => v.relayJob);
   function scheduleResume() {
     clearTimeout(relayTimer);
     if (destroyed || relayRetry >= 40) return;
     const delay = Math.min(10000, 1500 * 2 ** Math.min(relayRetry++, 3));
-    relayTimer = setTimeout(() => { if (!destroyed && document.visibilityState === 'visible') void resumePending(); }, delay);
+    relayTimer = setTimeout(() => { if (!destroyed && document.visibilityState === 'visible') void resumePending(false); }, delay);
   }
-  function resumePending() {
+  function resumePending(manual = true) {
     if (destroyed || jobs || st.streaming) return;
     const v = pendingVersion();
+    if (!manual && v?.error?.kind === 'relay_throttled') return;
     if (v) { x.cur = x.versions.indexOf(v); return generate('resume'); }
   }
   async function stopPending(v) {
@@ -429,12 +438,14 @@ async function renderReader(root, story, nodes, extraId) {
   const idleCbs = new Set();
   async function generate(mode, note = '') {
     if (st.streaming || jobs || destroyed) return;
+    const wait = retryWait(curVersion(x)?.retryAfter);
+    if (mode === 'new' && wait) { toast(`请 ${wait} 秒后再重试`); return; }
     if (mode !== 'resume' && pendingVersion()) { toast('先接回或停止后台生成，再开始新的生成'); return; }
     jobs++;
     draw();
     try { return await generateInner(mode, note); }
     catch (e) { toast('生成失败：' + (e?.message || e), 4000); }
-    finally { jobs--; if (!destroyed) draw(); if (reconnectRequested && !destroyed) { reconnectRequested = false; void resumePending(); } if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} }); }
+    finally { jobs--; if (!destroyed) draw(); if (reconnectRequested && !destroyed) { reconnectRequested = false; void resumePending(false); } if (!jobs) idleCbs.forEach((f) => { try { f(); } catch {} }); }
   }
   async function generateInner(mode, note) {
     // 先固定当前版本，异步读取连接和素材时不能串到另一个版本。
@@ -465,6 +476,7 @@ async function renderReader(root, story, nodes, extraId) {
     }
     if (!resuming) v.connectionId = conn.id;
     v.status = 'streaming'; v.error = null; v.stopped = false; v.thinking = false; v.model = conn?.model || '';
+    delete v.retryAfter;
     delete x.pending;
     await save();
     const ctrl = new AbortController();
@@ -496,7 +508,7 @@ async function renderReader(root, story, nodes, extraId) {
           const now = Date.now(); if (now - lastSave > 1500) { lastSave = now; save(); }
         },
         onThinking: () => { if (!v.thinking && !v.text) { v.thinking = true; draw(); } },
-      }, { onConnPatch: (p) => { if (conn) { Object.assign(conn, p); db.put('connections', { ...conn }).catch(() => {}); } } });
+      }, { requestKind: resuming ? '接回番外' : continuation ? '续写番外' : '番外', storyId: story.id });
       v.text = resuming && previousText.length > base.length + r.text.length ? previousText : base + r.text;
       v.status = r.truncated ? 'partial' : 'done';
       usageRaw = r.usage || null;
@@ -506,12 +518,14 @@ async function renderReader(root, story, nodes, extraId) {
       const received = base + (e?.partial ?? (v.text || '').slice(base.length));
       v.text = v.relayJob && previousText.length > received.length ? previousText : received;
       const has = !!v.text.trim();
-      pendingRelay = !!v.relayJob && (['relay_network', 'relay_auth', 'relay_config'].includes(err.kind) || (err.kind === 'aborted' && ['leave', 'reconnect'].includes(ctrl.signal.reason)));
+      pendingRelay = !!v.relayJob && (['relay_network', 'relay_auth', 'relay_config', 'relay_throttled'].includes(err.kind) || (err.kind === 'aborted' && ['leave', 'reconnect'].includes(ctrl.signal.reason)));
       if (pendingRelay) {
         v.status = 'streaming'; autoResume = err.kind === 'relay_network';
-        v.error = { ...err, message: autoResume && relayRetry < 40 ? '连接断了，正在自动接回…' : '后台生成待接回', hint: '服务器仍会继续生成，回到前台或恢复网络后会自动接回，也可点“接回后台生成”。完成后 30 分钟内可以取回。' };
+        v.error = err.kind === 'relay_throttled'
+          ? { ...err, hint: '请稍等再手动接回，原任务仍可取回。' }
+          : { ...err, message: autoResume && relayRetry < 40 ? '连接断了，正在自动接回…' : '后台生成待接回', hint: '服务器仍会继续生成，回到前台或恢复网络后会自动接回，也可点“接回后台生成”。完成后 30 分钟内可以取回。' };
       } else if (err.kind === 'aborted') { v.stopped = has; v.status = has ? 'partial' : 'error'; v.error = has ? null : { message: '已停止', hint: '还没写出内容就停下了，可以点“重写”。' }; }
-      else { v.status = has ? 'partial' : 'error'; v.error = err; }
+      else { v.status = has ? 'partial' : 'error'; v.error = err; if (!resuming) v.retryAfter = Date.now() + 10000; }
     } finally {
       document.removeEventListener('visibilitychange', onHide);
       if (st.frame) { cancelAnimationFrame(st.frame); st.frame = 0; }
@@ -576,17 +590,17 @@ async function renderReader(root, story, nodes, extraId) {
     relayRetry = 0; clearTimeout(relayTimer);
     if (st.streaming?.version.relayJob) { reconnectRequested = true; st.streaming.ctrl.abort('reconnect'); }
     else if (jobs) reconnectRequested = true;
-    else void resumePending();
+    else void resumePending(false);
   };
   const onVisible = () => { if (document.visibilityState === 'visible') reconnect(); };
   const onOnline = () => { if (document.visibilityState === 'visible') reconnect(); };
   document.addEventListener('visibilitychange', onVisible);
   window.addEventListener('online', onOnline);
   draw();
-  if (pendingVersion()) void resumePending();
+  if (pendingVersion()) void resumePending(false);
   else if (x.pending) generate('new');
   const unwatch = watchStory(story, null, PLAY_KEYS);
-  const destroy = () => { destroyed = true; unwatch(); clearTimeout(relayTimer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('online', onOnline); if (st.streaming) st.streaming.ctrl.abort('leave'); };
+  const destroy = () => { destroyed = true; unwatch(); clearTimeout(relayTimer); clearTimeout(retryTimer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('online', onOnline); if (st.streaming) st.streaming.ctrl.abort('leave'); };
   destroy.busy = () => jobs > 0;
   destroy.onIdle = (fn) => { idleCbs.add(fn); return () => idleCbs.delete(fn); };
   // 只有已经拿到服务器任务编号的请求才能安全脱离页面；直连请求保持原来的驻留逻辑。

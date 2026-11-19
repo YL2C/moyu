@@ -188,7 +188,7 @@ async function addNewCharacters(story, j, from, to) {
   return added;
 }
 
-async function compressIfLong(m, conn, signal, track) {
+async function compressIfLong(m, conn, signal, track, storyId) {
   const total = (m.summaries || []).reduce((a, x) => a + x.text.length, 0);
   if (total <= SUMMARY_LIMIT || m.summaries.length < 3) return m;
   const half = Math.ceil(m.summaries.length / 2);
@@ -196,7 +196,8 @@ async function compressIfLong(m, conn, signal, track) {
   const user = (m.early?.trim() ? `【已有的早期概要（第1–${m.earlyUpTo}章）】\n${m.early.trim()}\n\n` : '') +
     '【要并进去的摘要】\n' + old.map((x) => `第${x.from}–${x.to}章：${x.text}`).join('\n') +
     `\n\n把上面的内容合并压缩成一段“早期概要”（第1–${old[old.length - 1].to}章），1200到1800字：保留关键事件、关系变化、伏笔和人物的重要选择，按时间顺序，不写评价。只输出概要正文。`;
-  const r = await streamWithRetry(conn, { system: '你是这部文字互动小说的存档员，只输出概要正文。', messages: [{ role: 'user', content: user }], maxTokens: 4000, signal });
+  const r = await streamWithRetry(conn, { system: '你是这部文字互动小说的存档员，只输出概要正文。', messages: [{ role: 'user', content: user }], maxTokens: 4000, signal },
+    { queueStory: 'archive', requestKind: '压缩前情', storyId });
   track(r, user.length, '压缩前情');
   return { ...m, early: r.text.trim(), earlyUpTo: old[old.length - 1].to, summaries: m.summaries.slice(half) };
 }
@@ -248,7 +249,7 @@ async function runInner(story, nodes, path, conn, { signal, onProgress = () => {
     r = await streamWithRetry(conn, {
       system: p.system, messages: [{ role: 'user', content: p.user }], maxTokens: 16000, signal,
       onText: (_d, full) => { raw = full; onProgress(`正在整理第 ${from}–${to} 章（已写 ${full.length} 字）`); },
-    });
+    }, { queueStory: 'archive', requestKind: '整理前情', storyId: story.id });
     raw = r.text;
     track(r, p.system.length + p.user.length);
     let j;
@@ -269,7 +270,7 @@ async function runInner(story, nodes, path, conn, { signal, onProgress = () => {
     delete j.__repaired;
     newCards.push(...(await addNewCharacters(story, j, from, to)).map((c) => c.name));
     let m = merge(prev, j, from, to, story);
-    m = await compressIfLong(m, conn, signal, track);
+    m = await compressIfLong(m, conn, signal, track, story.id);
     m.lastRun = { at: Date.now(), from, to, model: conn?.model || '', cost: costSum };
     const node = nodes.get(batch[batch.length - 1].id);
     if (!node) break;
