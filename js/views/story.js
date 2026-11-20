@@ -2,11 +2,13 @@
 
 import { db } from '../db.js';
 import { el, toast } from '../util.js';
-import { getConnections, connLabel, getModules, MODULE_MODES, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
+import { getConnections, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
 import { DEFAULT_RULES } from '../prompt.js';
 import { getPacks, deleteStoryPack, KIND_LABEL } from '../tavern.js';
 import { packToggle, importFlow } from './packs-ui.js';
-import { rulePanel } from './rules-ui.js';
+import { rulePanel, editRuleModule } from './rules-ui.js';
+import { openWordImport } from './word-import.js';
+import { undoWordImport } from '../rules.js';
 
 function sw(checked, onchange) {
   const input = el('input', { type: 'checkbox', onchange: () => onchange(input.checked) });
@@ -81,7 +83,6 @@ export async function render(root, { id, tab = 'setting' }) {
           el('a', { href: 'javascript:void 0', onclick: () => { if (confirm('用内置的通用规则替换当前内容？')) { rules.value = DEFAULT_RULES; story.rules = DEFAULT_RULES; saveSoon(); } } }, '恢复内置规则'))),
     );
     const all = await getModules();
-    const mods = all.filter((m) => !m.pack);
     const globalPacks = (await getPacks()).filter((p) => all.some((m) => m.pack === p.id));
     story.localModules = story.localModules || [];
     story.packs = story.packs || [];
@@ -95,7 +96,7 @@ export async function render(root, { id, tab = 'setting' }) {
     body.append(el('div', { class: 'section-title', text: '这个故事自己导入的' }));
     const own = el('div', { class: 'card' });
     if (!story.packs.length) own.append(el('div', { class: 'hint', style: { marginTop: 0 } }, '可以导入酒馆的预设、世界书、角色卡（JSON、PNG 角色卡，或者打包的 ZIP），只对这个故事生效。'));
-    for (const p of story.packs) {
+    for (const p of story.packs.filter(p => !/\.docx$/i.test(p.file || ''))) {
       const pm = story.localModules.filter((m) => m.pack === p.id);
       const del = () => {
         const cards = (p.cardIds || []).map((cid) => story.cards.find((c) => c.id === cid)?.name).filter(Boolean);
@@ -109,19 +110,37 @@ export async function render(root, { id, tab = 'setting' }) {
         el('div', { class: 'lbl' }, '📦 ' + p.name, el('small', { text: `${KIND_LABEL[p.kind] || '导入'}${p.cardIds?.length ? ' · 加了角色卡' : ''}` })),
         el('button', { class: 'btn small ghost danger-text', onclick: del }, '删除')));
     }
-    own.append(el('div', { class: 'row', style: { marginTop: '8px' } },
-      el('button', { class: 'btn small primary', onclick: async () => { if (await importFlow(story)) { await saveNow(); body.replaceChildren(); drawRules(); } } }, '导入酒馆文件')));
-    body.append(own);
-    if (story.localModules.length) body.append(rulePanel({ mods: story.localModules, packs: story.packs, enabled: story.modules, onChange: saveSoon, onDelete: async (ids) => {
-      if (!confirm(`删除本故事所选 ${ids.length} 条局部规则？角色卡保留。`)) return;
+    const removeLocal = async ids => {
       story.moduleDeleteUndo = { mods: story.localModules.filter(m => ids.includes(m.id)), enabled: Object.fromEntries(ids.map(id => [id, story.modules[id]])) };
       story.localModules = story.localModules.filter(m => !ids.includes(m.id));
       ids.forEach(id => delete story.modules[id]); await saveNow(); redraw();
-    }, onUndo: async () => {
-      const undo = story.moduleDeleteUndo; if (!undo) { toast('没有可以撤销的删除'); return; }
-      story.localModules.push(...undo.mods.filter(m => !story.localModules.some(x => x.id === m.id)));
-      Object.assign(story.modules, undo.enabled); delete story.moduleDeleteUndo; await saveNow(); redraw();
-    } }));
+    };
+    own.append(el('div', { class: 'row', style: { marginTop: '8px' } },
+      el('button', { class: 'btn small primary', onclick: async () => { if (await importFlow(story)) { await saveNow(); redraw(); } } }, '导入酒馆文件'),
+      el('button', { class: 'btn small', onclick: () => openWordImport({ story, onImported: redraw }) }, '导入 Word（.docx）'),
+      story.wordImportUndo ? el('button', { class: 'btn small ghost', onclick: async () => {
+        if (await undoWordImport(story)) { redraw(); toast('已撤销上次 Word 导入'); }
+      } }, '撤销上次 Word 导入') : null));
+    body.append(own);
+    if (story.localModules.length) body.append(rulePanel({ mods: story.localModules, packs: story.packs, enabled: story.modules, onChange: saveSoon,
+      onEdit: mod => editRuleModule(mod, {
+        onSave: async updated => {
+          const next = { ...story, localModules: story.localModules.map(m => m.id === updated.id ? updated : m), updatedAt: Date.now() };
+          await db.put('stories', next);
+          Object.assign(story, next);
+          redraw(); toast('模块已保存');
+        },
+        onDelete: () => removeLocal([mod.id]),
+      }),
+      onDelete: async ids => {
+        if (confirm(`删除本故事所选 ${ids.length} 条局部规则？角色卡保留。`)) await removeLocal(ids);
+      },
+      onUndo: async () => {
+        const undo = story.moduleDeleteUndo; if (!undo?.mods.length) { toast('没有可以撤销的删除'); return; }
+        story.localModules.push(...undo.mods.filter(m => !story.localModules.some(x => x.id === m.id)));
+        Object.assign(story.modules, undo.enabled); delete story.moduleDeleteUndo; await saveNow(); redraw();
+      },
+    }));
   }
 
   function redraw() {

@@ -104,9 +104,10 @@ export async function getModules() {
 export async function saveModules(list) { return db.kvSet('modules', list); }
 
 /** 把 markdown 按“## 标题”拆成模块；没有 ## 的话整份当一个模块 */
-export function modulesFromMarkdown(md, fallbackName = '导入的规则') {
-  const text = String(md || '').replace(/\r/g, '');
-  const parts = text.split(/^##\s+/m);
+export function modulesFromMarkdown(md, fallbackName = '导入的规则', { verbatim = false } = {}) {
+  const input = String(md || '');
+  const text = verbatim ? input : input.replace(/\r/g, '');
+  const parts = text.split(verbatim ? /^##[ \t]+/m : /^##\s+/m);
   const out = [];
   if (parts.length <= 1) {
     const body = text.replace(/^---[\s\S]*?---\n/, '').trim();
@@ -118,13 +119,16 @@ export function modulesFromMarkdown(md, fallbackName = '导入的规则') {
   for (const p of parts.slice(1)) {
     const nl = p.indexOf('\n');
     const name = (nl < 0 ? p : p.slice(0, nl)).trim();
-    const body = (nl < 0 ? '' : p.slice(nl + 1)).trim();
-    if (name && body) out.push({ name, text: body });
+    const raw = nl < 0 ? '' : p.slice(nl + 1);
+    const body = verbatim ? raw.slice(0, -2).replace(/^\\(?=\\|##[ \t])/gm, '') : raw.trim();
+    if (name && (body || verbatim)) out.push({ name, text: body });
   }
   return out;
 }
 
-export function modulesToMarkdown(list) {
+export function modulesToMarkdown(list, { verbatim = false } = {}) {
+  // The internal import format escapes body lines that could be read as section headings.
+  if (verbatim) return list.map(m => `## ${m.name}\n${m.text.replace(/^(?=\\|##[ \t])/gm, '\\')}\n\n`).join('');
   return list.map((m) => `## ${m.name}\n${m.text.trim()}\n`).join('\n');
 }
 

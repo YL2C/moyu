@@ -2,20 +2,72 @@ import { db } from './db.js';
 import { uid } from './util.js';
 import { getModules, saveModules, modulesFromMarkdown } from './state.js';
 
-export function markdownPack(text, filename) {
-  const name = filename.replace(/\.(md|txt)$/i, '');
+export const WORD_IMPORT_UNDO = 'modules.wordImportUndo';
+
+export function markdownPack(text, filename, { groupName, verbatim = false } = {}) {
+  const name = groupName || filename.replace(/\.(md|txt|docx)$/i, '');
   const pack = { id: uid(), name, kind: 'preset', file: filename, importedAt: Date.now() };
-  const mods = modulesFromMarkdown(text, name).map(m => ({ ...m, id: uid(), pack: pack.id, note: '来自预设「' + name + '」', mode: 'always', keywords: '', defaultOn: true }));
+  const mods = modulesFromMarkdown(text, name, { verbatim }).map(m => ({ ...m, id: uid(), pack: pack.id, note: '来自预设「' + name + '」', mode: 'always', keywords: '', defaultOn: true }));
   pack.count = mods.length;
   return { pack, mods };
 }
 
-export async function importMarkdownPack(text, filename) {
-  const { pack, mods } = markdownPack(text, filename);
+export async function importMarkdownPack(text, filename, { story, undo = false, ...options } = {}) {
+  const { pack, mods } = markdownPack(text, filename, options);
   if (!mods.length) throw new Error('文件里没有内容');
-  await saveModules([...(await getModules()), ...mods]);
-  await db.kvSet('packs', [...((await db.kvGet('packs', null)) || []), pack]);
-  return { pack, mods };
+  if (story) {
+    const next = {
+      ...story, updatedAt: Date.now(),
+      localModules: [...(story.localModules || []), ...mods], packs: [...(story.packs || []), pack],
+      modules: { ...story.modules, ...Object.fromEntries(mods.map(m => [m.id, m.defaultOn])) },
+      ...(undo ? { wordImportUndo: pack.id } : {}),
+    };
+    await db.put('stories', next);
+    Object.assign(story, next);
+    return { pack, mods };
+  }
+  return db.kvUpdate(['modules', 'packs', WORD_IMPORT_UNDO], ({ modules, packs }) => ({
+    values: {
+      modules: [...(Array.isArray(modules) ? modules : []), ...mods], packs: [...(packs || []), pack],
+      ...(undo ? { [WORD_IMPORT_UNDO]: pack.id } : {}),
+    },
+    result: { pack, mods },
+  }));
+}
+
+export async function undoWordImport(story) {
+  if (story) {
+    const packId = story.wordImportUndo;
+    if (!packId) return false;
+    const gone = new Set((story.localModules || []).filter(m => m.pack === packId).map(m => m.id));
+    const next = {
+      ...story, updatedAt: Date.now(), wordImportUndo: null,
+      localModules: (story.localModules || []).filter(m => m.pack !== packId),
+      packs: (story.packs || []).filter(p => p.id !== packId),
+      modules: Object.fromEntries(Object.entries(story.modules || {}).filter(([id]) => !gone.has(id))),
+    };
+    const undo = story.moduleDeleteUndo;
+    if (undo?.mods.some(m => m.pack === packId)) {
+      next.moduleDeleteUndo = { ...undo, mods: undo.mods.filter(m => m.pack !== packId), enabled: { ...undo.enabled } };
+      undo.mods.filter(m => m.pack === packId).forEach(m => delete next.moduleDeleteUndo.enabled[m.id]);
+    }
+    await db.put('stories', next);
+    Object.assign(story, next);
+    return true;
+  }
+  return db.kvUpdate(['modules', 'packs', WORD_IMPORT_UNDO, 'modules.undo'], values => {
+    const id = values[WORD_IMPORT_UNDO];
+    if (!id) return { values: {}, result: false };
+    const undo = values['modules.undo'];
+    return {
+      values: {
+        [WORD_IMPORT_UNDO]: null,
+        modules: (values.modules || []).filter(m => m.pack !== id), packs: (values.packs || []).filter(p => p.id !== id),
+        ...(undo ? { 'modules.undo': { ...undo, mods: undo.mods.filter(m => m.pack !== id), packs: undo.packs.filter(p => p.id !== id) } } : {}),
+      },
+      result: true,
+    };
+  });
 }
 
 export async function groupModules(ids, name) {

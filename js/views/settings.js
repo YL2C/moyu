@@ -2,7 +2,7 @@
 
 import { db, exportAll, importData, storageInfo } from '../db.js';
 import { el, uid, toast, sheet, saveFile, pickFile, APP_VERSION, promptText } from '../util.js';
-import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, MODULE_MODES, modulesFromMarkdown, modulesToMarkdown } from '../state.js';
+import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, modulesFromMarkdown, modulesToMarkdown } from '../state.js';
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
 import { parseServiceAccount } from '../vertex.js';
 import { getRelay, saveRelay, testRelay } from '../relay.js';
@@ -11,8 +11,9 @@ import { getMonthSpend, getBudget, setBudget, fmtTokens, CUR, priceLabel } from 
 import { getTemplates, saveTemplates, getBase, saveBase, DEFAULT_BASE, builtinTemplates, newTemplate, SCOPES } from '../fanwai.js';
 import { getPacks, deleteGlobalPack, KIND_LABEL } from '../tavern.js';
 import { importFlow } from './packs-ui.js';
-import { rulePanel, collapseSettings } from './rules-ui.js';
-import { importMarkdownPack, groupModules, deleteModules, undoModuleDelete } from '../rules.js';
+import { openWordImport } from './word-import.js';
+import { rulePanel, collapseSettings, editRuleModule } from './rules-ui.js';
+import { importMarkdownPack, groupModules, deleteModules, undoModuleDelete, undoWordImport, WORD_IMPORT_UNDO } from '../rules.js';
 
 function sw(checked, onchange) {
   const input = el('input', { type: 'checkbox', onchange: () => onchange(input.checked) });
@@ -158,6 +159,10 @@ export async function render(root, { section }) {
     modCard.append(el('div', { class: 'row', style: { marginTop: '10px' } },
       el('button', { class: 'btn small primary', onclick: () => editModule(null) }, '＋ 新模块'),
       el('button', { class: 'btn small', onclick: async () => { if (await importFlow(null)) draw(); } }, '导入酒馆文件'),
+      el('button', { class: 'btn small', onclick: () => openWordImport({ onImported: draw }) }, '导入 Word（.docx）'),
+      (await db.kvGet(WORD_IMPORT_UNDO, null)) ? el('button', { class: 'btn small ghost', onclick: async () => {
+        if (await undoWordImport()) { await draw(); toast('已撤销上次 Word 导入'); }
+      } }, '撤销上次 Word 导入') : null,
       el('button', {
         class: 'btn small',
         onclick: async () => {
@@ -536,52 +541,22 @@ export async function render(root, { section }) {
       el('button', { class: 'btn primary', onclick: () => s.close() }, '关闭'));
   }
 
-  // ───── 规则模块编辑 ─────
-  async function editModule(existing) {
-    const isNew = !existing;
-    const m = existing ? { ...existing } : { id: uid(), name: '', text: '', note: '', mode: 'always', keywords: '' };
-    const s = sheet({ title: isNew ? '新规则模块' : '编辑模块' });
-    const name = el('input', { type: 'text', placeholder: '例：成人场景、弹幕写法、现代奢华' }); name.value = m.name;
-    const mode = el('select');
-    for (const [k, v] of Object.entries(MODULE_MODES)) mode.append(el('option', { value: k }, v));
-    mode.value = m.mode || 'always';
-    const kw = el('input', { type: 'text', placeholder: '用顿号分开，例：宴会、晚宴、酒会' }); kw.value = m.keywords || '';
-    const kwField = el('div', { class: 'field' }, el('label', { text: '关键词' }), kw, el('div', { class: 'hint', text: '最近的剧情或你的输入里出现其中任何一个，这一轮就发送这个模块。' }));
-    const text = el('textarea', { class: 'tall', placeholder: '发给模型的规则正文' }); text.value = m.text; text.style.minHeight = '34vh';
-    const note = el('textarea', { placeholder: '为什么定这条、原话、例子……只给自己看，不发给模型，不花钱。' }); note.value = m.note || '';
-    const syncKw = () => { kwField.style.display = mode.value === 'keyword' ? '' : 'none'; };
-    mode.addEventListener('change', syncKw); syncKw();
-    s.body.append(
-      el('div', { class: 'field' }, el('label', { text: '名字' }), name),
-      el('div', { class: 'field' }, el('label', { text: '什么时候发送' }), mode,
-        el('div', { class: 'hint', text: '“一直发送”：启用的故事每轮都带上。“手动开关”：在游玩页右上角打开才带上，适合成人场景这类情境规则。“关键词”：提到时才带上。' })),
-      kwField,
-      el('div', { class: 'field' }, el('label', { text: '规则正文（发给模型）' }), text),
-      el('div', { class: 'field' }, el('label', { text: '备注（不发给模型）' }), note),
-    );
-    s.foot.append(...[
-      isNew ? null : el('button', {
-        class: 'btn danger', style: { marginRight: 'auto' },
-        onclick: async () => {
-          if (!confirm(`删除模块「${m.name}」？启用了它的故事会自动不再发送。`)) return;
-          await saveModules((await getModules()).filter((x) => x.id !== m.id));
-          s.close(); toast('已删除'); draw();
-        },
-      }, '删除'),
-      el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'),
-      el('button', {
-        class: 'btn primary',
-        onclick: async () => {
-          m.name = name.value.trim(); m.text = text.value; m.note = note.value; m.mode = mode.value; m.keywords = kw.value.trim();
-          if (!m.name) { toast('起个名字'); return; }
-          const list = await getModules();
-          const i = list.findIndex((x) => x.id === m.id);
-          if (i >= 0) list[i] = m; else list.push(m);
-          await saveModules(list);
-          s.close(); toast(isNew ? '模块已添加。记得在故事的“规则”里启用它' : '模块已保存'); draw();
-        },
-      }, '保存'),
-    ].filter(Boolean));
+  function editModule(existing) {
+    editRuleModule(existing, {
+      onSave: async m => {
+        const list = await getModules();
+        const i = list.findIndex(x => x.id === m.id);
+        if (i >= 0) list[i] = m; else list.push(m);
+        await saveModules(list);
+        toast(existing ? '模块已保存' : '模块已添加。记得在故事的“规则”里启用它');
+        await draw();
+      },
+      onDelete: existing && (async m => {
+        await deleteModules([m.id]);
+        toast('已删除');
+        await draw();
+      }),
+    });
   }
 
   // ───── 番外模板编辑 ─────

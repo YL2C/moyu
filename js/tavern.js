@@ -18,14 +18,30 @@ function decodeName(bytes, utf8Flag) {
   return td().decode(bytes);
 }
 
-async function inflateRaw(u8) {
+async function inflateRaw(u8, maxBytes = Infinity) {
   if (typeof DecompressionStream === 'undefined') throw new Error('这个浏览器不支持直接解压 ZIP，请先解压，再单独导入里面的文件');
   const stream = new Blob([u8]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  if (!Number.isFinite(maxBytes)) return new Uint8Array(await new Response(stream).arrayBuffer());
+  const reader = stream.getReader();
+  const pieces = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) throw new Error('文件解压后的文字过大');
+      pieces.push(value);
+    }
+  } finally { await reader.cancel().catch(() => {}); }
+  const data = new Uint8Array(bytes);
+  let cursor = 0;
+  for (const piece of pieces) { data.set(piece, cursor); cursor += piece.length; }
+  return data;
 }
 
 /** 最小的 ZIP 读取：只认“不压缩”和“deflate”两种（绝大多数 ZIP 都是这两种） */
-export async function unzip(buf) {
+export async function unzip(buf, { names, maxEntryBytes = Infinity } = {}) {
   const u8 = new Uint8Array(buf);
   const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   let eocd = -1;
@@ -41,6 +57,7 @@ export async function unzip(buf) {
     const flags = dv.getUint16(off + 8, true);
     const method = dv.getUint16(off + 10, true);
     const csize = dv.getUint32(off + 20, true);
+    const usize = dv.getUint32(off + 24, true);
     const nameLen = dv.getUint16(off + 28, true);
     const extraLen = dv.getUint16(off + 30, true);
     const commentLen = dv.getUint16(off + 32, true);
@@ -48,11 +65,15 @@ export async function unzip(buf) {
     const name = decodeName(u8.subarray(off + 46, off + 46 + nameLen), flags & 0x800);
     off += 46 + nameLen + extraLen + commentLen;
     if (name.endsWith('/') || /(^|\/)(__MACOSX|\.DS_Store)/.test(name)) continue;
+    if (names && !names.has(name)) continue;
+    if (usize > maxEntryBytes || (method === 0 && csize > maxEntryBytes)) throw new Error('文件解压后的文字过大');
+    if (lho + 30 > u8.length || dv.getUint32(lho, true) !== 0x04034b50) throw new Error('ZIP 文件内容不完整');
     const start = lho + 30 + dv.getUint16(lho + 26, true) + dv.getUint16(lho + 28, true);
+    if (start + csize > u8.length) throw new Error('ZIP 文件内容不完整');
     const raw = u8.subarray(start, start + csize);
     if (flags & 1) { out.push({ name, error: '加了密码' }); continue; }
     if (method === 0) out.push({ name, data: raw });
-    else if (method === 8) out.push({ name, data: await inflateRaw(raw) });
+    else if (method === 8) out.push({ name, data: await inflateRaw(raw, maxEntryBytes) });
     else out.push({ name, error: '压缩方式不支持' });
   }
   return out;
