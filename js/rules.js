@@ -5,15 +5,38 @@ import { getModules, saveModules, modulesFromMarkdown } from './state.js';
 export const WORD_IMPORT_UNDO = 'modules.wordImportUndo';
 
 export function markdownPack(text, filename, { groupName, verbatim = false } = {}) {
-  const name = groupName || filename.replace(/\.(md|txt|docx)$/i, '');
+  const name = groupName || filename.replace(/\.(md|markdown|txt|docx)$/i, '');
+  return rulePack(modulesFromMarkdown(text, name, { verbatim }), filename, name);
+}
+
+function rulePack(entries, filename, name) {
   const pack = { id: uid(), name, kind: 'preset', file: filename, importedAt: Date.now() };
-  const mods = modulesFromMarkdown(text, name, { verbatim }).map(m => ({ ...m, id: uid(), pack: pack.id, note: '来自预设「' + name + '」', mode: 'always', keywords: '', defaultOn: true }));
+  const mods = entries.map(m => ({ ...m, id: uid(), pack: pack.id, note: '来自预设「' + name + '」', mode: 'always', keywords: '', defaultOn: true }));
   pack.count = mods.length;
   return { pack, mods };
 }
 
 export async function importMarkdownPack(text, filename, { story, undo = false, ...options } = {}) {
-  const { pack, mods } = markdownPack(text, filename, options);
+  return saveRulePack(markdownPack(text, filename, options), { story, undo });
+}
+
+export function ruleJsonEntries(json, fallbackName) {
+  const entries = Array.isArray(json) ? json : Array.isArray(json?.modules) ? json.modules : [json];
+  if (!entries.length || !entries.every(entry => typeof entry?.text === 'string' && entry.text.trim())) {
+    throw new Error('规则 JSON 需要包含正文 text。可使用单条规则、规则数组或带 modules 数组的对象。');
+  }
+  return entries.map((entry, i) => ({
+    name: typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : entries.length === 1 ? fallbackName : `规则 ${i + 1}`,
+    text: entry.text,
+  }));
+}
+
+export function importRuleJsonPack(json, filename, entries) {
+  const name = typeof json.name === 'string' && json.name.trim() ? json.name.trim() : filename.replace(/\.json$/i, '');
+  return saveRulePack(rulePack(entries, filename, name));
+}
+
+async function saveRulePack({ pack, mods }, { story, undo = false } = {}) {
   if (!mods.length) throw new Error('文件里没有内容');
   if (story) {
     const next = {

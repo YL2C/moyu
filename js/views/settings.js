@@ -1,7 +1,7 @@
 // 墨游 · 设置：连接、默认规则、阅读、备份
 
 import { db, exportAll, importData, storageInfo } from '../db.js';
-import { el, uid, toast, sheet, saveFile, pickFile, APP_VERSION, promptText } from '../util.js';
+import { el, uid, toast, sheet, saveFile, pickFile, pickRawFile, APP_VERSION, promptText } from '../util.js';
 import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, modulesFromMarkdown, modulesToMarkdown } from '../state.js';
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
 import { parseServiceAccount } from '../vertex.js';
@@ -9,11 +9,48 @@ import { getRelay, saveRelay, testRelay } from '../relay.js';
 import { DEFAULT_RULES } from '../prompt.js';
 import { getMonthSpend, getBudget, setBudget, fmtTokens, CUR, priceLabel } from '../cost.js';
 import { getTemplates, saveTemplates, getBase, saveBase, DEFAULT_BASE, builtinTemplates, newTemplate, SCOPES } from '../fanwai.js';
-import { getPacks, deleteGlobalPack, KIND_LABEL } from '../tavern.js';
-import { importFlow } from './packs-ui.js';
+import { detectKind, getPacks, deleteGlobalPack, KIND_LABEL, readTavernFile } from '../tavern.js';
+import { importFlow, importTavernResult } from './packs-ui.js';
 import { openWordImport } from './word-import.js';
 import { rulePanel, collapseSettings, editRuleModule } from './rules-ui.js';
-import { importMarkdownPack, groupModules, deleteModules, undoModuleDelete, undoWordImport, WORD_IMPORT_UNDO } from '../rules.js';
+import { importMarkdownPack, importRuleJsonPack, ruleJsonEntries, groupModules, deleteModules, undoModuleDelete, undoWordImport, WORD_IMPORT_UNDO } from '../rules.js';
+
+async function importRuleFile(onImported) {
+  const file = await pickRawFile('.docx,.md,.markdown,.txt,.json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/markdown,text/plain,application/json');
+  if (!file) return;
+  const filename = file.name;
+  if (/\.docx$/i.test(filename)) return openWordImport({ file, onImported });
+  try {
+    const stem = filename.replace(/\.(md|markdown|txt|json)$/i, '');
+    let entries, save;
+    if (/\.json$/i.test(filename)) {
+      const read = await readTavernFile(file);
+      if (!read.items.length) throw new Error(read.skipped[0]?.why || '文件里没有 JSON 数据');
+      const { json } = read.items[0];
+      if (json?.app === 'moyu' && Array.isArray(json.stories)) throw new Error('这是墨游备份，请前往「备份 → 导入备份」');
+      if (detectKind(json) !== 'unknown') {
+        if (await importTavernResult(read)) await onImported();
+        return;
+      }
+      entries = ruleJsonEntries(json, stem);
+      save = () => importRuleJsonPack(json, filename, entries);
+    } else if (/\.(md|markdown|txt)$/i.test(filename)) {
+      const source = await file.text();
+      entries = modulesFromMarkdown(source, stem);
+      save = () => importMarkdownPack(source, filename);
+    } else {
+      throw new Error('请选择 Word（.docx）、Markdown、TXT 或 JSON 文件');
+    }
+    if (!entries.length) throw new Error('文件里没有内容');
+    const preview = entries.slice(0, 20).map(entry => '· ' + entry.name).join('\n');
+    if (!confirm(`将导入 ${entries.length} 个模块：\n${preview}${entries.length > 20 ? '\n……' : ''}\n\n都按“一直发送”导入，之后可以逐个改。继续？`)) return;
+    const { mods } = await save();
+    toast(`已导入 ${mods.length} 个模块`);
+    await onImported();
+  } catch (error) {
+    toast('导入失败：' + error.message, 4200);
+  }
+}
 
 function sw(checked, onchange) {
   const input = el('input', { type: 'checkbox', onchange: () => onchange(input.checked) });
@@ -141,7 +178,7 @@ export async function render(root, { section }) {
     const modTitle = el('div', { class: 'section-title', id: 'sec-modules', text: '规则模块（所有故事共用，每个故事自己选启用哪些）' });
     wrap.append(modTitle);
     const modCard = el('div', { class: 'card' });
-    if (!mods.length && !packs.length) modCard.append(el('div', { class: 'hint', style: { marginTop: 0, marginBottom: '10px' } }, '模块是可以在多个故事之间复用的规则块，比如“文风”“弹幕写法”“成人场景”。可以一条条加，也可以导入一份 markdown：每个“## 标题”拆成一个模块。'));
+    if (!mods.length && !packs.length) modCard.append(el('div', { class: 'hint', style: { marginTop: 0, marginBottom: '10px' } }, '模块是可以在多个故事之间复用的规则块，比如“文风”和“弹幕写法”。支持导入 Word、Markdown、TXT 和 JSON。'));
     modCard.append(rulePanel({ mods: allMods, packs, onEdit: editModule,
       onGroup: async (ids) => {
         const name = await promptText({ title: '归为同一份预设', placeholder: '填写预设名称', multiline: false });
@@ -159,23 +196,10 @@ export async function render(root, { section }) {
     modCard.append(el('div', { class: 'row', style: { marginTop: '10px' } },
       el('button', { class: 'btn small primary', onclick: () => editModule(null) }, '＋ 新模块'),
       el('button', { class: 'btn small', onclick: async () => { if (await importFlow(null)) draw(); } }, '导入酒馆文件'),
-      el('button', { class: 'btn small', onclick: () => openWordImport({ onImported: draw }) }, '导入 Word（.docx）'),
+      el('button', { class: 'btn small', onclick: () => importRuleFile(draw) }, '导入文件'),
       (await db.kvGet(WORD_IMPORT_UNDO, null)) ? el('button', { class: 'btn small ghost', onclick: async () => {
         if (await undoWordImport()) { await draw(); toast('已撤销上次 Word 导入'); }
       } }, '撤销上次 Word 导入') : null,
-      el('button', {
-        class: 'btn small',
-        onclick: async () => {
-          const f = await pickFile('.md,.txt,text/plain,text/markdown');
-          if (!f) return;
-          const found = modulesFromMarkdown(f.text, f.name.replace(/\.(md|txt)$/i, ''));
-          if (!found.length) { toast('文件里没有内容'); return; }
-          if (!confirm(`拆出 ${found.length} 个模块：\n${found.map((x) => '· ' + x.name).slice(0, 20).join('\n')}${found.length > 20 ? '\n……' : ''}\n\n都按“一直发送”导入，之后可以逐个改。继续？`)) return;
-          await importMarkdownPack(f.text, f.name);
-          toast(`已导入 ${found.length} 个模块`);
-          draw();
-        },
-      }, '导入 markdown'),
       mods.length ? el('button', { class: 'btn small ghost', onclick: async () => { await saveFile('墨游_规则模块.md', modulesToMarkdown(await getModules()), 'text/markdown'); } }, '导出') : null));
     wrap.append(modCard);
 

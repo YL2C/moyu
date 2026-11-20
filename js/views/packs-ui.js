@@ -16,6 +16,10 @@ export async function importFlow(story = null) {
   let read;
   try { read = await readTavernFile(f); }
   catch (e) { toast('读不了这个文件：' + (e?.message || e), 4000); return false; }
+  return importTavernResult(read, story);
+}
+
+export async function importTavernResult(read, story = null) {
   if (!read.items.length) {
     showResult([], read.skipped, [], story);
     return false;

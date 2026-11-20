@@ -10,6 +10,7 @@ import { importMarkdownPack, deleteModules, undoModuleDelete, undoWordImport } f
 import { getModules, modulesFromMarkdown } from '../js/state.js';
 import { buildContext } from '../js/prompt.js';
 import { showWordImport } from '../js/views/word-import.js';
+import { render as renderSettings } from '../js/views/settings.js';
 
 const { window } = new JSDOM('<body></body>', { url: 'https://qa.example/moyu/' });
 for (const key of ['window', 'document', 'Node', 'Event', 'CustomEvent', 'DOMParser', 'localStorage']) globalThis[key] = window[key];
@@ -51,6 +52,58 @@ function docx(body, other = {}) {
 }
 
 function decode(rows) { return modulesFromMarkdown(wordImportMarkdown(rows), '', { verbatim: true }); }
+
+test('设置的同一个文件按钮按格式导入 Word、Markdown 和两种 JSON 规则', async (t) => {
+  const root = document.body.appendChild(document.createElement('main'));
+  const toast = document.body.appendChild(document.createElement('div'));
+  toast.id = 'toast';
+  globalThis.confirm = () => true;
+  t.after(() => { root.remove(); toast.remove(); delete globalThis.confirm; });
+  await renderSettings(root, {});
+  const button = (label, parent = root) => [...parent.querySelectorAll('button')].find(b => b.textContent === label);
+  const waitFor = async (check) => {
+    for (let i = 0; i < 150; i++) {
+      if (await check()) return;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.fail('导入界面未刷新');
+  };
+  const choose = (file) => {
+    button('导入文件').click();
+    const picker = document.querySelector('input[type=file]');
+    assert.match(picker.accept, /\.docx,\.md,\.markdown,\.txt,\.json/);
+    Object.defineProperty(picker, 'files', { value: [file] });
+    picker.dispatchEvent(new Event('change'));
+  };
+  assert.equal(root.querySelector('#sec-modules')?.textContent.includes('规则模块'), true);
+  assert.equal(button('导入 Word（.docx）'), undefined);
+  assert.ok(button('导入酒馆文件'));
+
+  choose(new File(['## 测试 Markdown\n这是规则。'], '规则.MD'));
+  await waitFor(() => root.textContent.includes('规则') && toast.textContent.includes('已导入 1 个模块') && button('导入文件'));
+  assert.ok((await getModules()).some(m => m.name === '测试 Markdown'));
+
+  choose(new File([JSON.stringify({ name: 'JSON 规则组', modules: [{ name: '测试 JSON', text: '正文\n## 保留小标题' }] })], '规则.JSON'));
+  await waitFor(() => root.textContent.includes('JSON 规则组'));
+  assert.equal((await getModules()).find(m => m.name === '测试 JSON').text, '正文\n## 保留小标题');
+
+  choose(new File([JSON.stringify({ name: '酒馆预设样本', prompts: [{ identifier: 'main', name: '酒馆条目', content: '酒馆规则', enabled: false }] })], '酒馆.json'));
+  await waitFor(() => root.textContent.includes('酒馆预设样本'));
+  assert.equal((await getModules()).find(m => m.name === '酒馆条目').defaultOn, false);
+  button('好', document).click();
+
+  const count = (await getModules()).length;
+  choose(new File(['{broken'], '坏掉的.json'));
+  await waitFor(() => toast.textContent.includes('不是有效的 JSON'));
+  assert.equal((await getModules()).length, count);
+
+  choose(docx(p('Word 正文')));
+  await waitFor(() => !!button('确认导入', document));
+  button('确认导入', document).click();
+  await waitFor(() => !!button('撤销上次 Word 导入'));
+  assert.ok((await getModules()).some(m => m.text === 'Word 正文'));
+  assert.equal(await undoWordImport(), true);
+});
 
 test('标题样式优先、标题 1 取组名，且标题 2 之前是第 0 条', async () => {
   const styles = xml('styles', '<w:style w:styleId="CustomTwo"><w:basedOn w:val="Heading2"/></w:style>' +

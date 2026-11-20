@@ -7,8 +7,8 @@ import { el, pickRawFile, sheet, toast } from '../util.js';
 const count = str => Array.from(str).length;
 const total = rows => rows.reduce((n, row) => n + count(row.text), 0);
 
-export async function openWordImport(options) {
-  const file = await pickRawFile('.docx');
+export async function openWordImport({ file = null, ...options } = {}) {
+  file ??= await pickRawFile('.docx');
   if (!file) return;
   try { showWordImport(await readWordPreset(file), options); }
   catch (e) { toast(e.message, 4200); }
