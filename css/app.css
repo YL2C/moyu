@@ -42,6 +42,7 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
+html, body, .scroll { touch-action: pan-x pan-y; }
 body { font-family: var(--ui-font); font-size: 15px; overscroll-behavior: none; }
 button, input, textarea, select { font: inherit; color: inherit; }
 a { color: var(--accent); }

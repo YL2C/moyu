@@ -88,6 +88,7 @@ async function route() {
   root.insertBefore(container, root.querySelector('#tabbar'));
   placeTabs(name);
   root.classList.add('has-tabs');
+  c?.mounted?.();
 }
 
 // 删了故事：后台还在写这个故事的页面一起收掉

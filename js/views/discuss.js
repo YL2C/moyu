@@ -508,6 +508,7 @@ async function renderChat(root, id) {
   };
   destroy.busy = () => jobs > 0 || replyBusy;
   destroy.onIdle = fn => { idleCbs.add(fn); return () => idleCbs.delete(fn); };
-  destroy.show = () => { header(); draw(false); reconnect(); };
+  destroy.mounted = () => { scroller.scrollTop = scroller.scrollHeight; };
+  destroy.show = () => { header(); draw(); reconnect(); };
   return destroy;
 }
