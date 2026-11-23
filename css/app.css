@@ -75,7 +75,6 @@
 :root[data-theme="paper"] .option-row { background: #eeebe3; border-radius: 7px; }
 :root[data-theme="paper"] .option-row:has(button.selected) { background: #dee5e8; border-color: #5d7482; }
 :root[data-theme="paper"] .option-row [data-choice] { font-family: var(--read-font); }
-:root[data-theme="paper"] .option-row .k { padding-right: 8px; border-right: 1px solid var(--line); }
 :root[data-theme="paper"] .gm h2 { font-family: var(--ui-font); }
 @media (display-mode: standalone) {
   @supports (-webkit-touch-callout: none) {
