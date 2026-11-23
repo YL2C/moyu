@@ -2,7 +2,7 @@
 
 import { db, exportAll, importData, storageInfo } from '../db.js';
 import { el, uid, toast, sheet, saveFile, pickFile, pickRawFile, APP_VERSION, promptText } from '../util.js';
-import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, modulesFromMarkdown, modulesToMarkdown, isReadingColor } from '../state.js';
+import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, modulesFromMarkdown, modulesToMarkdown, isReadingColor, DEFAULT_PREFS, READING_THEMES, READING_DIMENSIONS, readingTheme, readingDimension } from '../state.js';
 import { listReadingFonts, importReadingFont, deleteReadingFont } from '../reading-fonts.js';
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
 import { parseServiceAccount } from '../vertex.js';
@@ -66,6 +66,31 @@ function seg(options, value, onpick) {
     box.append(b);
   }
   return box;
+}
+
+function readingSlider(dimension, value, preview, save) {
+  const { label, property, min, max, step, unit } = dimension;
+  const input = el('input', { type: 'range', min, max, step, value, 'aria-label': label });
+  const readout = el('output', { text: value + unit });
+  const minus = el('button', { type: 'button', class: 'btn small', 'aria-label': '减小' + label }, '−');
+  const plus = el('button', { type: 'button', class: 'btn small', 'aria-label': '增大' + label }, '＋');
+  const update = () => {
+    const next = input.valueAsNumber;
+    readout.textContent = next + unit;
+    minus.disabled = next <= min;
+    plus.disabled = next >= max;
+    preview.style.setProperty(property, next + unit);
+  };
+  const commit = () => {
+    update();
+    void save(input.valueAsNumber).catch(error => toast(error.message, 4000));
+  };
+  minus.addEventListener('click', () => { input.stepDown(); commit(); });
+  plus.addEventListener('click', () => { input.stepUp(); commit(); });
+  input.addEventListener('input', update);
+  input.addEventListener('change', commit);
+  update();
+  return el('div', { class: 'reading-slider' }, el('span', {}, label), minus, input, plus, readout);
 }
 
 /** 可搜索的模型选择框，返回选中的模型名（取消返回 null） */
@@ -243,7 +268,7 @@ export async function render(root, { section }) {
       const file = fontFile.files?.[0];
       fontFile.value = '';
       if (!file || fontFile.disabled) return;
-      const fontKey = getPrefs().theme === 'paper' ? 'paperFont' : 'font';
+      const { fontKey } = readingTheme(getPrefs().theme);
       fontFile.disabled = true;
       importCaption.textContent = '正在导入…';
       try {
@@ -261,12 +286,10 @@ export async function render(root, { section }) {
     const importFont = el('label', { class: 'btn small reading-font-import', title: '支持 TTF、OTF 和 WOFF2' }, importCaption, fontFile);
     function drawReadingAppearance() {
       const current = getPrefs();
-      const paper = current.theme === 'paper';
-      const sizeKey = paper ? 'paperFontSize' : 'fontSize';
-      const fontKey = paper ? 'paperFont' : 'font';
-      const sizes = paper ? [16, 18, 20, 22] : [15, 17, 19, 21];
+      const theme = readingTheme(current.theme);
+      const { fontKey, colorKey, sizeKey } = theme;
       const fontPicker = el('select', {
-        class: 'reading-font-picker', 'aria-label': '正文字体',
+        class: 'reading-select', 'aria-label': '正文字体',
         onchange: () => {
           setPrefs({ [fontKey]: fontPicker.value });
           drawReadingAppearance();
@@ -278,13 +301,37 @@ export async function render(root, { section }) {
         ...readingFonts.map(font => el('option', { value: font.id }, font.name)));
       const localFont = readingFonts.find(font => font.id === current[fontKey]);
       fontPicker.value = [...fontPicker.options].some(option => option.value === current[fontKey])
-        ? current[fontKey] : (paper ? 'kinghwa' : 'serif');
-      const colorKey = paper ? 'paperColors' : 'readingColors';
+        ? current[fontKey] : DEFAULT_PREFS[fontKey];
       const preview = el('div', { class: 'reading-preview' },
-        el('div', {}, '窗外的雨渐渐停了。'),
-        el('div', { class: 'dialogue-text' }, '“再坐一会儿吧。”'));
-      const colorPanel = el('details', { class: 'reading-colors' }, el('summary', {}, '自定义正文配色'));
-      colorPanel.open = readingAppearance.querySelector('.reading-colors')?.open || false;
+        el('p', {}, '窗外的雨渐渐停了。树叶上还挂着水珠，街角的灯亮了起来。'),
+        el('p', { class: 'dialogue-text' }, '“再坐一会儿吧。”'));
+      const design = el('details', { class: 'reading-design' }, el('summary', {}, '字体设计'), preview);
+      design.open = readingAppearance.querySelector('.reading-design')?.open ?? false;
+      for (const dimension of READING_DIMENSIONS) {
+        design.append(readingSlider(dimension, readingDimension(theme, dimension, current), preview, value => {
+          if (dimension.key === 'size') return setPrefs({ [sizeKey]: value });
+          const spacing = getPrefs().readingSpacing;
+          return setPrefs({ readingSpacing: {
+            ...spacing, [theme.id]: { ...spacing?.[theme.id], [dimension.key]: value },
+          } });
+        }));
+      }
+      design.append(el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '正文字体'), fontPicker),
+        el('div', { class: 'row end' }, importFont, localFont ? el('button', { class: 'btn small ghost', onclick: async () => {
+          if (!confirm('删除本机字体「' + localFont.name + '」？')) return;
+          try {
+            await deleteReadingFont(localFont.id);
+            const updated = getPrefs();
+            const patch = {};
+            for (const { fontKey } of READING_THEMES) {
+              if (updated[fontKey] === localFont.id) patch[fontKey] = DEFAULT_PREFS[fontKey];
+            }
+            await setPrefs(patch);
+            readingFonts = await listReadingFonts();
+            drawReadingAppearance();
+          } catch (error) { toast(error.message, 4000); }
+        } }, '删除此字体') : null));
+      const colorPanel = el('div', { class: 'reading-colors' });
       const defaultColors = window.getComputedStyle(document.documentElement);
       for (const [key, label, token, property] of [
         ['narration', '旁白', '--text', '--custom-narration'],
@@ -318,36 +365,19 @@ export async function render(root, { section }) {
       colorPanel.append(el('button', { class: 'btn small', onclick: () => {
         setPrefs({ [colorKey]: null });
         drawReadingAppearance();
-      } }, '恢复主题配色'), preview);
-      readingAppearance.replaceChildren(
-        el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '字号'),
-          seg(sizes.map((size, i) => [size, ['小', '中', '大', '特大'][i]]), current[sizeKey],
-            (size) => setPrefs({ [sizeKey]: size }))),
-        el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '正文字体'), fontPicker),
-        el('div', { class: 'row end' }, importFont, localFont ? el('button', { class: 'btn small ghost', onclick: async () => {
-          if (!confirm('删除本机字体「' + localFont.name + '」？')) return;
-          try {
-            await deleteReadingFont(localFont.id);
-            const updated = getPrefs();
-            await setPrefs({
-              font: updated.font === localFont.id ? 'serif' : updated.font,
-              paperFont: updated.paperFont === localFont.id ? 'kinghwa' : updated.paperFont,
-            });
-            readingFonts = await listReadingFonts();
-            drawReadingAppearance();
-          } catch (error) { toast(error.message, 4000); }
-        } }, '删除此字体') : null),
-        colorPanel,
-      );
+      } }, '恢复主题配色'));
+      design.append(colorPanel);
+      readingAppearance.replaceChildren(design);
     }
     drawReadingAppearance();
+    const themePicker = el('select', { class: 'reading-select', 'aria-label': '阅读主题', onchange: () => {
+      setPrefs({ theme: themePicker.value });
+      drawReadingAppearance();
+    } }, READING_THEMES.map(({ id, label }) => el('option', { value: id }, label)));
+    themePicker.value = readingTheme(p.theme).id;
     wrap.append(el('div', { class: 'section-title', text: '阅读' }));
     wrap.append(el('div', { class: 'card' },
-      el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '阅读主题'),
-        seg([['default', '默认'], ['paper', '纸书']], p.theme, (theme) => {
-          setPrefs({ theme });
-          drawReadingAppearance();
-        })),
+      el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '阅读主题'), themePicker),
       readingAppearance,
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '段首缩进'), sw(p.indent, (v) => setPrefs({ indent: v }))),
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '关键词加粗与强调色'), sw(p.emphasis !== false, (v) => setPrefs({ emphasis: v }))),

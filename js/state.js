@@ -8,8 +8,26 @@ import { showReadingFont } from './reading-fonts.js';
 export const DEFAULT_PREFS = {
   fontSize: 17, font: 'serif', theme: 'default', paperFontSize: 16, paperFont: 'kinghwa', indent: true, danmuOpen: true,
 };
+export const READING_THEMES = [
+  { id: 'default', label: '默认', sizeKey: 'fontSize', fontKey: 'font', colorKey: 'readingColors' },
+  { id: 'paper', label: '纸书', sizeKey: 'paperFontSize', fontKey: 'paperFont', colorKey: 'paperColors' },
+];
+export const READING_DIMENSIONS = [
+  { key: 'size', label: '字号', property: '--read-size', min: 12, max: 32, step: 1, unit: 'px' },
+  { key: 'letter', label: '字距', property: '--read-letter-spacing', min: -1, max: 4, step: 0.1, unit: 'px', initial: 0 },
+  { key: 'line', label: '行距', property: '--read-line-height', min: 1.2, max: 2.6, step: 0.05, unit: '', initial: 1.9 },
+  { key: 'paragraph', label: '段距', property: '--read-paragraph-spacing', min: 0, max: 2, step: 0.05, unit: 'em', initial: 0.85 },
+];
 let prefs = { ...DEFAULT_PREFS };
 export const isReadingColor = (value) => typeof value === 'string' && /^#[a-f0-9]{6}$/i.test(value);
+export const readingTheme = (id) => READING_THEMES.find(theme => theme.id === id) || READING_THEMES[0];
+
+export function readingDimension(theme, { key, min, max, step, initial }, source = prefs) {
+  const value = key === 'size' ? source[theme.sizeKey] : source.readingSpacing?.[theme.id]?.[key];
+  if (!Number.isFinite(value)) return initial ?? DEFAULT_PREFS[theme.sizeKey];
+  const clamped = Math.min(max, Math.max(min, value));
+  return Number((Math.round((clamped - min) / step) * step + min).toFixed(2));
+}
 
 export async function loadPrefs() {
   prefs = { ...DEFAULT_PREFS, ...((await db.kvGet('prefs', null)) || {}) };
@@ -24,20 +42,25 @@ export async function setPrefs(patch) {
 }
 export function applyPrefs() {
   const r = document.documentElement;
-  const paper = prefs.theme === 'paper';
-  r.style.setProperty('--read-size', (paper ? prefs.paperFontSize : prefs.fontSize) + 'px');
-  r.dataset.theme = paper ? 'paper' : 'default';
-  r.dataset.font = paper ? prefs.paperFont : prefs.font;
+  const theme = readingTheme(prefs.theme);
+  for (const dimension of READING_DIMENSIONS) {
+    const { key, property, unit } = dimension;
+    if (key === 'size' || Number.isFinite(prefs.readingSpacing?.[theme.id]?.[key])) {
+      r.style.setProperty(property, readingDimension(theme, dimension) + unit);
+    } else r.style.removeProperty(property);
+  }
+  r.dataset.theme = theme.id;
+  r.dataset.font = prefs[theme.fontKey] || DEFAULT_PREFS[theme.fontKey];
   r.dataset.indent = prefs.indent ? 'on' : 'off';
   r.dataset.dialogue = prefs.dialogueColor === false ? 'off' : 'on';
-  const colors = paper ? prefs.paperColors : prefs.readingColors;
+  const colors = prefs[theme.colorKey];
   for (const [key, property] of [['narration', '--custom-narration'], ['dialogue', '--custom-dialogue']]) {
     const value = colors?.[key];
     if (isReadingColor(value)) r.style.setProperty(property, value);
     else r.style.removeProperty(property);
   }
   document.querySelectorAll('meta[name="theme-color"][data-paper-color]').forEach(meta => {
-    meta.content = paper ? meta.dataset.paperColor : meta.dataset.defaultColor;
+    meta.content = meta.dataset[theme.id + 'Color'] || meta.dataset.defaultColor;
   });
   void showReadingFont(r.dataset.font);
 }

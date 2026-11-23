@@ -34,6 +34,10 @@ let requests = [], responses = [], root;
 const options = '\n\n【选项】\nA. 查看地图\nB. 收好信件\nC. 询问路人\nD. 留在原地';
 const wait = async fn => { for (let i=0;i<300;i++) { if(await fn()) return; await new Promise(r=>setTimeout(r,10)); } throw new Error('等待状态超时'); };
 const button = (text, container = document) => [...container.querySelectorAll('button')].find(b=>b.textContent===text);
+const changeValue = (element, value) => {
+  element.value = value;
+  element.dispatchEvent(new Event('change'));
+};
 async function seedStory() {
   const story = { id:'story-qa',title:'测试故事',world:'主角是已经成年的青年。',rules:'保持设定',cards:[],headId:'a1',options:true,danmu:false,modules:{},localModules:[],packs:[],memEvery:0,protagonist:{name:'林舟',gender:'男',note:'初始是大学生。'} };
   const nodes = [{id:'u1',storyId:story.id,parentId:null,role:'user',kind:'start',text:'开始',createdAt:1},
@@ -52,43 +56,66 @@ beforeEach(async () => {
     return new Response(JSON.stringify({choices:[{message:{content:answer},finish_reason:'stop'}],usage:{prompt_tokens:20,completion_tokens:20}}),{headers:{'Content-Type':'application/json'}}); };
 });
 
-test('纸书全局生效并单独记住字号和字体，恢复默认时保留原来的阅读偏好', async () => {
+test('主题下拉保留旧字号，各自保存字体与排版，滑动即时预览', async () => {
   await db.kvSet('prefs', { fontSize: 19, font: 'sans', indent: false });
   await loadPrefs();
   await settings.render(root, { section: '阅读' });
   const page = document.documentElement;
   assert.equal(page.dataset.theme, 'default');
-
-  button('纸书', root).click();
+  const themes = root.querySelector('[aria-label="阅读主题"]');
+  assert.deepEqual([...themes.options].map(option => option.textContent), ['默认', '纸书']);
+  const slider = label => root.querySelector(`input[type=range][aria-label="${label}"]`);
+  const preview = () => root.querySelector('.reading-preview');
+  assert.equal(slider('字号').valueAsNumber, 19);
+  changeValue(themes, 'paper');
   assert.equal(page.dataset.theme, 'paper');
   assert.equal(page.style.getPropertyValue('--read-size'), '16px');
   const picker = () => root.querySelector('select[aria-label="正文字体"]');
   assert.equal(picker().value, 'kinghwa');
   assert.equal(page.dataset.font, 'kinghwa');
   assert.deepEqual([...picker().options].map(option => option.textContent), ['宋体', '黑体', '京华老宋体']);
-  picker().value = 'serif';
-  picker().dispatchEvent(new Event('change'));
+  root.querySelector('.reading-design').open = true;
+  changeValue(picker(), 'serif');
   assert.equal(page.dataset.font, 'serif');
-  button('中', root).click();
+  const size = slider('字号');
+  size.value = '18';
+  size.dispatchEvent(new Event('input'));
+  assert.equal(preview().style.getPropertyValue('--read-size'), '18px');
+  assert.equal(page.style.getPropertyValue('--read-size'), '16px');
+  size.dispatchEvent(new Event('change'));
+  root.querySelector('[aria-label="增大字距"]').click();
+  assert.equal(slider('字距').valueAsNumber, 0.1);
+  changeValue(slider('行距'), '2.2');
+  changeValue(slider('段距'), '0.6');
+  assert.equal(preview().style.getPropertyValue('--read-letter-spacing'), '0.1px');
+  assert.equal(preview().style.getPropertyValue('--read-line-height'), '2.2');
+  assert.equal(preview().style.getPropertyValue('--read-paragraph-spacing'), '0.6em');
   await wait(async () => {
     const saved = await db.kvGet('prefs');
-    return saved?.paperFontSize === 18 && saved?.paperFont === 'serif';
+    return saved?.paperFontSize === 18 && saved?.paperFont === 'serif' && saved.readingSpacing?.paper?.paragraph === 0.6;
   });
   await loadPrefs();
   assert.equal(page.dataset.theme, 'paper');
   assert.equal(page.style.getPropertyValue('--read-size'), '18px');
   assert.equal(page.dataset.font, 'serif');
+  assert.equal(page.style.getPropertyValue('--read-letter-spacing'), '0.1px');
+  assert.equal(page.style.getPropertyValue('--read-line-height'), '2.2');
+  assert.equal(page.style.getPropertyValue('--read-paragraph-spacing'), '0.6em');
 
-  const themeRow = button('纸书', root).closest('.seg');
-  button('默认', themeRow).click();
+  changeValue(themes, 'default');
   assert.equal(page.dataset.theme, 'default');
   assert.equal(page.style.getPropertyValue('--read-size'), '19px');
   assert.equal(page.dataset.font, 'sans');
   assert.equal(page.dataset.indent, 'off');
   assert.equal(picker().value, 'sans');
-  button('纸书', themeRow).click();
+  assert.equal(page.style.getPropertyValue('--read-line-height'), '');
+  assert.equal(slider('行距').valueAsNumber, 1.9);
+  changeValue(slider('行距'), '1.5');
+  changeValue(themes, 'paper');
   assert.equal(picker().value, 'serif');
-  button('默认', themeRow).click();
+  assert.equal(slider('行距').valueAsNumber, 2.2);
+  changeValue(themes, 'default');
+  assert.equal(slider('行距').valueAsNumber, 1.5);
 
   await wait(async () => (await db.kvGet('prefs'))?.theme === 'default');
   await db.kvSet('prefs', null);
@@ -111,29 +138,33 @@ test('阅读设置独立保存旁白和台词颜色，能够恢复配色并导�
     await loadPrefs();
     await settings.render(root, {});
     const page = document.documentElement;
-    const themes = button('纸书', root).closest('.seg');
-    const colors = () => root.querySelector('details.reading-colors');
-    const change = (element, value) => {
-      element.value = value;
-      element.dispatchEvent(new Event('change'));
-    };
-    button('纸书', themes).click();
+    const themes = root.querySelector('[aria-label="阅读主题"]');
+    const design = () => root.querySelector('details.reading-design');
+    const preview = () => root.querySelector('.reading-preview');
+    changeValue(themes, 'paper');
     assert.equal(themeColor.content, '#eeeae2');
-    assert.equal(colors().open, false);
-    assert.ok(colors().contains(root.querySelector('.reading-preview')));
-    colors().open = true;
-    change(root.querySelector('[aria-label="旁白色值"]'), '#121212');
-    change(root.querySelector('[aria-label="台词色值"]'), '#334456');
+    assert.equal(design().open, false);
+    assert.equal(design().firstElementChild.textContent, '字体设计');
+    assert.equal(design().children[1], preview());
+    assert.ok(design().contains(root.querySelector('.reading-colors')));
+    design().open = true;
+    const color = root.querySelector('[aria-label="台词颜色"]');
+    color.value = '#334456';
+    color.dispatchEvent(new Event('input'));
+    assert.equal(preview().style.getPropertyValue('--custom-dialogue'), '#334456');
+    assert.equal(page.style.getPropertyValue('--custom-dialogue'), '');
+    changeValue(root.querySelector('[aria-label="旁白色值"]'), '#121212');
+    color.dispatchEvent(new Event('change'));
     assert.equal(page.style.getPropertyValue('--custom-narration'), '#121212');
     assert.equal(page.style.getPropertyValue('--custom-dialogue'), '#334456');
-    button('默认', themes).click();
+    changeValue(themes, 'default');
     assert.equal(themeColor.content, '#f6f3ee');
     assert.equal(page.style.getPropertyValue('--custom-narration'), '');
-    button('纸书', themes).click();
+    changeValue(themes, 'paper');
     assert.equal(page.style.getPropertyValue('--custom-dialogue'), '#334456');
     button('恢复主题配色', root).click();
     assert.equal(page.style.getPropertyValue('--custom-dialogue'), '');
-    assert.equal(colors().open, true);
+    assert.equal(design().open, true);
 
     const picker = () => root.querySelector('select[aria-label="正文字体"]');
     const input = root.querySelector('input[type=file][aria-label="导入字体"]');
@@ -155,10 +186,10 @@ test('阅读设置独立保存旁白和台词颜色，能够恢复配色并导�
     const fontId = picker().value;
     assert.equal(page.style.getPropertyValue('--local-read-font'), fontId);
     assert.equal((await db.kvGet(fontId)).size, 1);
-    button('默认', themes).click();
+    changeValue(themes, 'default');
     assert.equal(page.style.getPropertyValue('--local-read-font'), '');
     await wait(async () => (await db.kvGet('prefs'))?.theme === 'default');
-    button('纸书', themes).click();
+    changeValue(themes, 'paper');
     await wait(() => page.style.getPropertyValue('--local-read-font') === fontId);
     button('删除此字体', root).click();
     await wait(() => picker().value === 'kinghwa');
