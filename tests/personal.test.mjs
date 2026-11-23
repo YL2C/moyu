@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { buildContext, formatContract } from '../js/prompt.js';
+import { parseReply, replyForContext } from '../js/parse.js';
 import { optionInput, expandOptionInput } from '../js/personal.js';
 import { APP_VERSION } from '../js/util.js';
 
@@ -16,6 +17,43 @@ test('导入旧规则后仍按个人输入约定解释，保留故事规则，�
   assert.ok(ctx.messages[0].content.includes('A/B/C/D 四行'));
   assert.ok(!ctx.system.includes('【弹幕】'));
   assert.ok(!formatContract({ options: false }).includes('【选项】'));
+});
+
+test('最近的旧回复没有昵称时，本轮仍明确要求每条弹幕带网名', () => {
+  const ctx = buildContext({}, [
+    { id: 'old', role: 'assistant', text: '# 开门\n\n你推开门。\n\n【弹幕】\n这也敢进去！' },
+    { role: 'user', kind: 'continue' },
+  ]);
+  assert.match(ctx.system, /每条都用“网名｜弹幕内容”/);
+  assert.match(ctx.messages.at(-1).content, /每条都写成“网名｜弹幕内容”/);
+});
+
+test('混合弹幕逐条显示清楚标记的网名，句内冒号原样保留', () => {
+  const node = {
+    text: '# 开门\n\n你推开门。\n\n【弹幕】\n- 灯笼放映室｜来了！\n【桥头第一排】：我等到了。\n我只想说: 门后还有人。\n回头看啊！\n\n【选项】\nA. 进门\nB. 等一会儿',
+    optionEdits: { A: '直接进门' },
+  };
+  const expected = [
+    { name: '灯笼放映室', text: '来了！' },
+    { name: '桥头第一排', text: '我等到了。' },
+    { name: '', text: '我只想说: 门后还有人。' },
+    { name: '', text: '回头看啊！' },
+  ];
+  assert.deepEqual(parseReply(node.text).danmu, expected);
+  const rebuilt = parseReply(replyForContext(node));
+  assert.deepEqual(rebuilt.danmu, expected);
+  assert.deepEqual(rebuilt.options, ['直接进门', '等一会儿']);
+});
+
+test('旧弹幕的冒号格式兼容，无昵称的旧弹幕保留原样', () => {
+  assert.deepEqual(parseReply('【弹幕】\n夜灯：吓一跳。\n山风: 里面还有人。').danmu, [
+    { name: '夜灯', text: '吓一跳。' },
+    { name: '山风', text: '里面还有人。' },
+  ]);
+  assert.deepEqual(parseReply('【弹幕】\n吓一跳。\n里面还有人。').danmu, [
+    { name: '', text: '吓一跳。' },
+    { name: '', text: '里面还有人。' },
+  ]);
 });
 
 test('选择行动不误作台词，已有括号保持原样', () => {

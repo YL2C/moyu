@@ -47,8 +47,11 @@ function stripOptionPrefix(s) {
 function parseDanmuLine(s) {
   const t = s.replace(/^\s*[-*•·]\s*/, '').replace(/\*\*|__/g, '').trim();
   if (!t) return null;
+  const marked = t.match(/^【([^】]{1,24})】\s*[：:｜|]\s*(.+)$/)
+    || t.match(/^([^：:｜|]{1,24})[｜|]\s*(.+)$/);
+  if (marked && marked[1].trim()) return { name: marked[1].trim(), text: marked[2].trim() };
   const m = t.match(/^([^：:\n]{1,16})[：:]\s*(.+)$/);
-  if (m) return { name: m[1].replace(/^【|】$/g, '').trim(), text: m[2].trim() };
+  if (m) return { name: m[1].trim(), text: m[2].trim(), legacy: t };
   return { name: '', text: t };
 }
 
@@ -121,12 +124,14 @@ export function parseReply(raw) {
   }
 
   const bodyText = body.join('\n').trim();
-  // 只有绝大多数弹幕都带“昵称：”时才把昵称单独标色；否则“哈哈哈：xxx”这种会被误当昵称，颜色一条一个样
-  const named = danmu.filter((d) => d.name).length;
-  if (danmu.length && named < Math.max(2, danmu.length * 0.8)) {
-    for (const d of danmu) if (d.name) { d.text = d.name + '：' + d.text; d.name = ''; }
-  }
-  return { title, body: bodyText, danmu: danmu.slice(0, 30), options: options.slice(0, 6) };
+  // 明确标记的昵称逐条生效。旧式冒号有时只是句内标点，仍按一组弹幕的格式判断。
+  const legacyCount = danmu.filter((d) => d.legacy).length;
+  const unmarkedCount = danmu.filter((d) => !d.name).length;
+  const useLegacyNames = legacyCount >= Math.max(2, (legacyCount + unmarkedCount) * 0.8);
+  const comments = danmu.slice(0, 30).map(({ name, text, legacy }) => (
+    legacy && !useLegacyNames ? { name: '', text: legacy } : { name, text }
+  ));
+  return { title, body: bodyText, danmu: comments, options: options.slice(0, 6) };
 }
 
 /** 正文分段：有空行按空行分，没有空行按单个换行分 */
@@ -159,7 +164,7 @@ export function replyForContext(node) {
   return [
     parsed.title ? '# ' + parsed.title : '',
     parsed.body,
-    parsed.danmu.length ? '【弹幕】\n' + parsed.danmu.map(x => x.name ? x.name + '：' + x.text : x.text).join('\n') : '',
+    parsed.danmu.length ? '【弹幕】\n' + parsed.danmu.map(x => x.name ? x.name + '｜' + x.text : x.text).join('\n') : '',
     options.length ? '【选项】\n' + options.map((text, i) => 'ABCDEF'[i] + '. ' + text).join('\n') : '',
   ].filter(Boolean).join('\n\n');
 }

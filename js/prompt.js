@@ -20,8 +20,8 @@ export function formatContract({ danmu = true, options = true } = {}) {
   if (danmu) {
     parts.push(
       '【弹幕】',
-      '网名：弹幕内容',
-      '（3到8条，一行一条。弹幕是正在看这段剧情的读者实况：吐槽、嗑CP、站队、预测、尖叫，长短错落；不复述正文原句，不写分析文。剧中人物不知道弹幕存在。）'
+      '只嗑不押注｜刚刚谁先移开视线的？',
+      '（3到8条，一行一条，每条都用“网名｜弹幕内容”的格式。给不同观众取有辨识度的网名，可以贴剧情梗、身份或各自的说话风格。弹幕是读者实况：吐槽、嗑CP、站队、预测、尖叫，长短错落；不复述正文原句，不写分析文。剧中人物不知道弹幕存在。）'
     );
   }
   if (options) {
@@ -143,7 +143,7 @@ export function selectExtras(story, path, modules = [], extra = '') {
 /** 末尾提醒：在场角色的禁止清单，放在最后一条玩家消息里（离模型“下笔”最近） */
 /** 每轮最后一句的格式提醒：规则很长时模型容易忘了写弹幕和选项 */
 export function formatTail(story) {
-  const want = [story.danmu !== false ? '【弹幕】' : '', story.options !== false ? '【选项】（A/B/C/D 四行）' : ''].filter(Boolean);
+  const want = [story.danmu !== false ? '【弹幕】（每条都写成“网名｜弹幕内容”）' : '', story.options !== false ? '【选项】（A/B/C/D 四行）' : ''].filter(Boolean);
   if (!want.length) return '';
   return `\n\n（格式提醒：正文写完后依次写${want.join('和')}，不要省略。）`;
 }

@@ -955,7 +955,7 @@ export async function render(root, { id }) {
     const area = el('textarea', { style: { minHeight: '46vh' } });
     area.value = replyForContext(n);
     s.body.append(el('div', { class: 'field' }, area,
-      el('div', { class: 'hint', text: '第一行“# ”后面是标题；【弹幕】和【选项】下面的内容会照常显示。改完下一轮模型看到的就是这个版本。' })));
+      el('div', { class: 'hint', text: '第一行“# ”后面是标题。【弹幕】下面可用“网名｜弹幕内容”补写昵称，【选项】下面照常写选项。改完下一轮模型看到的就是这个版本。' })));
     s.foot.append(
       el('button', { class: 'btn ghost', onclick: () => s.close() }, '取消'),
       el('button', {
