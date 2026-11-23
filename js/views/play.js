@@ -392,7 +392,7 @@ export async function render(root, { id }) {
       if (story.danmu !== false && p.danmu.length && !picking) {
         const d = el('details', { class: 'danmu' }, el('summary', { text: `弹幕 · ${p.danmu.length}` }));
         if (prefs.danmuOpen) d.open = true;
-        for (const m of p.danmu) d.append(el('div', { class: 'dm' }, m.name ? el('b', { text: m.name }) : null, m.text));
+        for (const m of p.danmu) d.append(el('div', { class: 'dm' }, m.name ? el('b', { text: m.name + ':' }) : null, m.text));
         g.append(d);
       }
       if (isLast && !live && !picking && story.options !== false && p.options.length) {

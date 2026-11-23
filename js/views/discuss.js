@@ -106,6 +106,7 @@ async function renderChat(root, id) {
   const keyFor = kind => 'discussion.' + d.id + '.' + kind;
   const replyKey = m => keyFor('reply.' + m.taskId);
   let replyBusy = false;
+  let reviewingStory = false;
   let jobs = 0;
   const idleCbs = new Set();
   let destroyed = false;
@@ -233,7 +234,9 @@ async function renderChat(root, id) {
     if (!destroyed && (prior?.state !== task?.state || prior?.error !== task?.error || prior?.job !== task?.job)) updateTasks();
   }
   async function discardDraft(kind) {
-    if (await clearTask(keyFor(kind))) setDraft(kind, null);
+    if (!await clearTask(keyFor(kind))) return false;
+    setDraft(kind, null);
+    return true;
   }
 
   async function stopReply() {
@@ -407,13 +410,36 @@ async function renderChat(root, id) {
     };
   }
 
+  function reviewUnreadableStoryDraft(task, error) {
+    const s = sheet({ title: '新故事草稿需要重新整理' });
+    const raw = el('textarea', { class: 'tall', readonly: true, 'aria-label': '模型返回的草稿' });
+    raw.value = stripReasoning(task.text);
+    s.body.append(el('p', { text: error.message }),
+      el('p', { class: 'hint', text: '草稿已保留。重新整理会用讨论内容发起一次新请求。' }),
+      el('div', { class: 'field' }, raw));
+    const retry = el('button', { class: 'btn primary', onclick: async () => {
+      if (!conn) { toast('先在设置里添加一个连接'); return; }
+      if (replyBusy || pendingReply()) { toast('等这条回复写完再整理'); return; }
+      retry.disabled = true;
+      try {
+        if ((await getTask(keyFor('story')))?.id === task.id && !await discardDraft('story')) return;
+        s.close();
+        await makeNewStory();
+      } catch (e) { report(e); }
+      finally { retry.disabled = false; }
+    } }, '重新整理');
+    s.foot.append(el('button', { class: 'btn ghost', onclick: () => s.close() }, '关闭'), retry);
+  }
+
   async function makeNewStory() {
+    if (reviewingStory) return;
+    reviewingStory = true;
     try {
       const task = await draftFor('story');
       if (destroyed || !root.isConnected || root.classList.contains('parked') || task?.state !== 'done') return;
       let prefill;
       try { prefill = parseNewStory(task.text); }
-      catch (e) { await discardDraft('story'); throw e; }
+      catch (e) { reviewUnreadableStoryDraft(task, e); return; }
       const st = await openStoryEditor(null, prefill);
       if (st) { await discardDraft('story'); go('play/' + encodeURIComponent(st.id)); }
       else if (await menu('新故事草稿', [
@@ -421,6 +447,7 @@ async function renderChat(root, id) {
         { key: 'discard', label: '清除草稿' },
       ]) === 'discard') await discardDraft('story');
     } catch (e) { report(e); }
+    finally { reviewingStory = false; }
   }
 
   async function chooseChapters() {

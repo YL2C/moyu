@@ -101,7 +101,7 @@ export function chatMessages(d) {
 }
 
 // ───── 整理成修改 ─────
-const CARD_FIELDS = { initial: '初始设定', base: '底色', voice: '原话锚', forbid: '禁止清单', now: '当前状态', arc: '变化轨迹', relation: '关系档案' };
+export const CARD_FIELDS = { initial: '初始设定', base: '底色', voice: '原话锚', forbid: '禁止清单', now: '当前状态', arc: '变化轨迹', relation: '关系档案' };
 const MEM_FIELDS = { corrections: '勘误', irreversible: '不可逆的事', threads: '未决事项与暗线', knowledge: '信息差', items: '物品与信物', offscreen: '暗处动向' };
 export const TARGET_LABEL = { world: '世界设定', opening: '开场', rules: '规则', card: '角色卡', newcard: '新角色卡', memory: '前情档案', newstory: '新故事' };
 
@@ -267,14 +267,44 @@ export async function importDiscussions(arr) {
 }
 
 // ───── 新故事 ─────
-export const NEWSTORY_PROMPT = `根据上面的讨论，整理出一个新故事的开局资料。只输出一个 JSON 对象，不要任何说明，也不要代码块标记：
-{"title":"故事名","world":"世界与角色设定：世界观、主角是谁、登场角色和人设、开局处境，写具体","opening":"开场（可以空）","rulesExtra":"讨论里定下的这个故事专属写法要求（可以空）"}`;
+export const NEWSTORY_PROMPT = `根据上面的讨论，一次整理出一个新故事的开局资料。使用用户最后确认的设定和开局时间点；只在用户明确交由你决定的地方补充。
+- world：写时代、地点、势力、社会规则、开局前已发生的共同背景。人物的外貌、性格、私密经历和个人关系写进各自的卡，不在 world 重复整张人设。
+- protagonist：只写玩家扮演的主角。name 是名字，gender 填“男”“女”“其他”或空字符串，note 写身份、外貌、称呼、说话习惯、过去经历和主角已经知道的事。
+- cards：其他有设定、会参与剧情的角色各一张。同一人的称号放 aliases，使用顿号分隔。core 用布尔值，主要角色填 true，其余填 false。initial 写开局身份、外貌、立场和这个人知道及不知道的事，base 写性格与说话习惯，relation 写开局时已经成立的关系。voice 仅收讨论里已经确定的原话，forbid 仅收已经明确的人设禁区，arc 和 now 只记录开局前已发生的变化和开局状态。
+- opening：单独写开局的时间、地点和眼下正在发生的事。rulesExtra：单独写这个故事专属的写法、不可逆约束或明确允许的剧情安排。保留角色之间的信息差；未来可能发生的事不得当作开局前情。
+- 没明确的信息可以留空；没有其他角色时返回空数组。必须返回 world、protagonist 和 cards 三个独立字段。只输出一个 JSON 对象，不加说明或代码块：
+{"title":"故事名","world":"世界设定","protagonist":{"name":"","gender":"","note":""},"cards":[{"name":"","aliases":"","core":false,"initial":"","base":"","voice":"","forbid":"","arc":"","now":"","relation":""}],"opening":"","rulesExtra":""}`;
+
+const draftObject = value => value && typeof value === 'object' && !Array.isArray(value);
+
+function draftText(value, separator = '\n') {
+  if (value == null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value) && value.every(item => typeof item === 'string')) return value.map(s => s.trim()).filter(Boolean).join(separator);
+  throw new Error('草稿中有无法识别的文字字段。');
+}
 
 export function parseNewStory(raw) {
-  const t = String(raw || '').replace(/```(?:json)?/g, '');
+  const t = stripReasoning(raw);
   const a = t.indexOf('{');
   const b = t.lastIndexOf('}');
-  if (a < 0 || b <= a) throw new Error('模型没有按格式返回，可以再试一次');
-  const j = JSON.parse(t.slice(a, b + 1));
-  return { title: String(j.title || '').trim(), world: String(j.world || '').trim(), opening: String(j.opening || '').trim(), rulesExtra: String(j.rulesExtra || '').trim() };
+  let story;
+  try { story = JSON.parse(t.slice(a, b + 1)); }
+  catch { throw new Error('模型返回的草稿格式不完整。'); }
+  if (!draftObject(story) || !Object.hasOwn(story, 'world') || !draftObject(story.protagonist) || !Array.isArray(story.cards) || !story.cards.every(draftObject)) {
+    throw new Error('草稿还没有分成世界设定、主角卡和角色卡。');
+  }
+  const { protagonist } = story;
+  const gender = draftText(protagonist.gender);
+  const normalizedGender = /^(男[性生]?|male)$/i.test(gender) ? '男' : /^(女[性生]?|female)$/i.test(gender) ? '女' : gender;
+  const knownGender = ['', '男', '女', '其他'].includes(normalizedGender);
+  const note = [draftText(protagonist.note), knownGender ? '' : `性别设定：${gender}`].filter(Boolean).join('\n');
+  return {
+    title: draftText(story.title), world: draftText(story.world), opening: draftText(story.opening), rulesExtra: draftText(story.rulesExtra),
+    protagonist: { name: draftText(protagonist.name), gender: knownGender ? normalizedGender : '', note },
+    cards: story.cards.map(c => ({
+      name: draftText(c.name), aliases: draftText(c.aliases, '、'), core: c.core === true || c.core === 'true',
+      ...Object.fromEntries(Object.keys(CARD_FIELDS).map(k => [k, draftText(c[k])])),
+    })),
+  };
 }

@@ -56,6 +56,21 @@ beforeEach(async () => {
     return new Response(JSON.stringify({choices:[{message:{content:answer},finish_reason:'stop'}],usage:{prompt_tokens:20,completion_tokens:20}}),{headers:{'Content-Type':'application/json'}}); };
 });
 
+test('游玩页在弹幕昵称后显示半角冒号，无昵称的弹幕保留原样', async () => {
+  const { story, nodes } = await seedStory();
+  story.danmu = true;
+  nodes[1].text = '# 启航\n\n你走过码头。\n\n【弹幕】\n潮声听众｜船开了。\n我只想说：还有人没上船。' + options;
+  await db.put('stories', story);
+  await db.put('nodes', nodes[1]);
+  const dispose = await play.render(root, { id: story.id });
+  try {
+    const comments = [...root.querySelectorAll('.danmu .dm')];
+    assert.deepEqual(comments.map(comment => comment.textContent), ['潮声听众:船开了。', '我只想说：还有人没上船。']);
+    assert.equal(comments[0].querySelector('b').textContent, '潮声听众:');
+    assert.equal(comments[1].querySelector('b'), null);
+  } finally { dispose(); }
+});
+
 test('主题下拉保留旧字号，各自保存字体与排版，滑动即时预览', async () => {
   await db.kvSet('prefs', { fontSize: 19, font: 'sans', indent: false });
   await loadPrefs();
@@ -1334,6 +1349,86 @@ test('讨论回复与整理草稿通过服务器接回，分开保存且只请�
     await wait(() => document.querySelector('[role=dialog] .chg-text'));
     assert.equal(document.querySelector('.chg-text').value,'让对话自然');
     button('关闭',document.querySelector('[role=dialog]')).click();
+  } finally { dispose(); }
+});
+
+const newStoryFixture = {
+  title: '潮汐港', world: '港城由行会管理。', opening: '清晨，雾潮淹过码头。', rulesExtra: '只写主角亲历的事。',
+  protagonist: { name: '阿岚', gender: '男', note: '主角是灯塔学徒。' },
+  cards: [
+    { name: '白棠', aliases: ['船长', '白师傅'], core: true, initial: '白棠不知道灯塔信号的含义。', base: '说话简短。' },
+    { name: '周衡', core: false, initial: '守仓人。' },
+  ],
+};
+
+test('讨论生成新故事一次请求，审阅并分别保存世界、主角和 NPC', async () => {
+  const { story: existing } = await seedStory();
+  const d = newDiscussion(existing.id, '讨论新档');
+  d.messages = [{ role: 'user', content: '讨论一个港城故事。' }, { role: 'assistant', content: '从灯塔学徒开局。' }];
+  await saveDiscussion(d);
+  responses.push(JSON.stringify(newStoryFixture));
+  const dispose = await discussion.render(root, { id: d.id });
+  try {
+    const generate = button('生成新故事', root);
+    generate.click();
+    generate.click();
+    await wait(() => document.querySelector('[aria-label="角色卡草稿"]'));
+    const dialog = document.querySelector('[role=dialog]');
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].body.messages.at(-1).content, /必须返回 world、protagonist 和 cards/);
+    assert.equal((await db.all('stories')).length, 1);
+    assert.equal(dialog.querySelector('[aria-label="世界设定"]').value, newStoryFixture.world);
+    assert.equal(dialog.querySelector('[aria-label="主角设定"]').value, newStoryFixture.protagonist.note);
+    const cards = [...dialog.querySelectorAll('[aria-label="角色卡草稿"] details')];
+    assert.equal(cards.length, 2);
+    cards[0].open = true;
+    cards[0].querySelector('[aria-label="初始设定"]').value += ' 开局时站在雾里。';
+    dialog.querySelector('[aria-label="主角设定"]').value += ' 熟悉潮汐。';
+    button('创建', dialog).click();
+    await wait(() => location.hash.startsWith('#/play/'));
+    const saved = (await db.all('stories')).find(s => s.id !== existing.id);
+    assert.equal(saved.world, newStoryFixture.world);
+    assert.equal(saved.opening, newStoryFixture.opening);
+    assert.ok(saved.rules.endsWith(newStoryFixture.rulesExtra));
+    assert.equal(saved.protagonist.name, '阿岚');
+    assert.equal(saved.protagonist.gender, '男');
+    assert.match(saved.protagonist.note, /熟悉潮汐/);
+    assert.deepEqual(saved.cards.map(c => [c.name, c.aliases, c.core]), [['白棠', '船长、白师傅', true], ['周衡', '', false]]);
+    assert.equal(new Set(saved.cards.map(c => c.id)).size, 2);
+    assert.match(saved.cards[0].initial, /站在雾里/);
+    const context = buildContext(saved, []);
+    assert.match(context.system, /玩家扮演的“你”/);
+    assert.match(context.system, /白棠不知道灯塔信号/);
+    assert.doesNotMatch(context.system, /守仓人/);
+    assert.deepEqual(await db.get('stories', existing.id), existing);
+    assert.equal(requests.length, 1);
+  } finally { dispose(); location.hash = ''; }
+});
+
+test('旧版混合草稿保留原文，用户主动重新整理后才发新请求', async () => {
+  const d = newDiscussion('', '讨论新档');
+  d.messages = [{ role: 'user', content: '讨论开场。' }, { role: 'assistant', content: '从港口开始。' }];
+  await saveDiscussion(d);
+  const key = 'background.discussion.' + d.id + '.story';
+  const old = { id: 'old-draft', state: 'done', text: JSON.stringify({ title: '旧草稿', world: '设定和人设混在一起。' }) };
+  await db.kvSet(key, old);
+  const dispose = await discussion.render(root, { id: d.id });
+  try {
+    await wait(() => button('查看新故事草稿', root));
+    button('查看新故事草稿', root).click();
+    await wait(() => document.querySelector('[aria-label="模型返回的草稿"]'));
+    assert.equal(document.querySelector('[aria-label="模型返回的草稿"]').value, old.text);
+    button('关闭', document.querySelector('[role=dialog]')).click();
+    assert.deepEqual(await db.kvGet(key), old);
+    assert.equal(requests.length, 0);
+    assert.equal((await db.all('stories')).length, 0);
+    button('查看新故事草稿', root).click();
+    await wait(() => button('重新整理'));
+    responses.push(JSON.stringify(newStoryFixture));
+    button('重新整理').click();
+    await wait(() => document.querySelector('[aria-label="角色卡草稿"]'));
+    assert.equal(requests.length, 1);
+    assert.equal((await db.all('stories')).length, 0);
   } finally { dispose(); }
 });
 
