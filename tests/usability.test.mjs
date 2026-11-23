@@ -65,7 +65,7 @@ test('纸书全局生效并单独记住字号和字体，恢复默认时保留�
   const picker = () => root.querySelector('select[aria-label="正文字体"]');
   assert.equal(picker().value, 'kinghwa');
   assert.equal(page.dataset.font, 'kinghwa');
-  assert.deepEqual([...picker().options].map(option => option.textContent), ['宋体', '黑体', '京华老宋体']);
+  assert.deepEqual([...picker().options].map(option => option.textContent), ['宋体', '黑体', '京华老宋体', '导入字体…']);
   picker().value = 'serif';
   picker().dispatchEvent(new Event('change'));
   assert.equal(page.dataset.font, 'serif');
@@ -93,6 +93,70 @@ test('纸书全局生效并单独记住字号和字体，恢复默认时保留�
   await wait(async () => (await db.kvGet('prefs'))?.theme === 'default');
   await db.kvSet('prefs', null);
   await loadPrefs();
+});
+
+test('阅读设置独立保存旁白和台词颜色，能够恢复配色并导入及删除本机字体', async () => {
+  const loaded = new Set();
+  const themeColor = document.createElement('meta');
+  themeColor.name = 'theme-color';
+  themeColor.dataset.defaultColor = '#f6f3ee';
+  themeColor.dataset.paperColor = '#eeeae2';
+  document.head.append(themeColor);
+  Object.defineProperty(document, 'fonts', { value: loaded, configurable: true });
+  globalThis.FontFace = class {
+    constructor(family, data) { this.family = family; this.data = data; }
+    async load() { assert.ok(this.data.byteLength); return this; }
+  };
+  try {
+    await loadPrefs();
+    await settings.render(root, {});
+    const page = document.documentElement;
+    const themes = button('纸书', root).closest('.seg');
+    const change = (element, value) => {
+      element.value = value;
+      element.dispatchEvent(new Event('change'));
+    };
+    button('纸书', themes).click();
+    assert.equal(themeColor.content, '#eeeae2');
+    change(root.querySelector('[aria-label="旁白色值"]'), '#121212');
+    change(root.querySelector('[aria-label="台词色值"]'), '#334456');
+    assert.equal(page.style.getPropertyValue('--custom-narration'), '#121212');
+    assert.equal(page.style.getPropertyValue('--custom-dialogue'), '#334456');
+    button('默认', themes).click();
+    assert.equal(themeColor.content, '#f6f3ee');
+    assert.equal(page.style.getPropertyValue('--custom-narration'), '');
+    button('纸书', themes).click();
+    assert.equal(page.style.getPropertyValue('--custom-dialogue'), '#334456');
+    button('恢复主题配色', root).click();
+    assert.equal(page.style.getPropertyValue('--custom-dialogue'), '');
+
+    const picker = () => root.querySelector('select[aria-label="正文字体"]');
+    change(picker(), 'import');
+    const input = document.querySelector('input[type=file][accept*="woff2"]');
+    const file = new File([new Uint8Array([1])], '我的字体.ttf');
+    Object.defineProperty(input, 'files', { value: [file] });
+    input.dispatchEvent(new Event('change'));
+    await wait(() => picker().selectedOptions[0]?.textContent === '我的字体');
+    const fontId = picker().value;
+    assert.equal(page.style.getPropertyValue('--local-read-font'), fontId);
+    assert.equal((await db.kvGet(fontId)).size, 1);
+    button('默认', themes).click();
+    assert.equal(page.style.getPropertyValue('--local-read-font'), '');
+    await wait(async () => (await db.kvGet('prefs'))?.theme === 'default');
+    button('纸书', themes).click();
+    await wait(() => page.style.getPropertyValue('--local-read-font') === fontId);
+    button('删除此字体', root).click();
+    await wait(() => picker().value === 'kinghwa');
+    assert.equal(await db.kvGet(fontId, null), null);
+    assert.equal(loaded.size, 0);
+  } finally {
+    await db.kvSet('prefs', null);
+    await db.kvSet('readingFonts', []);
+    await loadPrefs();
+    delete globalThis.FontFace;
+    delete document.fonts;
+    themeColor.remove();
+  }
 });
 
 test('故事列表可复制现有设定重新开局，剧情和分支与原故事隔离', async () => {

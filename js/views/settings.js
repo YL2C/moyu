@@ -2,7 +2,8 @@
 
 import { db, exportAll, importData, storageInfo } from '../db.js';
 import { el, uid, toast, sheet, saveFile, pickFile, pickRawFile, APP_VERSION, promptText } from '../util.js';
-import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, modulesFromMarkdown, modulesToMarkdown } from '../state.js';
+import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, modulesFromMarkdown, modulesToMarkdown, isReadingColor } from '../state.js';
+import { FONT_ACCEPT, listReadingFonts, importReadingFont, deleteReadingFont } from '../reading-fonts.js';
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
 import { parseServiceAccount } from '../vertex.js';
 import { getRelay, saveRelay, testRelay } from '../relay.js';
@@ -234,6 +235,8 @@ export async function render(root, { section }) {
     // ── 阅读 ──
     const p = getPrefs();
     const readingAppearance = el('div');
+    let readingFonts = await listReadingFonts();
+    let editingFont = false;
     function drawReadingAppearance() {
       const current = getPrefs();
       const paper = current.theme === 'paper';
@@ -242,17 +245,95 @@ export async function render(root, { section }) {
       const sizes = paper ? [16, 18, 20, 22] : [15, 17, 19, 21];
       const fontPicker = el('select', {
         class: 'reading-font-picker', 'aria-label': '正文字体',
-        onchange: () => setPrefs({ [fontKey]: fontPicker.value }),
+        onchange: async () => {
+          const selected = fontPicker.value;
+          if (selected !== 'import') {
+            setPrefs({ [fontKey]: selected });
+            drawReadingAppearance();
+            return;
+          }
+          fontPicker.value = getPrefs()[fontKey];
+          if (editingFont) return;
+          editingFont = true;
+          try {
+            const file = await pickRawFile(FONT_ACCEPT);
+            if (!file) return;
+            const imported = await importReadingFont(file);
+            readingFonts = await listReadingFonts();
+            await setPrefs({ [fontKey]: imported.id });
+            drawReadingAppearance();
+          } catch (error) { toast(error.message, 4000); }
+          finally { editingFont = false; }
+        },
       },
         el('option', { value: 'serif' }, '宋体'),
         el('option', { value: 'sans' }, '黑体'),
-        el('option', { value: 'kinghwa' }, '京华老宋体'));
-      fontPicker.value = current[fontKey];
+        el('option', { value: 'kinghwa' }, '京华老宋体'),
+        ...readingFonts.map(font => el('option', { value: font.id }, font.name)),
+        el('option', { value: 'import' }, '导入字体…'));
+      const localFont = readingFonts.find(font => font.id === current[fontKey]);
+      fontPicker.value = [...fontPicker.options].some(option => option.value === current[fontKey])
+        ? current[fontKey] : (paper ? 'kinghwa' : 'serif');
+      const colorKey = paper ? 'paperColors' : 'readingColors';
+      const preview = el('div', { class: 'reading-preview' },
+        el('div', {}, '窗外的雨渐渐停了。'),
+        el('div', { class: 'dialogue-text' }, '“再坐一会儿吧。”'));
+      const colorPanel = el('details', { class: 'reading-colors' }, el('summary', {}, '自定义正文配色'));
+      colorPanel.open = readingAppearance.querySelector('.reading-colors')?.open || false;
+      const defaultColors = window.getComputedStyle(document.documentElement);
+      for (const [key, label, token, property] of [
+        ['narration', '旁白', '--text', '--custom-narration'],
+        ['dialogue', '台词', '--dialogue', '--custom-dialogue'],
+      ]) {
+        const saved = current[colorKey]?.[key];
+        const original = defaultColors.getPropertyValue(token).trim();
+        const value = isReadingColor(saved) ? saved : isReadingColor(original) ? original : '#292823';
+        const sample = el('input', { type: 'color', value, 'aria-label': label + '颜色' });
+        const hex = el('input', { type: 'text', value, 'aria-label': label + '色值', maxlength: 7, spellcheck: 'false' });
+        const commit = (next) => {
+          if (!isReadingColor(next)) {
+            hex.value = sample.value;
+            toast('请输入形如 #2C4353 的六位色值');
+            return;
+          }
+          sample.value = hex.value = next.toLowerCase();
+          preview.style.removeProperty(property);
+          setPrefs({ [colorKey]: { ...getPrefs()[colorKey], [key]: next } });
+        };
+        sample.addEventListener('input', () => {
+          hex.value = sample.value;
+          preview.style.setProperty(property, sample.value);
+        });
+        sample.addEventListener('change', () => commit(sample.value));
+        hex.addEventListener('change', () => commit(hex.value.trim()));
+        hex.addEventListener('keydown', event => { if (event.key === 'Enter') hex.blur(); });
+        colorPanel.append(el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, label),
+          el('div', { class: 'reading-color-inputs' }, sample, hex)));
+      }
+      colorPanel.append(el('button', { class: 'btn small', onclick: () => {
+        setPrefs({ [colorKey]: null });
+        drawReadingAppearance();
+      } }, '恢复主题配色'));
       readingAppearance.replaceChildren(
         el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '字号'),
           seg(sizes.map((size, i) => [size, ['小', '中', '大', '特大'][i]]), current[sizeKey],
             (size) => setPrefs({ [sizeKey]: size }))),
         el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '正文字体'), fontPicker),
+        localFont ? el('div', { class: 'row end' }, el('button', { class: 'btn small ghost', onclick: async () => {
+          if (!confirm('删除本机字体「' + localFont.name + '」？')) return;
+          try {
+            await deleteReadingFont(localFont.id);
+            const updated = getPrefs();
+            await setPrefs({
+              font: updated.font === localFont.id ? 'serif' : updated.font,
+              paperFont: updated.paperFont === localFont.id ? 'kinghwa' : updated.paperFont,
+            });
+            readingFonts = await listReadingFonts();
+            drawReadingAppearance();
+          } catch (error) { toast(error.message, 4000); }
+        } }, '删除此字体')) : document.createDocumentFragment(),
+        colorPanel,
+        preview,
       );
     }
     drawReadingAppearance();

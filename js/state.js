@@ -3,11 +3,13 @@
 import { db } from './db.js';
 import { DEFAULT_RULES } from './prompt.js';
 import { CURRENT_STORY_KEY } from './personal.js';
+import { showReadingFont } from './reading-fonts.js';
 
 export const DEFAULT_PREFS = {
   fontSize: 17, font: 'serif', theme: 'default', paperFontSize: 16, paperFont: 'kinghwa', indent: true, danmuOpen: true,
 };
 let prefs = { ...DEFAULT_PREFS };
+export const isReadingColor = (value) => typeof value === 'string' && /^#[a-f0-9]{6}$/i.test(value);
 
 export async function loadPrefs() {
   prefs = { ...DEFAULT_PREFS, ...((await db.kvGet('prefs', null)) || {}) };
@@ -27,6 +29,17 @@ export function applyPrefs() {
   r.dataset.theme = paper ? 'paper' : 'default';
   r.dataset.font = paper ? prefs.paperFont : prefs.font;
   r.dataset.indent = prefs.indent ? 'on' : 'off';
+  r.dataset.dialogue = prefs.dialogueColor === false ? 'off' : 'on';
+  const colors = paper ? prefs.paperColors : prefs.readingColors;
+  for (const [key, property] of [['narration', '--custom-narration'], ['dialogue', '--custom-dialogue']]) {
+    const value = colors?.[key];
+    if (isReadingColor(value)) r.style.setProperty(property, value);
+    else r.style.removeProperty(property);
+  }
+  document.querySelectorAll('meta[name="theme-color"][data-paper-color]').forEach(meta => {
+    meta.content = paper ? meta.dataset.paperColor : meta.dataset.defaultColor;
+  });
+  void showReadingFont(r.dataset.font);
 }
 
 export async function getDefaultRules() {

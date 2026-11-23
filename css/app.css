@@ -41,6 +41,7 @@
 }
 :root[data-font="sans"] { --read-font: var(--ui-font); }
 :root[data-font="kinghwa"] { --read-font: "KingHwa Old Song", "Songti SC", "Noto Serif CJK SC", serif; }
+:root[data-font^="local-font-"] { --read-font: var(--local-read-font, "Songti SC"), "Songti SC", "Noto Serif CJK SC", serif; }
 :root[data-indent="off"] { --indent: 0; }
 
 :root[data-theme="paper"] {
@@ -59,7 +60,10 @@
   --danger-soft: rgba(164, 62, 45, .10);
   --ok: #3e7150;
   --radius: 10px;
-  background: linear-gradient(#f4f0e745, #f4f0e745), url("../assets/paper-grain.jpg") center / cover no-repeat, var(--bg);
+  background:
+    linear-gradient(to bottom, #eeeae2, transparent calc(env(safe-area-inset-top) + 86px)),
+    linear-gradient(#f4f0e745, #f4f0e745),
+    url("../assets/paper-grain.jpg") center / cover no-repeat, var(--bg);
 }
 
 :root[data-theme="paper"] body,
@@ -73,6 +77,11 @@
 :root[data-theme="paper"] .option-row [data-choice] { font-family: var(--read-font); }
 :root[data-theme="paper"] .option-row .k { padding-right: 8px; border-right: 1px solid var(--line); }
 :root[data-theme="paper"] .gm h2 { font-family: var(--ui-font); }
+@media (display-mode: standalone) {
+  @supports (-webkit-touch-callout: none) {
+    :root[data-theme="paper"] .topbar { padding-top: calc(env(safe-area-inset-top) + 16px); }
+  }
+}
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
@@ -175,6 +184,16 @@ a { color: var(--accent); }
   border-radius: 10px; padding: 6px 8px; font-size: 16px;
 }
 .reading-font-picker:focus-visible { outline: 1px solid var(--accent); }
+.reading-colors { margin: 10px 0; padding: 8px 0; border-top: 1px solid var(--line); }
+.reading-colors summary { cursor: pointer; color: var(--text2); }
+.reading-color-inputs { display: flex; gap: 6px; align-items: center; }
+.reading-color-inputs input { border: 1px solid var(--line); border-radius: 7px; background: var(--card); }
+.reading-color-inputs input[type=color] { padding: 2px; width: 38px; height: 34px; }
+.reading-color-inputs input[type=text] { padding: 5px 7px; width: 6em; font-size: 16px; }
+.reading-preview {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px; margin: 8px 0;
+  padding: 9px 12px; font: var(--read-size)/1.65 var(--read-font);
+}
 .switch { position: relative; width: 46px; height: 28px; flex: none; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--line); transition: .2s; }
@@ -371,6 +390,11 @@ a { color: var(--accent); }
 .bracket-btn:active { background: var(--accent-soft); }
 .text-highlight { color: var(--accent); font-weight: 600; }
 .dialogue-text { color: var(--dialogue); }
+.gm:not(.ooc) > :is(p, .extra-raw),
+.gm :is(.ex-scene, .ex-fic-text),
+.reading-preview { color: var(--custom-narration, inherit); }
+.gm:not(.ooc) .dialogue-text, .reading-preview .dialogue-text { color: var(--custom-dialogue, var(--dialogue)); }
+:root[data-dialogue="off"] .dialogue-text { color: inherit; }
 .gm strong, .disc-text strong { font-weight: 700; }
 .settings-section { margin: 10px 0; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
 .settings-section > summary { cursor: pointer; font-weight: 600; color: var(--text); }
