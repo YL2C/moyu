@@ -65,7 +65,7 @@ test('纸书全局生效并单独记住字号和字体，恢复默认时保留�
   const picker = () => root.querySelector('select[aria-label="正文字体"]');
   assert.equal(picker().value, 'kinghwa');
   assert.equal(page.dataset.font, 'kinghwa');
-  assert.deepEqual([...picker().options].map(option => option.textContent), ['宋体', '黑体', '京华老宋体', '导入字体…']);
+  assert.deepEqual([...picker().options].map(option => option.textContent), ['宋体', '黑体', '京华老宋体']);
   picker().value = 'serif';
   picker().dispatchEvent(new Event('change'));
   assert.equal(page.dataset.font, 'serif');
@@ -112,12 +112,16 @@ test('阅读设置独立保存旁白和台词颜色，能够恢复配色并导�
     await settings.render(root, {});
     const page = document.documentElement;
     const themes = button('纸书', root).closest('.seg');
+    const colors = () => root.querySelector('details.reading-colors');
     const change = (element, value) => {
       element.value = value;
       element.dispatchEvent(new Event('change'));
     };
     button('纸书', themes).click();
     assert.equal(themeColor.content, '#eeeae2');
+    assert.equal(colors().open, false);
+    assert.ok(colors().contains(root.querySelector('.reading-preview')));
+    colors().open = true;
     change(root.querySelector('[aria-label="旁白色值"]'), '#121212');
     change(root.querySelector('[aria-label="台词色值"]'), '#334456');
     assert.equal(page.style.getPropertyValue('--custom-narration'), '#121212');
@@ -129,13 +133,24 @@ test('阅读设置独立保存旁白和台词颜色，能够恢复配色并导�
     assert.equal(page.style.getPropertyValue('--custom-dialogue'), '#334456');
     button('恢复主题配色', root).click();
     assert.equal(page.style.getPropertyValue('--custom-dialogue'), '');
+    assert.equal(colors().open, true);
 
     const picker = () => root.querySelector('select[aria-label="正文字体"]');
-    change(picker(), 'import');
-    const input = document.querySelector('input[type=file][accept*="woff2"]');
+    const input = root.querySelector('input[type=file][aria-label="导入字体"]');
+    assert.equal(input.parentElement.tagName, 'LABEL');
+    assert.equal(input.hasAttribute('accept'), false);
+    const chooseFile = file => {
+      Object.defineProperty(input, 'files', { value: [file], configurable: true });
+      input.dispatchEvent(new Event('change'));
+    };
+    input.dispatchEvent(new Event('cancel'));
+    assert.equal(input.disabled, false);
+    chooseFile(new File(['not a font'], '说明.txt'));
+    await wait(() => document.querySelector('#toast').textContent.includes('请选择 TTF'));
+    assert.equal(input.disabled, false);
+    assert.equal(picker().value, 'kinghwa');
     const file = new File([new Uint8Array([1])], '我的字体.ttf');
-    Object.defineProperty(input, 'files', { value: [file] });
-    input.dispatchEvent(new Event('change'));
+    chooseFile(file);
     await wait(() => picker().selectedOptions[0]?.textContent === '我的字体');
     const fontId = picker().value;
     assert.equal(page.style.getPropertyValue('--local-read-font'), fontId);

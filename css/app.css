@@ -184,6 +184,9 @@ a { color: var(--accent); }
   border-radius: 10px; padding: 6px 8px; font-size: 16px;
 }
 .reading-font-picker:focus-visible { outline: 1px solid var(--accent); }
+.reading-font-import { position: relative; }
+.reading-font-import:focus-within { outline: 1px solid var(--accent); }
+.reading-font-import input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .reading-colors { margin: 10px 0; padding: 8px 0; border-top: 1px solid var(--line); }
 .reading-colors summary { cursor: pointer; color: var(--text2); }
 .reading-color-inputs { display: flex; gap: 6px; align-items: center; }

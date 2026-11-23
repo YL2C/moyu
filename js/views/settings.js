@@ -3,7 +3,7 @@
 import { db, exportAll, importData, storageInfo } from '../db.js';
 import { el, uid, toast, sheet, saveFile, pickFile, pickRawFile, APP_VERSION, promptText } from '../util.js';
 import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, modulesFromMarkdown, modulesToMarkdown, isReadingColor } from '../state.js';
-import { FONT_ACCEPT, listReadingFonts, importReadingFont, deleteReadingFont } from '../reading-fonts.js';
+import { listReadingFonts, importReadingFont, deleteReadingFont } from '../reading-fonts.js';
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
 import { parseServiceAccount } from '../vertex.js';
 import { getRelay, saveRelay, testRelay } from '../relay.js';
@@ -236,7 +236,29 @@ export async function render(root, { section }) {
     const p = getPrefs();
     const readingAppearance = el('div');
     let readingFonts = await listReadingFonts();
-    let editingFont = false;
+    const importCaption = el('span', { text: '导入字体…' });
+    // 直接让用户点击文件控件。iOS 原生下拉菜单关闭后可能不再允许脚本打开另一个选择器。
+    // 扩展名和字体内容在选完后校验，避免“文件”按系统类型过滤掉可用字体。
+    const fontFile = el('input', { type: 'file', 'aria-label': '导入字体', onchange: async () => {
+      const file = fontFile.files?.[0];
+      fontFile.value = '';
+      if (!file || fontFile.disabled) return;
+      const fontKey = getPrefs().theme === 'paper' ? 'paperFont' : 'font';
+      fontFile.disabled = true;
+      importCaption.textContent = '正在导入…';
+      try {
+        const font = await importReadingFont(file);
+        readingFonts = await listReadingFonts();
+        await setPrefs({ [fontKey]: font.id });
+        drawReadingAppearance();
+        toast('已导入字体「' + font.name + '」');
+      } catch (error) { toast('导入失败：' + error.message, 4000); }
+      finally {
+        fontFile.disabled = false;
+        importCaption.textContent = '导入字体…';
+      }
+    } });
+    const importFont = el('label', { class: 'btn small reading-font-import', title: '支持 TTF、OTF 和 WOFF2' }, importCaption, fontFile);
     function drawReadingAppearance() {
       const current = getPrefs();
       const paper = current.theme === 'paper';
@@ -245,32 +267,15 @@ export async function render(root, { section }) {
       const sizes = paper ? [16, 18, 20, 22] : [15, 17, 19, 21];
       const fontPicker = el('select', {
         class: 'reading-font-picker', 'aria-label': '正文字体',
-        onchange: async () => {
-          const selected = fontPicker.value;
-          if (selected !== 'import') {
-            setPrefs({ [fontKey]: selected });
-            drawReadingAppearance();
-            return;
-          }
-          fontPicker.value = getPrefs()[fontKey];
-          if (editingFont) return;
-          editingFont = true;
-          try {
-            const file = await pickRawFile(FONT_ACCEPT);
-            if (!file) return;
-            const imported = await importReadingFont(file);
-            readingFonts = await listReadingFonts();
-            await setPrefs({ [fontKey]: imported.id });
-            drawReadingAppearance();
-          } catch (error) { toast(error.message, 4000); }
-          finally { editingFont = false; }
+        onchange: () => {
+          setPrefs({ [fontKey]: fontPicker.value });
+          drawReadingAppearance();
         },
       },
         el('option', { value: 'serif' }, '宋体'),
         el('option', { value: 'sans' }, '黑体'),
         el('option', { value: 'kinghwa' }, '京华老宋体'),
-        ...readingFonts.map(font => el('option', { value: font.id }, font.name)),
-        el('option', { value: 'import' }, '导入字体…'));
+        ...readingFonts.map(font => el('option', { value: font.id }, font.name)));
       const localFont = readingFonts.find(font => font.id === current[fontKey]);
       fontPicker.value = [...fontPicker.options].some(option => option.value === current[fontKey])
         ? current[fontKey] : (paper ? 'kinghwa' : 'serif');
@@ -313,13 +318,13 @@ export async function render(root, { section }) {
       colorPanel.append(el('button', { class: 'btn small', onclick: () => {
         setPrefs({ [colorKey]: null });
         drawReadingAppearance();
-      } }, '恢复主题配色'));
+      } }, '恢复主题配色'), preview);
       readingAppearance.replaceChildren(
         el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '字号'),
           seg(sizes.map((size, i) => [size, ['小', '中', '大', '特大'][i]]), current[sizeKey],
             (size) => setPrefs({ [sizeKey]: size }))),
         el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '正文字体'), fontPicker),
-        localFont ? el('div', { class: 'row end' }, el('button', { class: 'btn small ghost', onclick: async () => {
+        el('div', { class: 'row end' }, importFont, localFont ? el('button', { class: 'btn small ghost', onclick: async () => {
           if (!confirm('删除本机字体「' + localFont.name + '」？')) return;
           try {
             await deleteReadingFont(localFont.id);
@@ -331,9 +336,8 @@ export async function render(root, { section }) {
             readingFonts = await listReadingFonts();
             drawReadingAppearance();
           } catch (error) { toast(error.message, 4000); }
-        } }, '删除此字体')) : document.createDocumentFragment(),
+        } }, '删除此字体') : null),
         colorPanel,
-        preview,
       );
     }
     drawReadingAppearance();

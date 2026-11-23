@@ -70,7 +70,8 @@ test('设置的同一个文件按钮按格式导入 Word、Markdown 和两种 JS
   };
   const choose = (file) => {
     button('导入文件').click();
-    const picker = document.querySelector('input[type=file]');
+    const picker = document.querySelector('input[type=file][accept*=".docx"]');
+    assert.ok(picker);
     assert.match(picker.accept, /\.docx,\.md,\.markdown,\.txt,\.json/);
     Object.defineProperty(picker, 'files', { value: [file] });
     picker.dispatchEvent(new Event('change'));

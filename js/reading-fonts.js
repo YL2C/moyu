@@ -2,7 +2,6 @@ import { db } from './db.js';
 import { uid } from './util.js';
 
 const FONT_LIST = 'readingFonts';
-export const FONT_ACCEPT = '.ttf,.otf,.woff2,font/ttf,font/otf,font/woff2';
 export const isLocalReadingFont = (id) => typeof id === 'string' && /^local-font-[a-z0-9-]+$/i.test(id);
 export const listReadingFonts = () => db.kvGet(FONT_LIST, []);
 
