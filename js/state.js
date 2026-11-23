@@ -4,7 +4,9 @@ import { db } from './db.js';
 import { DEFAULT_RULES } from './prompt.js';
 import { CURRENT_STORY_KEY } from './personal.js';
 
-export const DEFAULT_PREFS = { fontSize: 17, font: 'serif', indent: true, danmuOpen: true };
+export const DEFAULT_PREFS = {
+  fontSize: 17, font: 'serif', theme: 'default', paperFontSize: 16, indent: true, danmuOpen: true,
+};
 let prefs = { ...DEFAULT_PREFS };
 
 export async function loadPrefs() {
@@ -20,7 +22,9 @@ export async function setPrefs(patch) {
 }
 export function applyPrefs() {
   const r = document.documentElement;
-  r.style.setProperty('--read-size', prefs.fontSize + 'px');
+  const paper = prefs.theme === 'paper';
+  r.style.setProperty('--read-size', (paper ? prefs.paperFontSize : prefs.fontSize) + 'px');
+  r.dataset.theme = paper ? 'paper' : 'default';
   r.dataset.font = prefs.font;
   r.dataset.indent = prefs.indent ? 'on' : 'off';
 }

@@ -1,4 +1,6 @@
 /* 墨游 · 样式 */
+@import url("../assets/kinghwa-old-song.css");
+
 :root {
   --bg: #f6f3ee;
   --bg2: #efebe4;
@@ -39,6 +41,38 @@
 }
 :root[data-font="sans"] { --read-font: var(--ui-font); }
 :root[data-indent="off"] { --indent: 0; }
+
+:root[data-theme="paper"] {
+  color-scheme: light;
+  --bg: #f0ede6;
+  --bg2: #eae6dd;
+  --card: #f4f1ea;
+  --text: #292823;
+  --text2: #58534b;
+  --text3: #70675c;
+  --line: #bdb4a6;
+  --accent: #536a77;
+  --dialogue: #415563;
+  --accent-soft: rgba(79, 108, 122, .12);
+  --danger: #a43e2d;
+  --danger-soft: rgba(164, 62, 45, .10);
+  --ok: #3e7150;
+  --read-font: "KingHwa Old Song", "Songti SC", "Noto Serif CJK SC", serif;
+  --radius: 10px;
+  background: linear-gradient(#f4f0e745, #f4f0e745), url("../assets/paper-grain.jpg") center / cover no-repeat, var(--bg);
+}
+
+:root[data-theme="paper"] body,
+:root[data-theme="paper"] :is(.topbar, .composer, #tabbar) {
+  background: transparent;
+}
+
+:root[data-theme="paper"] .settings-section { background: rgba(238, 233, 224, .78); }
+:root[data-theme="paper"] .option-row { background: #eeebe3; border-radius: 7px; }
+:root[data-theme="paper"] .option-row:has(button.selected) { background: #e2e7e7; border-color: #778b94; }
+:root[data-theme="paper"] .option-row [data-choice] { font-family: var(--read-font); }
+:root[data-theme="paper"] .option-row .k { padding-right: 8px; border-right: 1px solid var(--line); }
+:root[data-theme="paper"] .gm h2 { font-family: var(--ui-font); }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }

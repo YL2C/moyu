@@ -2,12 +2,14 @@
 // 只缓存本站的页面文件；API 请求一律不经过缓存。
 // 先向服务器核验最新文件，取不到再用离线缓存；安装时绕过 HTTP 旧缓存。
 const CACHE_PREFIX = 'moyu-yl2c-personal-';
-const CACHE = CACHE_PREFIX + '0.6.16-personal.21';
+const CACHE = CACHE_PREFIX + '0.6.16-personal.22';
 const ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
   './css/app.css',
+  './assets/kinghwa-old-song.css',
+  './assets/paper-grain.jpg',
   './js/main.js',
   './js/util.js',
   './js/state.js',
@@ -77,6 +79,17 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return; // 不碰 API 和其他网站
+  // 启用纸书主题后按字形范围加载字体，不受普通在线资源的 4 秒回退限制。
+  if (req.destination === 'font' && /\/assets\/kinghwa-old-song-v\d+-\d+\.woff2$/.test(url.pathname)) {
+    e.respondWith(caches.open(CACHE).then(async (cache) => {
+      const cached = await cache.match(req);
+      if (cached) return cached;
+      const response = await fetch(req);
+      if (response.ok) await cache.put(req, response.clone()).catch(() => {});
+      return response;
+    }));
+    return;
+  }
   e.respondWith(
     Promise.race([fetch(req, { cache: 'no-cache' }), timeout(4000)])
       .then((res) => {

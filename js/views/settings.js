@@ -233,12 +233,30 @@ export async function render(root, { section }) {
 
     // ── 阅读 ──
     const p = getPrefs();
+    const readingAppearance = el('div');
+    function drawReadingAppearance() {
+      const current = getPrefs();
+      const paper = current.theme === 'paper';
+      const sizeKey = paper ? 'paperFontSize' : 'fontSize';
+      const sizes = paper ? [16, 18, 20, 22] : [15, 17, 19, 21];
+      readingAppearance.replaceChildren(
+        el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '字号'),
+          seg(sizes.map((size, i) => [size, ['小', '中', '大', '特大'][i]]), current[sizeKey],
+            (size) => setPrefs({ [sizeKey]: size }))),
+        el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '正文字体'),
+          paper ? el('span', { class: 'muted' }, '京华老宋体') :
+            seg([['serif', '宋体'], ['sans', '黑体']], current.font, (font) => setPrefs({ font }))),
+      );
+    }
+    drawReadingAppearance();
     wrap.append(el('div', { class: 'section-title', text: '阅读' }));
     wrap.append(el('div', { class: 'card' },
-      el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '字号'),
-        seg([[15, '小'], [17, '中'], [19, '大'], [21, '特大']], p.fontSize, (v) => setPrefs({ fontSize: v }))),
-      el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '正文字体'),
-        seg([['serif', '宋体'], ['sans', '黑体']], p.font, (v) => setPrefs({ font: v }))),
+      el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '阅读主题'),
+        seg([['default', '默认'], ['paper', '纸书']], p.theme, (theme) => {
+          setPrefs({ theme });
+          drawReadingAppearance();
+        })),
+      readingAppearance,
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '段首缩进'), sw(p.indent, (v) => setPrefs({ indent: v }))),
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '关键词加粗与强调色'), sw(p.emphasis !== false, (v) => setPrefs({ emphasis: v }))),
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '台词柔和配色'), sw(p.dialogueColor !== false, (v) => setPrefs({ dialogueColor: v }))),

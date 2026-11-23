@@ -19,7 +19,7 @@ const { choiceInput, toggleChoice, expandOptionInput } = await import('../js/per
 const { readAttachment, attachmentBytes, selectedImport } = await import('../js/attachments.js');
 const { chatMessages, newDiscussion, saveDiscussion, getDiscussion, exportDiscussions } = await import('../js/discuss.js');
 const { markdownPack, importMarkdownPack, groupModules, deleteModules, undoModuleDelete } = await import('../js/rules.js');
-const { getModules, saveModules } = await import('../js/state.js');
+const { getModules, saveModules, loadPrefs } = await import('../js/state.js');
 const { protagonistState, reviewProtagonistChanges, applyProtagonistChanges } = await import('../js/protagonist.js');
 const { buildContext } = await import('../js/prompt.js');
 const { inlineText } = await import('../js/inline.js');
@@ -50,6 +50,36 @@ beforeEach(async () => {
   await db.kvSet('relay',{on:false});
   globalThis.fetch=async(url,init)=>{ requests.push({url,body:JSON.parse(init.body)}); let answer=responses.shift()??('# 新进展\n\n你收好了信。'+options);if(JSON.parse(init.body).messages[0]?.content.includes('【正文边界协议】'))answer='[MOYU_FINAL]\n'+answer+'\n[/MOYU_FINAL]';
     return new Response(JSON.stringify({choices:[{message:{content:answer},finish_reason:'stop'}],usage:{prompt_tokens:20,completion_tokens:20}}),{headers:{'Content-Type':'application/json'}}); };
+});
+
+test('纸书全局生效并单独记住字号，恢复默认时保留原来的阅读偏好', async () => {
+  await db.kvSet('prefs', { fontSize: 19, font: 'sans', indent: false });
+  await loadPrefs();
+  await settings.render(root, { section: '阅读' });
+  const page = document.documentElement;
+  assert.equal(page.dataset.theme, 'default');
+
+  button('纸书', root).click();
+  assert.equal(page.dataset.theme, 'paper');
+  assert.equal(page.style.getPropertyValue('--read-size'), '16px');
+  assert.match(root.textContent, /京华老宋体/);
+  button('中', root).click();
+  await wait(async () => (await db.kvGet('prefs'))?.paperFontSize === 18);
+  await loadPrefs();
+  assert.equal(page.dataset.theme, 'paper');
+  assert.equal(page.style.getPropertyValue('--read-size'), '18px');
+
+  const themeRow = button('纸书', root).closest('.seg');
+  button('默认', themeRow).click();
+  assert.equal(page.dataset.theme, 'default');
+  assert.equal(page.style.getPropertyValue('--read-size'), '19px');
+  assert.equal(page.dataset.font, 'sans');
+  assert.equal(page.dataset.indent, 'off');
+  assert.ok(button('黑体', root).classList.contains('on'));
+
+  await wait(async () => (await db.kvGet('prefs'))?.theme === 'default');
+  await db.kvSet('prefs', null);
+  await loadPrefs();
 });
 
 test('故事列表可复制现有设定重新开局，剧情和分支与原故事隔离', async () => {
