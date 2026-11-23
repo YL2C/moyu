@@ -52,7 +52,7 @@ beforeEach(async () => {
     return new Response(JSON.stringify({choices:[{message:{content:answer},finish_reason:'stop'}],usage:{prompt_tokens:20,completion_tokens:20}}),{headers:{'Content-Type':'application/json'}}); };
 });
 
-test('纸书全局生效并单独记住字号，恢复默认时保留原来的阅读偏好', async () => {
+test('纸书全局生效并单独记住字号和字体，恢复默认时保留原来的阅读偏好', async () => {
   await db.kvSet('prefs', { fontSize: 19, font: 'sans', indent: false });
   await loadPrefs();
   await settings.render(root, { section: '阅读' });
@@ -62,12 +62,22 @@ test('纸书全局生效并单独记住字号，恢复默认时保留原来的�
   button('纸书', root).click();
   assert.equal(page.dataset.theme, 'paper');
   assert.equal(page.style.getPropertyValue('--read-size'), '16px');
-  assert.match(root.textContent, /京华老宋体/);
+  const picker = () => root.querySelector('select[aria-label="正文字体"]');
+  assert.equal(picker().value, 'kinghwa');
+  assert.equal(page.dataset.font, 'kinghwa');
+  assert.deepEqual([...picker().options].map(option => option.textContent), ['宋体', '黑体', '京华老宋体']);
+  picker().value = 'serif';
+  picker().dispatchEvent(new Event('change'));
+  assert.equal(page.dataset.font, 'serif');
   button('中', root).click();
-  await wait(async () => (await db.kvGet('prefs'))?.paperFontSize === 18);
+  await wait(async () => {
+    const saved = await db.kvGet('prefs');
+    return saved?.paperFontSize === 18 && saved?.paperFont === 'serif';
+  });
   await loadPrefs();
   assert.equal(page.dataset.theme, 'paper');
   assert.equal(page.style.getPropertyValue('--read-size'), '18px');
+  assert.equal(page.dataset.font, 'serif');
 
   const themeRow = button('纸书', root).closest('.seg');
   button('默认', themeRow).click();
@@ -75,7 +85,10 @@ test('纸书全局生效并单独记住字号，恢复默认时保留原来的�
   assert.equal(page.style.getPropertyValue('--read-size'), '19px');
   assert.equal(page.dataset.font, 'sans');
   assert.equal(page.dataset.indent, 'off');
-  assert.ok(button('黑体', root).classList.contains('on'));
+  assert.equal(picker().value, 'sans');
+  button('纸书', themeRow).click();
+  assert.equal(picker().value, 'serif');
+  button('默认', themeRow).click();
 
   await wait(async () => (await db.kvGet('prefs'))?.theme === 'default');
   await db.kvSet('prefs', null);

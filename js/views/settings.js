@@ -238,14 +238,21 @@ export async function render(root, { section }) {
       const current = getPrefs();
       const paper = current.theme === 'paper';
       const sizeKey = paper ? 'paperFontSize' : 'fontSize';
+      const fontKey = paper ? 'paperFont' : 'font';
       const sizes = paper ? [16, 18, 20, 22] : [15, 17, 19, 21];
+      const fontPicker = el('select', {
+        class: 'reading-font-picker', 'aria-label': '正文字体',
+        onchange: () => setPrefs({ [fontKey]: fontPicker.value }),
+      },
+        el('option', { value: 'serif' }, '宋体'),
+        el('option', { value: 'sans' }, '黑体'),
+        el('option', { value: 'kinghwa' }, '京华老宋体'));
+      fontPicker.value = current[fontKey];
       readingAppearance.replaceChildren(
         el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '字号'),
           seg(sizes.map((size, i) => [size, ['小', '中', '大', '特大'][i]]), current[sizeKey],
             (size) => setPrefs({ [sizeKey]: size }))),
-        el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '正文字体'),
-          paper ? el('span', { class: 'muted' }, '京华老宋体') :
-            seg([['serif', '宋体'], ['sans', '黑体']], current.font, (font) => setPrefs({ font }))),
+        el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '正文字体'), fontPicker),
       );
     }
     drawReadingAppearance();
