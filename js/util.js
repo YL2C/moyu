@@ -1,6 +1,6 @@
 // 墨游 · 小工具
 
-export const APP_VERSION = '0.6.16-personal.30';
+export const APP_VERSION = '0.6.16-personal.31';
 
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -59,20 +59,21 @@ export function approxTokens(chars) {
 }
 
 /** 底部弹出层。返回 { close, body, foot } */
-export function sheet({ title = '', onClose } = {}) {
+export function sheet({ title = '', onClose, canDismiss } = {}) {
   const body = el('div', { class: 'sb' });
   const foot = el('div', { class: 'sf' });
   const panel = el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' },
     el('div', { class: 'sh' },
       el('div', { class: 't', text: title }),
-      el('button', { class: 'icon-btn', 'aria-label': '关闭', onclick: () => close() }, '✕')
+      el('button', { class: 'icon-btn', 'aria-label': '关闭', onclick: () => dismiss() }, '✕')
     ),
     body, foot
   );
   const backdrop = el('div', { class: 'sheet-backdrop' }, panel);
-  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) dismiss(); });
   document.body.append(backdrop);
   let closed = false;
+  function dismiss() { if (canDismiss?.() !== false) close(); }
   function close() {
     if (closed) return;
     closed = true;

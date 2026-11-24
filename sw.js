@@ -2,7 +2,7 @@
 // 只缓存本站的页面文件；API 请求一律不经过缓存。
 // 先向服务器核验最新文件，取不到再用离线缓存；安装时绕过 HTTP 旧缓存。
 const CACHE_PREFIX = 'moyu-yl2c-personal-';
-const CACHE = CACHE_PREFIX + '0.6.16-personal.30';
+const CACHE = CACHE_PREFIX + '0.6.16-personal.31';
 const ASSETS = [
   './',
   './index.html',
@@ -16,6 +16,7 @@ const ASSETS = [
   './js/state.js',
   './js/reading-fonts.js',
   './js/db.js',
+  './js/migration.js',
   './js/personal.js',
   './js/inline.js',
   './js/rules.js',
@@ -53,6 +54,7 @@ const ASSETS = [
   './js/views/packs-ui.js',
   './js/views/play.js',
   './js/views/settings.js',
+  './js/views/migration.js',
   './icons/apple-touch-icon.png',
   './icons/icon-192.png',
   './icons/icon-512.png',

@@ -119,6 +119,47 @@ export const db = {
   },
 };
 
+export const MIGRATION_STORES = Object.freeze(['kv', 'connections', 'stories', 'nodes', 'extras']);
+
+export async function readMigrationDatabase() {
+  const database = await open();
+  return new Promise((resolve, reject) => {
+    const tx = database.transaction(MIGRATION_STORES, 'readonly');
+    const requests = MIGRATION_STORES.map(name => [name, tx.objectStore(name).getAll()]);
+    const keys = tx.objectStore('kv').getAllKeys();
+    tx.oncomplete = () => {
+      const stores = Object.fromEntries(requests.map(([name, request]) => [name, request.result]));
+      stores.kv = keys.result.map((key, index) => [key, stores.kv[index]]);
+      resolve(stores);
+    };
+    tx.onabort = () => reject(tx.error || new Error('读取本地存档失败'));
+  });
+}
+
+export async function replaceMigrationDatabase(stores) {
+  const database = await open();
+  return new Promise((resolve, reject) => {
+    const tx = database.transaction(MIGRATION_STORES, 'readwrite');
+    let enqueueError;
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(enqueueError || tx.error || new Error('迁移写入失败'));
+    try {
+      for (const name of MIGRATION_STORES) {
+        const store = tx.objectStore(name);
+        store.clear();
+        if (name === 'kv') {
+          for (const [key, value] of stores.kv) store.add(value, key);
+        } else {
+          for (const value of stores[name]) store.add(value);
+        }
+      }
+    } catch (error) {
+      enqueueError = error;
+      tx.abort();
+    }
+  });
+}
+
 /** 向系统申请“持久存储”，降低被系统清理的可能 */
 export async function ensurePersist() {
   try {

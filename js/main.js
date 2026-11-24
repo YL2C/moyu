@@ -2,6 +2,7 @@
 
 import { ensurePersist } from './db.js';
 import { toast } from './util.js';
+import { MIGRATION_NOTICE_KEY } from './migration.js';
 import * as library from './views/library.js';
 import * as play from './views/play.js';
 import * as settings from './views/settings.js';
@@ -184,11 +185,26 @@ function keepFocusVisible() {
 }
 document.addEventListener('focusin', keepFocusVisible);
 
+function isGenerating() {
+  return current?.api?.busy?.() || [...parked.values()].some(entry => entry.api?.busy?.());
+}
+
+window.addEventListener('moyu:before-migration', event => {
+  if (isGenerating()) event.preventDefault();
+});
+
 async function start() {
   fitViewport();
   await loadPrefs();
   window.addEventListener('hashchange', route);
   await route();
+  try {
+    const migrated = sessionStorage.getItem(MIGRATION_NOTICE_KEY);
+    if (migrated) {
+      sessionStorage.removeItem(MIGRATION_NOTICE_KEY);
+      toast(migrated, 4500);
+    }
+  } catch {}
   ensurePersist();
   const local = ['localhost', '127.0.0.1'].includes(location.hostname);
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || local)) {
@@ -200,7 +216,7 @@ async function start() {
 let refreshing = false;
 window.addEventListener('moyu:refresh', async () => {
   if (refreshing) return;
-  if (current?.api?.busy?.() || [...parked.values()].some((entry) => entry.api?.busy?.())) {
+  if (isGenerating()) {
     toast('正在生成内容，完成后再刷新'); return;
   }
   if (current?.el.querySelector('.composer textarea')?.value.trim()) {
@@ -230,7 +246,7 @@ window.addEventListener('moyu:refresh', async () => {
         }
       }
     }
-    if (current?.api?.busy?.() || [...parked.values()].some((entry) => entry.api?.busy?.()) ||
+    if (isGenerating() ||
       current?.el.querySelector('.composer textarea')?.value.trim()) {
       refreshing = false;
       toast('有正在生成或未发送的内容，处理完成后再刷新', 4000); return;

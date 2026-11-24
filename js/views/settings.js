@@ -13,6 +13,7 @@ import { getTemplates, saveTemplates, getBase, saveBase, DEFAULT_BASE, builtinTe
 import { detectKind, getPacks, deleteGlobalPack, KIND_LABEL, readTavernFile } from '../tavern.js';
 import { importFlow, importTavernResult } from './packs-ui.js';
 import { openWordImport } from './word-import.js';
+import { migrationControls } from './migration.js';
 import { rulePanel, collapseSettings, editRuleModule } from './rules-ui.js';
 import { importMarkdownPack, importRuleJsonPack, ruleJsonEntries, groupModules, deleteModules, undoModuleDelete, undoWordImport, WORD_IMPORT_UNDO } from '../rules.js';
 
@@ -184,7 +185,7 @@ export async function render(root, { section }) {
         el('div', { class: 'field' }, el('label', { text: '转发口令' }), relayToken),
         el('div', { class: 'field' }, el('label', { text: '服务器地区' }), relayRegion),
         el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '启用服务器转发'), el('label', { class: 'switch' }, relayOn, el('span'))),
-        el('div', { class: 'hint', text: '切走或关掉网页后，正文仍可在服务器生成；完成后保留 30 分钟。口令不进备份。大陆服务器建议只转发国内可访问的中转站。' }),
+        el('div', { class: 'hint', text: '切走或关掉网页后，正文仍可在服务器生成；完成后保留 30 分钟。普通备份不带口令。大陆服务器建议只转发国内可访问的中转站。' }),
         el('div', { class: 'row' }, relayTest, el('button', { class: 'btn primary', onclick: async () => {
           try { await saveRelay(readRelay()); relayResult.textContent = '已保存。每个连接可以单独开关转发。'; toast('转发设置已保存'); }
           catch (e) { relayResult.textContent = e.message; }
@@ -441,8 +442,9 @@ export async function render(root, { section }) {
         }, '导入备份')
       ),
       el('div', { class: 'hint' },
-        '导出的文件不含 API 密钥，可以放心传到别的设备或发给朋友。',
-        el('br'), [used, info.persisted === true ? '已开启持久存储' : info.persisted === false ? '系统未允许持久存储，记得常备份' : ''].filter(Boolean).join(' · '))
+        '普通备份不含 API 密钥。',
+        el('br'), [used, info.persisted === true ? '已开启持久存储' : info.persisted === false ? '系统未允许持久存储，记得常备份' : ''].filter(Boolean).join(' · ')),
+      migrationControls()
     ));
 
     // ── 关于 ──
@@ -517,7 +519,7 @@ export async function render(root, { section }) {
     if (c.format === 'vertex') saText.value = c.apiKey || '';
     const saStatus = el('div', { class: 'hint' });
     const checkSa = () => {
-      if (!saText.value.trim()) { saStatus.textContent = '只存在这台设备上，导出备份时不会带出去。这份 JSON 权限比普通密钥大，建议在 Google Cloud 里只给这个服务账号开 Vertex AI User 权限。'; return; }
+      if (!saText.value.trim()) { saStatus.textContent = '只存在这台设备上，普通备份不会带出去。这份 JSON 权限比普通密钥大，建议在 Google Cloud 里只给这个服务账号开 Vertex AI User 权限。'; return; }
       try { const j = parseServiceAccount(saText.value); saStatus.textContent = `✓ 看起来没问题：项目 ${j.project_id} · ${j.client_email}`; }
       catch (e) { saStatus.textContent = '✗ ' + e.message + (e.hint ? '：' + e.hint : ''); }
     };
@@ -633,7 +635,7 @@ export async function render(root, { section }) {
       (baseField.append(el('label', { text: '接口地址' }), base, urlHint,
         el('div', { class: 'hint', text: '中转站一般填到 /v1 为止。官方 Claude 留空并把格式选成“Claude 原生”。' })), baseField),
       (keyField.append(el('label', { text: 'API 密钥' }), el('div', { class: 'row', style: { flexWrap: 'nowrap' } }, key, showKey),
-        el('div', { class: 'hint', text: '只存在这台设备上，导出备份时不会带出去。' })), keyField),
+        el('div', { class: 'hint', text: '只存在这台设备上，普通备份不会带出去。' })), keyField),
       saField, regionField,
       el('div', { class: 'field' }, el('label', { text: '模型名' }), model, dl,
         el('div', { class: 'row', style: { marginTop: '6px' } }, getModels, refetch),
