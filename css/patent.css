@@ -1,0 +1,735 @@
+/* 专利文档主题 */
+:root[data-theme="patent"] {
+  color-scheme: light;
+  --bg: #edf0f2;
+  --bg2: #f2f4f5;
+  --card: #fff;
+  --text: #292e33;
+  --text2: #505d68;
+  --text3: #626f7a;
+  --line: #d3d9de;
+  --accent: #335873;
+  --dialogue: #344f64;
+  --accent-soft: #e4edf5;
+  --danger: #963d36;
+  --danger-soft: #f6e9e7;
+  --ok: #3d6a50;
+  --radius: 3px;
+  --document-width: 642px;
+  --document-inset: clamp(13px, 3.6vw, 36px);
+  scrollbar-color: #abb8c2 transparent;
+  scrollbar-width: thin;
+}
+
+:root[data-theme="patent"] .view {
+  background: var(--card);
+}
+
+:root[data-theme="patent"] .view > .scroll {
+  scrollbar-width: thin;
+}
+
+:root[data-theme="patent"] .topbar {
+  gap: 8px;
+  min-height: 49px;
+  padding-inline: 10px;
+  background: var(--bg2);
+}
+
+:root[data-theme="patent"] .topbar .title {
+  font-size: 14px;
+}
+
+:root[data-theme="patent"] .topbar .title .sub {
+  font-size: 11px;
+}
+
+:root[data-theme="patent"] .topbar > .title:not(:has(.sub)) {
+  padding-block: 3px;
+}
+
+:root[data-theme="patent"] .icon-btn,
+:root[data-theme="patent"] .more {
+  border-radius: 3px;
+  min-width: 32px;
+  min-height: 32px;
+}
+
+:root[data-theme="patent"] :is(.model-chip, .extra-api-btn) {
+  position: relative;
+  max-width: min(40%, 210px);
+  min-height: 32px;
+  padding: 4px 23px 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+:root[data-theme="patent"] :is(.model-chip, .extra-api-btn)::after {
+  content: '';
+  position: absolute;
+  right: 9px;
+  top: 12px;
+  width: 5px;
+  height: 5px;
+  border: solid currentColor;
+  border-width: 0 1px 1px 0;
+  transform: rotate(45deg);
+}
+
+:root[data-theme="patent"] .model-chip.warn {
+  border-color: var(--danger);
+}
+
+:root[data-theme="patent"] #app {
+  --document-rail: 49px;
+  flex-direction: row;
+}
+
+:root[data-theme="patent"] #tabbar {
+  display: flex;
+  order: -1;
+  flex-direction: column;
+  gap: 2px;
+  width: var(--document-rail);
+  border: 0;
+  border-right: 1px solid var(--line);
+  padding: calc(env(safe-area-inset-top) + 49px) 2px env(safe-area-inset-bottom);
+  overflow-y: auto;
+  background: var(--bg2);
+}
+
+:root[data-theme="patent"] .view-host.parked {
+  left: var(--document-rail);
+}
+
+:root[data-theme="patent"] #tabbar .lb {
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+:root[data-theme="patent"] #tabbar .tab {
+  flex: none;
+  opacity: 1;
+  min-height: 43px;
+  padding: 5px 0 3px;
+  gap: 3px;
+  color: var(--text2);
+}
+
+:root[data-theme="patent"] #tabbar .tab.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 var(--accent);
+}
+
+:root[data-theme="patent"] #tabbar .tab.off {
+  opacity: .5;
+}
+
+:root[data-theme="patent"] #tabbar .tab .ic {
+  position: relative;
+  width: 17px;
+  height: 17px;
+  font-size: 0;
+}
+
+:root[data-theme="patent"] #tabbar .ic::before,
+:root[data-theme="patent"] #tabbar .ic::after {
+  position: absolute;
+  content: '';
+  display: block;
+  box-sizing: border-box;
+}
+
+:root[data-theme="patent"] #tabbar .ic::before {
+  inset: 2px 3px;
+  border: 1px solid currentColor;
+  border-radius: 1px;
+}
+
+:root[data-theme="patent"] #tabbar .tab[data-tab="home"] .ic::before {
+  inset: 5px 1px 2px;
+}
+
+:root[data-theme="patent"] #tabbar .tab[data-tab="home"] .ic::after {
+  inset: 3px 8px 11px 1px;
+  border: 1px solid currentColor;
+  border-bottom: 0;
+  border-radius: 1px 2px 0 0;
+}
+
+:root[data-theme="patent"] #tabbar .tab[data-tab="play"] .ic::after,
+:root[data-theme="patent"] #tabbar .tab[data-tab="settings"] .ic::after {
+  inset: 6px 5px 6px;
+  border-block: 1px solid currentColor;
+}
+
+:root[data-theme="patent"] #tabbar .tab[data-tab="chars"] .ic::before {
+  inset: 2px 6px 9px;
+  border-radius: 50%;
+}
+
+:root[data-theme="patent"] #tabbar .tab[data-tab="chars"] .ic::after {
+  inset: 9px 3px 2px;
+  border: 1px solid currentColor;
+  border-radius: 50% 50% 1px 1px;
+}
+
+:root[data-theme="patent"] #tabbar .tab[data-tab="extra"] .ic::before {
+  inset: 3px 5px 3px 6px;
+  border-radius: 4px;
+  transform: rotate(38deg);
+}
+
+:root[data-theme="patent"] #tabbar .tab[data-tab="extra"] .ic::after {
+  inset: 5px 7px 5px 8px;
+  border-left: 1px solid currentColor;
+  transform: rotate(38deg);
+}
+
+:root[data-theme="patent"] #tabbar .tab[data-tab="discuss"] .ic::before {
+  inset: 3px 2px 4px;
+}
+
+:root[data-theme="patent"] #tabbar .tab[data-tab="discuss"] .ic::after {
+  width: 4px;
+  height: 4px;
+  left: 4px;
+  bottom: 2px;
+  background: var(--bg2);
+  border: 1px solid currentColor;
+  border-width: 0 0 1px 1px;
+  transform: skewY(-35deg);
+}
+
+:root[data-theme="patent"] #tabbar .tab.on .ic::after {
+  background-color: var(--accent-soft);
+}
+
+@media (min-width: 760px) {
+  :root[data-theme="patent"] #app {
+    --document-frame: 784px;
+    --document-rail: 57px;
+    inset-inline: max(12px, (100vw - var(--document-frame)) / 2);
+    top: calc(var(--vv-top, 0px) + 12px);
+    height: calc(var(--app-h) - 24px);
+    border: 1px solid #c8d0d7;
+    box-shadow: 0 8px 30px #26374712;
+  }
+
+  :root[data-theme="patent"] #tabbar {
+    padding-inline: 4px;
+  }
+
+  :root[data-theme="patent"] #tabbar .tab {
+    min-height: 46px;
+  }
+}
+
+:root[data-theme="patent"] :is(.btn, .chip, .badge, .tag, .memo-badge, .seg, .segs > .seg,
+  .reading-select, .field :is(input, textarea, select), .chg-text, .reading-preview,
+  .composer :is(.input-shell, textarea, .bracket-btn, .send), .status, .ooc-panel,
+  .settings-section, .attachment-card, .rule-pack, .err, .gm.ooc, .ex-block, .ex-report-document,
+  .extra-layout .ex-chat, .ex-callout, .ex-chat .ex-bubble, .ex-danmu span, .disc-note) {
+  border-radius: 3px;
+}
+
+:root[data-theme="patent"] :is(.btn, .chip, .field :is(input, textarea, select)) {
+  border-color: var(--line);
+}
+
+:root[data-theme="patent"] :is(.btn.primary, .chip.on, .segs > .seg.on) {
+  border-color: var(--accent);
+}
+
+:root[data-theme="patent"] :is(.btn, .chip, .icon-btn, .model-chip, .extra-api-btn, .menu-list button):hover:not(:disabled):not(.primary):not(.on) {
+  background: var(--accent-soft);
+}
+
+:root[data-theme="patent"] :is(button, summary, input, select, textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+:root[data-theme="patent"] .wrap {
+  max-width: var(--document-width);
+  padding: 18px var(--document-inset) 30px;
+}
+
+:root[data-theme="patent"] .story-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(5rem, 31%);
+  align-items: center;
+  column-gap: 8px;
+  padding: 7px 10px 7px 25px;
+  margin: 0;
+  border-radius: 0;
+  border-bottom-width: 0;
+  position: relative;
+}
+
+:root[data-theme="patent"] .story-card:not(:has(+ .story-card)) {
+  border-bottom-width: 1px;
+}
+
+:root[data-theme="patent"] .story-card:hover,
+:root[data-theme="patent"] .story-card:focus-within {
+  background: var(--accent-soft);
+}
+
+:root[data-theme="patent"] .story-card::before {
+  content: '';
+  position: absolute;
+  top: 16px;
+  left: 10px;
+  width: 7px;
+  height: 9px;
+  border: 1px solid var(--text3);
+  border-radius: 1px;
+}
+
+:root[data-theme="patent"] .story-card .t {
+  min-width: 0;
+  font-size: 14px;
+}
+
+:root[data-theme="patent"] .story-card .t button {
+  margin-left: auto;
+}
+
+:root[data-theme="patent"] .story-card .m {
+  min-width: 0;
+  margin-top: 0;
+  font-size: 12px;
+}
+
+:root[data-theme="patent"] .story-card .d {
+  grid-column: 2;
+  margin-top: 2px;
+  font-size: 10.5px;
+}
+
+:root[data-theme="patent"] .story-card .m.clamp {
+  grid-column: 1 / -1;
+  margin: 3px 0;
+}
+
+:root[data-theme="patent"] .npc-card {
+  padding: 0 12px 10px;
+}
+
+:root[data-theme="patent"] .npc-head {
+  margin: 0 -12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+:root[data-theme="patent"] .npc-name {
+  font-size: 15px;
+}
+
+:root[data-theme="patent"] .memo-h {
+  padding: 2px 6px;
+  background: var(--bg2);
+  color: var(--text2);
+}
+
+:root[data-theme="patent"] .document-original-label { display: none; }
+:root[data-theme="patent"] .document-theme-label { display: inline; }
+
+:root[data-theme="patent"] .settings-section {
+  padding: 0 10px;
+  background: var(--card);
+}
+
+:root[data-theme="patent"] .settings-section > summary {
+  padding: 10px;
+  margin-inline: -10px;
+  background: var(--bg2);
+  font-size: 14px;
+}
+
+:root[data-theme="patent"] .settings-section[open] {
+  padding-bottom: 10px;
+}
+
+:root[data-theme="patent"] .settings-section[open] > summary {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+
+:root[data-theme="patent"] .settings-section .card {
+  border-color: var(--line);
+}
+
+:root[data-theme="patent"] .document-toolbar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+
+:root[data-theme="patent"] .document-toolbar button {
+  min-height: 31px;
+  padding-inline: 9px;
+  border-color: transparent;
+  color: var(--text2);
+}
+
+:root[data-theme="patent"] :is(.document-play, .document-extra) > .scroll {
+  background: var(--bg);
+}
+
+:root[data-theme="patent"] .feed {
+  max-width: var(--document-width);
+  padding: 15px var(--document-inset) 24px;
+}
+
+:root[data-theme="patent"] :is(.document-play, .document-extra) .feed {
+  min-height: 100%;
+  background: var(--card);
+}
+
+:root[data-theme="patent"] .document-play .turn:has(> .gm:not(.ooc)) + .turn:not(:has(.you)) {
+  border-top: 1px solid var(--line);
+}
+
+:root[data-theme="patent"] .document-play .chapter-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  margin: 7px 0 6px;
+}
+
+:root[data-theme="patent"] .document-play .chapter-row .chapter {
+  color: var(--text2);
+  font-size: 11px;
+  letter-spacing: .03em;
+}
+
+:root[data-theme="patent"] .document-chapter-number {
+  display: block;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  padding: 2px 0;
+  text-align: center;
+  font: 600 19px/1.15 var(--read-font);
+}
+
+:root[data-theme="patent"] :is(.document-play, .document-extra) .gm > h2 {
+  margin: 0 0 .9em;
+  text-align: center;
+  font-size: calc(var(--read-size) * 1.16);
+}
+
+:root[data-theme="patent"] :is(.document-play, .document-extra) .gm:not(.ooc) > :is(p, .extra-raw) {
+  position: relative;
+  margin-inline-end: 22px;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: var(--read-line-height, 1.8);
+}
+
+:root[data-theme="patent"] .document-line-numbers {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 100%;
+  width: 21px;
+  color: var(--text3);
+  font: 10px/1 var(--ui-font);
+  font-variant-numeric: tabular-nums;
+  text-indent: 0;
+  user-select: none;
+  pointer-events: none;
+}
+
+:root[data-theme="patent"] .document-line-numbers > span {
+  position: absolute;
+  right: 0;
+  transform: translateY(calc(var(--read-size) * .55));
+}
+
+:root[data-theme="patent"] .document-line-numbers > span::before {
+  content: attr(data-line);
+}
+
+:root[data-theme="patent"] .you {
+  padding-block: 6px;
+  margin-block: 8px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: 0;
+  background: var(--bg2);
+  font-size: 13px;
+}
+
+:root[data-theme="patent"] .start-mark {
+  margin-block: 0 6px;
+  color: var(--text2);
+}
+
+:root[data-theme="patent"] .danmu {
+  padding: 7px 9px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+}
+
+:root[data-theme="patent"] .danmu .dm {
+  margin-left: 0;
+}
+
+:root[data-theme="patent"] .options {
+  gap: 2px;
+  border-block: 1px solid var(--line);
+  padding-block: 5px;
+}
+
+:root[data-theme="patent"] .option-row {
+  border-color: transparent;
+  border-radius: 2px;
+}
+
+:root[data-theme="patent"] .option-row:hover,
+:root[data-theme="patent"] .option-row:has(button.selected) {
+  background: var(--accent-soft);
+}
+
+:root[data-theme="patent"] .option-row:has(button.selected) {
+  border-color: #b0c5d8;
+}
+
+:root[data-theme="patent"] .option-row button {
+  border-radius: 2px;
+}
+
+:root[data-theme="patent"] .option-row [data-choice] {
+  min-height: 38px;
+  padding-block: 6px;
+}
+
+:root[data-theme="patent"] .option-row .k {
+  display: inline-block;
+  width: 1.15em;
+}
+
+:root[data-theme="patent"] .option-row .option-edit:hover {
+  background: var(--card);
+}
+
+:root[data-theme="patent"] .composer {
+  padding-inline: max(9px, (100% - var(--document-width)) / 2 + 10px);
+  background: var(--bg2);
+}
+
+:root[data-theme="patent"] .document-play .composer .bar > button:not(.continue-chip) {
+  display: none;
+}
+
+:root[data-theme="patent"] .document-play .composer.document-collapsed > :not(.document-composer-title, .status-row),
+:root[data-theme="patent"] .document-play .composer .bar.document-no-continue {
+  display: none;
+}
+
+:root[data-theme="patent"] .document-composer-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 29px;
+  padding: 4px 7px;
+  margin-bottom: 4px;
+  border: 0;
+  background: #e3e7ea;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root[data-theme="patent"] .document-composer-title:disabled {
+  cursor: default;
+}
+
+:root[data-theme="patent"] .document-fold::after {
+  content: '−';
+  color: var(--text2);
+}
+
+:root[data-theme="patent"] [aria-expanded="false"] .document-fold::after {
+  content: '+';
+}
+
+:root[data-theme="patent"] .document-picks:not(:empty):not(.out-of-scene) {
+  display: block;
+  margin: 3px 7px 5px;
+  max-height: 3em;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  font: 12px/1.4 var(--ui-font);
+  color: var(--accent);
+}
+
+:root[data-theme="patent"] .composer .inrow {
+  gap: 5px;
+}
+
+:root[data-theme="patent"] .document-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex: none;
+  gap: 8px;
+  min-height: 32px;
+  padding: 2px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--text2);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+:root[data-theme="patent"] .document-zoom {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+:root[data-theme="patent"] .document-zoom output {
+  min-width: 4em;
+  text-align: center;
+}
+
+:root[data-theme="patent"] .document-zoom .btn {
+  min-width: 30px;
+  min-height: 27px;
+  padding: 2px 6px;
+}
+
+:root[data-theme="patent"].kb :is(.document-status, .document-composer-title, .document-toolbar) {
+  display: none;
+}
+
+:root[data-theme="patent"] .document-extra .document-extra-meta {
+  background: var(--bg2);
+}
+
+:root[data-theme="patent"] .disc-feed {
+  gap: 0;
+}
+
+:root[data-theme="patent"] .disc-msg:is(.me, .ai) {
+  width: 100%;
+  max-width: none;
+  padding: 10px 3px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--card);
+  color: var(--text);
+  font-size: 14px;
+}
+
+:root[data-theme="patent"] .disc-msg.err {
+  border-bottom-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+:root[data-theme="patent"] .document-speaker {
+  display: inline-block;
+  margin-bottom: 5px;
+  padding: 0 6px;
+  border-radius: 2px;
+  background: var(--bg2);
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+:root[data-theme="patent"] .me > .document-speaker {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+:root[data-theme="patent"] .sheet-backdrop {
+  background: #25384957;
+}
+
+:root[data-theme="patent"] .sheet {
+  border: 1px solid var(--line);
+  border-radius: 4px 4px 0 0;
+  background: var(--card);
+}
+
+:root[data-theme="patent"] .sheet .sh,
+:root[data-theme="patent"] .sheet .sf {
+  background: var(--bg2);
+}
+
+:root[data-theme="patent"] .sheet .sh .t {
+  font-size: 14px;
+}
+
+:root[data-theme="patent"] .document-extra-form {
+  max-width: 510px;
+}
+
+:root[data-theme="patent"] .document-menu-backdrop {
+  display: block;
+  background: transparent;
+}
+
+:root[data-theme="patent"] .document-menu {
+  position: absolute;
+  top: min(var(--menu-top), 30%);
+  right: min(var(--menu-right), max(8px, 100% - 300px));
+  width: min(282px, 100% - 16px);
+  max-height: min(68%, 480px);
+  border-radius: 4px;
+  box-shadow: 0 6px 22px #25384933;
+  animation: fade .12s ease;
+}
+
+:root[data-theme="patent"] .document-menu .sh {
+  padding: 3px 7px 3px 11px;
+}
+
+:root[data-theme="patent"] .document-menu .sb {
+  padding: 4px;
+}
+
+:root[data-theme="patent"] .document-menu .menu-list button {
+  padding: 8px;
+  overflow-wrap: anywhere;
+  text-align: left;
+  font-size: 13px;
+}
+
+:root[data-theme="patent"] .document-menu button[aria-current="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+@media (min-width: 760px) {
+  :root[data-theme="patent"] .sheet { border-radius: 4px; }
+}
+
+@media (max-width: 759px) {
+  :root[data-theme="patent"] :is(.document-play, .document-extra) .feed {
+    padding-top: 10px;
+  }
+
+  :root[data-theme="patent"] .document-status {
+    padding-bottom: max(2px, env(safe-area-inset-bottom));
+  }
+
+  :root[data-theme="patent"] .view:not(:has(.document-status)) > :is(.scroll:last-child, .composer:last-child) {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}

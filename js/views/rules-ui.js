@@ -79,7 +79,7 @@ export function collapseSettings(wrap, section = '') {
       const active = child.id === 'sec-' + section;
       current = el('details', { class: 'settings-section', id: child.id || 'settings-section-' + index++ });
       current.open = active || stored === 'open' || (stored === null && child.textContent === '关于');
-      current.append(el('summary', { text: child.textContent }));
+      current.append(el('summary', { 'data-section': child.textContent, text: child.textContent }));
       current.addEventListener('toggle', () => { try { localStorage.setItem(key, currentForEvent.open ? 'open' : 'closed'); } catch {} });
       const currentForEvent = current;
       child.replaceWith(current); groups.push(current);

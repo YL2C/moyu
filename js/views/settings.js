@@ -118,11 +118,21 @@ function pickModel(list, current = '') {
 
 export async function render(root, { section }) {
   const wrap = el('div', { class: 'wrap' });
+  const appearanceLinks = el('div', { class: 'document-toolbar', hidden: true },
+    ...[['外观', '阅读'], ['连接', 'API 连接'], ['服务器转发', '服务器转发（可选）'], ['备份', '备份']].map(([label, section]) =>
+      el('button', { class: 'btn small', onclick: () => {
+        const heading = [...wrap.querySelectorAll('.settings-section > summary')].find(summary => summary.dataset.section === section);
+        if (!heading) return;
+        heading.parentElement.open = true;
+        heading.focus({ preventScroll: true });
+        heading.scrollIntoView({ block: 'start' });
+      } }, label)));
   root.append(el('div', { class: 'view' },
     el('div', { class: 'topbar' },
-      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', alignItems: 'center' } }, '设置')
+      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', alignItems: 'center' } }, el('span', { class: 'document-original-label', text: '设置' }),
+        el('span', { class: 'document-theme-label', hidden: true, text: '偏好设置' }))
     ),
-    el('div', { class: 'scroll' }, wrap)
+    appearanceLinks, el('div', { class: 'scroll' }, wrap)
   ));
 
   async function draw() {

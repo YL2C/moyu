@@ -1,7 +1,6 @@
 // 墨游 · 启动与页面切换
 
 import { ensurePersist } from './db.js';
-import { loadPrefs } from './state.js';
 import { toast } from './util.js';
 import * as library from './views/library.js';
 import * as play from './views/play.js';
@@ -11,7 +10,7 @@ import * as extrasPage from './views/extras.js';
 import * as memoryPage from './views/memory.js';
 import * as charsPage from './views/chars.js';
 import * as discussPage from './views/discuss.js';
-import { getCurrentStory, setCurrentStory } from './state.js';
+import { loadPrefs, getCurrentStory, setCurrentStory, usesPatentTheme } from './state.js';
 
 const root = document.getElementById('app');
 let current = null;   // 正在显示的页面 { key, name, el, api }
@@ -99,6 +98,8 @@ window.addEventListener('moyu:story-deleted', (e) => {
   }
 });
 
+window.addEventListener('moyu:theme', () => { if (current) placeTabs(current.name); });
+
 function placeTabs(name) {
   const old = root.querySelector('#tabbar');
   const bar = tabBar(name);
@@ -107,12 +108,12 @@ function placeTabs(name) {
 
 // 底部菜单（照老版）：故事 / 游玩 / 角色 / 番外 / 设置
 const TABS = [
-  { key: 'home', icon: '📚', label: '故事', to: () => '' },
-  { key: 'play', icon: '📖', label: '游玩', story: true, to: (id) => 'play/' + encodeURIComponent(id) },
-  { key: 'chars', icon: '👤', label: '角色', story: true, to: (id) => 'chars/' + encodeURIComponent(id) },
-  { key: 'extra', icon: '🎴', label: '番外', story: true, to: (id) => 'extra/' + encodeURIComponent(id) },
-  { key: 'discuss', icon: '💬', label: '讨论', to: () => 'discuss' },
-  { key: 'settings', icon: '⚙️', label: '设置', to: () => 'settings' },
+  { key: 'home', icon: '📚', label: '故事', documentLabel: '文档库', to: () => '' },
+  { key: 'play', icon: '📖', label: '游玩', documentLabel: '正文', story: true, to: (id) => 'play/' + encodeURIComponent(id) },
+  { key: 'chars', icon: '👤', label: '角色', documentLabel: '人物索引', story: true, to: (id) => 'chars/' + encodeURIComponent(id) },
+  { key: 'extra', icon: '🎴', label: '番外', documentLabel: '附录索引', story: true, to: (id) => 'extra/' + encodeURIComponent(id) },
+  { key: 'discuss', icon: '💬', label: '讨论', documentLabel: '批注记录', to: () => 'discuss' },
+  { key: 'settings', icon: '⚙️', label: '设置', documentLabel: '偏好设置', to: () => 'settings' },
 ];
 const TAB_OF = { '': 'home', play: 'play', memory: 'play', story: 'play', chars: 'chars', extra: 'extra', discuss: 'discuss', settings: 'settings' };
 function tabBar(routeName) {
@@ -128,7 +129,8 @@ function tabBar(routeName) {
     b.dataset.tab = t.key;
     b.innerHTML = '<span class="ic"></span><span class="lb"></span>';
     b.firstChild.textContent = t.icon;
-    b.lastChild.textContent = t.label;
+    b.lastChild.textContent = usesPatentTheme() ? t.documentLabel : t.label;
+    if (t.key === active && usesPatentTheme()) b.setAttribute('aria-current', 'page');
     b.addEventListener('click', () => {
       const id = getCurrentStory();
       if (t.story && !id) { import('./util.js').then((u) => u.toast('先在“故事”里选一个故事')); return; }

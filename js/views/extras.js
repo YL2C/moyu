@@ -2,10 +2,11 @@
 
 import { db } from '../db.js';
 import { el, uid, toast, menu, sheet, promptText, ago, approxTokens } from '../util.js';
-import { getConnections, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS, getPrefs } from '../state.js';
+import { getConnections, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS, getPrefs, usesPatentTheme } from '../state.js';
 import { inlineText } from '../inline.js';
 import { streamWithRetry, ApiError, guessFormat } from '../api.js';
 import { extraConnection, connectionSelect, personPicker, companionPicker, castSummary } from '../extra-options.js';
+import { documentLines, documentStatus } from './document-reader.js';
 import { renderExtraLayout } from '../extra-layout.js';
 import { recoverableOutput, stripReasoning } from '../reasoning.js';
 import { playbookOf, layoutOf, FIC_AXES } from '../extra-playbooks.js';
@@ -53,10 +54,10 @@ async function renderList(root, story, nodes) {
   const wrap = el('div', { class: 'wrap' });
   root.append(el('div', { class: 'view' },
     el('div', { class: 'topbar' },
-      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', flexDirection: 'column', justifyContent: 'center' } }, '番外', el('div', { class: 'sub', text: story.title || '未命名故事' }))),
+      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', flexDirection: 'column', justifyContent: 'center' } }, usesPatentTheme() ? '附录索引' : '番外', el('div', { class: 'sub', text: story.title || '未命名故事' }))),
     el('div', { class: 'scroll' }, wrap)));
 
-  wrap.append(el('button', { class: 'btn primary block', style: { margin: '4px 0 12px' }, onclick: () => newExtra(story, nodes) }, '✦ 写一篇番外'));
+  wrap.append(el('button', { class: 'btn primary block', style: { margin: '4px 0 12px' }, onclick: () => newExtra(story, nodes) }, usesPatentTheme() ? '＋ 新建附录' : '✦ 写一篇番外'));
   if (!extras.length) wrap.append(el('div', { class: 'empty', style: { padding: '28px 8px' } }, '还没有番外。', el('br'), '论坛体、日记体、采访……或者写一句突然想到的点子。'));
   // 按形式筛选（照老版碎片集）
   const kinds = [...new Set(extras.map((x) => x.tplName || '自定义'))];
@@ -105,7 +106,8 @@ async function newExtra(story, nodes) {
   const modules = [...(await getModules()), ...(story.localModules || [])];
   const enabledAlways = modules.filter((m) => m.mode !== 'manual' && m.mode !== 'keyword' && story.modules?.[m.id]);
   const chapters = chaptersOf(pathTo(nodes, story.headId));
-  const s = sheet({ title: '写一篇番外' });
+  const s = sheet({ title: usesPatentTheme() ? '新建附录' : '写一篇番外' });
+  s.panel.classList.add('document-extra-form');
 
   const tplSel = el('select');
   templates.forEach((t) => tplSel.append(el('option', { value: t.id }, t.name)));
@@ -237,18 +239,20 @@ async function renderReader(root, story, nodes, extraId) {
   const st = { streaming: null, lastCtx: null, frame: 0, raw: null };
   let destroyed = false;
   const titleEl = el('div', { class: 'title' });
-  const apiButton = el('button',{class:'btn small extra-api-btn',onclick:()=>chooseApi(),'aria-label':'选择番外 API'},'番外 API');
+  const apiButton = el('button',{class:'btn small extra-api-btn',onclick:()=>chooseApi(),'aria-label':'选择番外 API','aria-haspopup':'dialog'},'番外 API');
   let connections = await getConnections();
   const defaultApi = await extraConnection(x.connectionId);
   if (!x.connectionId && defaultApi) x.connectionId = defaultApi.id;
   const content = el('div', { class: 'feed' });
   const scroller = el('div', { class: 'scroll' }, content);
-  root.append(el('div', { class: 'view' },
+  const documentFooter = documentStatus('番外版本');
+  const lineNumbers = documentLines(content);
+  root.append(el('div', { class: 'view document-extra' },
     el('div', { class: 'topbar' },
       el('button', { class: 'icon-btn', 'aria-label': '返回', onclick: () => go(`extra/${encodeURIComponent(story.id)}`) }, '‹'),
       titleEl, apiButton,
       el('button', { class: 'icon-btn', 'aria-label': '更多', onclick: () => moreMenu() }, '⋯')),
-    scroller));
+    scroller, documentFooter.bar));
 
   const save = () => { x.updatedAt = Date.now(); return db.put('extras', x).catch(() => {}); };
   const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 160;
@@ -259,9 +263,11 @@ async function renderReader(root, story, nodes, extraId) {
     const api = connections.find(c=>c.id === (v?.connectionId || x.connectionId));
     apiButton.textContent = api ? connLabel(api) : '选择番外 API';
     apiButton.disabled = !!st.streaming || jobs>0 || !!pendingVersion();
-    titleEl.replaceChildren(extraTitle(x), el('div', { class: 'sub', text: '番外 · 不进正史' }));
+    titleEl.replaceChildren(extraTitle(x), el('div', { class: 'sub', text: usesPatentTheme() ? '附录 · 不进正史' : '番外 · 不进正史' }));
+    lineNumbers.disconnect();
     content.replaceChildren();
-    content.append(el('div', { class: 'card', style: { fontFamily: 'var(--ui-font)', fontSize: '13.5px', marginTop: '8px' } },
+    documentFooter.position.textContent = v ? `版本 ${(x.cur ?? 0) + 1} / ${x.versions.length}` : '尚无版本';
+    content.append(el('div', { class: 'card document-extra-meta', style: { fontFamily: 'var(--ui-font)', fontSize: '13.5px', marginTop: '8px' } },
       el('div', { class: 'muted', text: metaLine(x) }),
       x.request ? el('div', { style: { marginTop: '4px' }, text: '要求：' + x.request }) : null,
       x.variant ? el('div',{class:'hint',text:x.variant.replace(/\n/g,' · ')}) : null,
@@ -284,6 +290,7 @@ async function renderReader(root, story, nodes, extraId) {
       g.append(el('div', { class: 'thinking', style: { marginTop: '14px' }, text: v?.thinking ? '模型思考中' : '正在构思' }));
     }
     content.append(g);
+    lineNumbers.observe();
     if (!live && v) {
       if (v.stopped && v.text?.trim()) content.append(el('div', { class: 'note', text: '已停止，这篇没写完。' }));
       else if (v.status === 'partial' && !v.error) content.append(el('div', { class: 'note', text: '达到输出上限，没写完。可以点“接着写”。' }));
@@ -380,7 +387,9 @@ async function renderReader(root, story, nodes, extraId) {
     if (jobs || st.streaming || pendingVersion()) return;
     connections = await getConnections();
     if (!connections.length) {toast('先在设置中添加 API 连接');return;}
-    const selected = await menu('选择番外 API',connections.map(c=>({key:c.id,label:connLabel(c),hint:c.model || ''})));
+    const selected = await menu('选择番外 API', connections.map(c => ({
+      key: c.id, label: connLabel(c), hint: c.model || '',
+    })), { anchor: apiButton, selected: curVersion(x)?.connectionId || x.connectionId });
     if (!selected || jobs || st.streaming || pendingVersion()) return;
     x.connectionId = selected;
     const v = curVersion(x); if(v) v.connectionId = selected;
@@ -600,7 +609,7 @@ async function renderReader(root, story, nodes, extraId) {
   if (pendingVersion()) void resumePending(false);
   else if (x.pending) generate('new');
   const unwatch = watchStory(story, null, PLAY_KEYS);
-  const destroy = () => { destroyed = true; unwatch(); clearTimeout(relayTimer); clearTimeout(retryTimer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('online', onOnline); if (st.streaming) st.streaming.ctrl.abort('leave'); };
+  const destroy = () => { destroyed = true; lineNumbers.disconnect(); unwatch(); clearTimeout(relayTimer); clearTimeout(retryTimer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('online', onOnline); if (st.streaming) st.streaming.ctrl.abort('leave'); };
   destroy.busy = () => jobs > 0;
   destroy.onIdle = (fn) => { idleCbs.add(fn); return () => idleCbs.delete(fn); };
   // 只有已经拿到服务器任务编号的请求才能安全脱离页面；直连请求保持原来的驻留逻辑。
@@ -608,6 +617,6 @@ async function renderReader(root, story, nodes, extraId) {
     const live = st.streaming?.version;
     if (live?.relayJob && !st.streaming.ctrl.signal.aborted) st.streaming.ctrl.abort('leave');
   };
-  destroy.show = () => { draw(); reconnect(); };
+  destroy.show = () => { documentFooter.refresh(); draw(); reconnect(); };
   return destroy;
 }

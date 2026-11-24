@@ -2,7 +2,7 @@
 
 import { db } from '../db.js';
 import { el, uid, toast, sheet } from '../util.js';
-import { connLabel, resolveConnection, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
+import { connLabel, resolveConnection, go, setCurrentStory, watchStory, PLAY_KEYS, usesPatentTheme } from '../state.js';
 import { clearTask, getTask, resumeTask, startTask, stopTask, taskPending } from '../background.js';
 import { latestCheckpoint, memoryText, splitNames } from '../prompt.js';
 import { chaptersOf } from '../fanwai.js';
@@ -84,7 +84,7 @@ export async function render(root, { id }) {
   const wrap = el('div', { class: 'wrap' });
   root.append(el('div', { class: 'view' },
     el('div', { class: 'topbar' },
-      el('div', { class: 'title', style: { paddingLeft: '6px' } }, '角色', el('div', { class: 'sub', text: story.title || '未命名故事' })),
+      el('div', { class: 'title', style: { paddingLeft: '6px' } }, usesPatentTheme() ? '人物索引' : '角色', el('div', { class: 'sub', text: story.title || '未命名故事' })),
       el('button', { class: 'icon-btn', 'aria-label': '新角色', onclick: () => editCard(null) }, '＋')),
     el('div', { class: 'scroll' }, wrap)));
 

@@ -7,10 +7,12 @@ import { showReadingFont } from './reading-fonts.js';
 
 export const DEFAULT_PREFS = {
   fontSize: 17, font: 'serif', theme: 'default', paperFontSize: 16, paperFont: 'kinghwa', indent: true, danmuOpen: true,
+  patentFontSize: 16, patentFont: 'serif',
 };
 export const READING_THEMES = [
   { id: 'default', label: '默认', sizeKey: 'fontSize', fontKey: 'font', colorKey: 'readingColors' },
   { id: 'paper', label: '纸书', sizeKey: 'paperFontSize', fontKey: 'paperFont', colorKey: 'paperColors' },
+  { id: 'patent', label: '专利文档', sizeKey: 'patentFontSize', fontKey: 'patentFont', colorKey: 'patentColors', spacing: { line: 1.8, paragraph: 0.55 } },
 ];
 export const READING_DIMENSIONS = [
   { key: 'size', label: '字号', property: '--read-size', min: 12, max: 32, step: 1, unit: 'px' },
@@ -24,7 +26,7 @@ export const readingTheme = (id) => READING_THEMES.find(theme => theme.id === id
 
 export function readingDimension(theme, { key, min, max, step, initial }, source = prefs) {
   const value = key === 'size' ? source[theme.sizeKey] : source.readingSpacing?.[theme.id]?.[key];
-  if (!Number.isFinite(value)) return initial ?? DEFAULT_PREFS[theme.sizeKey];
+  if (!Number.isFinite(value)) return theme.spacing?.[key] ?? initial ?? DEFAULT_PREFS[theme.sizeKey];
   const clamped = Math.min(max, Math.max(min, value));
   return Number((Math.round((clamped - min) / step) * step + min).toFixed(2));
 }
@@ -35,6 +37,7 @@ export async function loadPrefs() {
   return prefs;
 }
 export function getPrefs() { return prefs; }
+export function usesPatentTheme() { return readingTheme(prefs.theme).id === 'patent'; }
 export async function setPrefs(patch) {
   prefs = { ...prefs, ...patch };
   applyPrefs();
@@ -45,10 +48,11 @@ export function applyPrefs() {
   const theme = readingTheme(prefs.theme);
   for (const dimension of READING_DIMENSIONS) {
     const { key, property, unit } = dimension;
-    if (key === 'size' || Number.isFinite(prefs.readingSpacing?.[theme.id]?.[key])) {
+    if (key === 'size' || theme.spacing?.[key] != null || Number.isFinite(prefs.readingSpacing?.[theme.id]?.[key])) {
       r.style.setProperty(property, readingDimension(theme, dimension) + unit);
     } else r.style.removeProperty(property);
   }
+  const themeChanged = r.dataset.theme !== theme.id;
   r.dataset.theme = theme.id;
   r.dataset.font = prefs[theme.fontKey] || DEFAULT_PREFS[theme.fontKey];
   r.dataset.indent = prefs.indent ? 'on' : 'off';
@@ -63,6 +67,7 @@ export function applyPrefs() {
     meta.content = meta.dataset[theme.id + 'Color'] || meta.dataset.defaultColor;
   });
   void showReadingFont(r.dataset.font);
+  if (themeChanged) window.dispatchEvent(new Event('moyu:theme'));
 }
 
 export async function getDefaultRules() {

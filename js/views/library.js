@@ -2,7 +2,7 @@
 
 import { db, exportStory } from '../db.js';
 import { el, ago, menu, promptText, saveFile, toast, uid } from '../util.js';
-import { getConnections, go, getCurrentStory, setCurrentStory } from '../state.js';
+import { getConnections, go, getCurrentStory, setCurrentStory, usesPatentTheme } from '../state.js';
 import { openExportDialog } from '../exporter.js';
 import { openStoryEditor } from './story-edit.js';
 
@@ -134,7 +134,7 @@ export async function render(root) {
 
   root.append(el('div', { class: 'view' },
     el('div', { class: 'topbar' },
-      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', alignItems: 'center' } }, '墨游个人版')
+      el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', alignItems: 'center' } }, usesPatentTheme() ? '文档库' : '墨游个人版')
     ),
     el('div', { class: 'scroll' }, wrap)
   ));

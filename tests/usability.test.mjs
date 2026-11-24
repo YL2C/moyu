@@ -78,7 +78,7 @@ test('主题下拉保留旧字号，各自保存字体与排版，滑动即时�
   const page = document.documentElement;
   assert.equal(page.dataset.theme, 'default');
   const themes = root.querySelector('[aria-label="阅读主题"]');
-  assert.deepEqual([...themes.options].map(option => option.textContent), ['默认', '纸书']);
+  assert.deepEqual([...themes.options].map(option => option.textContent), ['默认', '纸书', '专利文档']);
   const slider = label => root.querySelector(`input[type=range][aria-label="${label}"]`);
   const preview = () => root.querySelector('.reading-preview');
   assert.equal(slider('字号').valueAsNumber, 19);
@@ -115,6 +115,22 @@ test('主题下拉保留旧字号，各自保存字体与排版，滑动即时�
   assert.equal(page.dataset.font, 'serif');
   assert.equal(page.style.getPropertyValue('--read-letter-spacing'), '0.1px');
   assert.equal(page.style.getPropertyValue('--read-line-height'), '2.2');
+  assert.equal(page.style.getPropertyValue('--read-paragraph-spacing'), '0.6em');
+
+  changeValue(themes, 'patent');
+  assert.equal(page.dataset.theme, 'patent');
+  assert.equal(page.dataset.font, 'serif');
+  assert.equal(slider('字号').valueAsNumber, 16);
+  assert.equal(slider('行距').valueAsNumber, 1.8);
+  changeValue(slider('段距'), '0.7');
+  changeValue(picker(), 'sans');
+  await wait(async () => (await db.kvGet('prefs'))?.readingSpacing?.patent?.paragraph === 0.7);
+  await loadPrefs();
+  assert.equal(page.dataset.theme, 'patent');
+  assert.equal(picker().value, 'sans');
+  assert.equal(page.style.getPropertyValue('--read-paragraph-spacing'), '0.7em');
+  changeValue(themes, 'paper');
+  assert.equal(page.dataset.font, 'serif');
   assert.equal(page.style.getPropertyValue('--read-paragraph-spacing'), '0.6em');
 
   changeValue(themes, 'default');
@@ -1220,7 +1236,7 @@ test('文风入口显示开关，弹层只选主文风，记住从故事规则�
     {id:'b1',pack:'style-b',name:'其他写法',text:'其他写法规则',mode:'always'},
   ]);
   let dispose = await play.render(root,{id:story.id});
-  const chip = () => root.querySelector('[aria-haspopup=dialog]');
+  const chip = () => root.querySelector('.composer [aria-haspopup=dialog]');
   const show = async () => {
     chip().click();
     await wait(() => document.querySelector('[aria-label=主文风]'));

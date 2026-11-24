@@ -2,7 +2,7 @@
 
 import { db } from '../db.js';
 import { el, toast, sheet, menu, promptText, autoGrow, ago, pickRawFile } from '../util.js';
-import { go, getConnections, resolveConnection, connLabel, getGlobalMemo, setGlobalMemo, getPrefs } from '../state.js';
+import { go, getConnections, resolveConnection, connLabel, getGlobalMemo, setGlobalMemo, getPrefs, usesPatentTheme } from '../state.js';
 import { inlineText } from '../inline.js';
 import { stripReasoning } from '../reasoning.js';
 import { clearTask, getTask, resumeTask, startTask, stopTask, taskId, taskPending } from '../background.js';
@@ -69,7 +69,7 @@ async function renderList(root) {
   }
 
   root.append(el('div', { class: 'view' },
-    el('div', { class: 'topbar' }, el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', alignItems: 'center' } }, '讨论')),
+    el('div', { class: 'topbar' }, el('div', { class: 'title', style: { paddingLeft: '6px', minHeight: '36px', display: 'flex', alignItems: 'center' } }, usesPatentTheme() ? '批注记录' : '讨论')),
     el('div', { class: 'scroll' }, wrap)));
 }
 
@@ -129,7 +129,7 @@ async function renderChat(root, id) {
   } }, '📎 上传并拆卡');
 
   const titleEl = el('div', { class: 'title' });
-  const chip = el('button', { class: 'model-chip', onclick: () => chooseConn() });
+  const chip = el('button', { class: 'model-chip', 'aria-haspopup': 'dialog', onclick: () => chooseConn() });
   const feed = el('div', { class: 'feed disc-feed' });
   const scroller = el('div', { class: 'scroll' }, feed);
   const ta = el('textarea', { rows: 1, placeholder: '自由输入…' });
@@ -180,7 +180,8 @@ async function renderChat(root, id) {
     }
     const body = el('div', { class: 'disc-text' }, inlineText((m.role==='assistant'?stripReasoning(m.content,{streaming:true}):m.content) || (m.streaming ? '…' : ''), getPrefs().emphasis !== false, getPrefs().dialogueColor !== false));
     const meta = [m.cost ? fmtMoney(m.cost) : '', m.error || ''].filter(Boolean).join(' · ');
-    return el('div', { class: 'disc-msg ' + (m.role === 'user' ? 'me' : 'ai') + (m.error ? ' err' : '') }, body,
+    return el('div', { class: 'disc-msg ' + (m.role === 'user' ? 'me' : 'ai') + (m.error ? ' err' : '') },
+      el('span', { class: 'document-speaker', hidden: true, text: m.role === 'user' ? '你' : '助手' }), body,
       ...(m.attachments || []).map(a => attachmentCard(a, { storyId: d.storyId, onChange: () => saveDiscussion(d).catch(e => toast(e.message)) })),
       meta ? el('div', { class: 'disc-meta', text: meta }) : null);
   }
@@ -464,7 +465,9 @@ async function renderChat(root, id) {
   async function chooseConn() {
     const list = await getConnections();
     if (!list.length) { go('settings/new'); return; }
-    const k = await menu('这个讨论用哪个连接', list.map((c) => ({ key: c.id, label: connLabel(c), hint: c.model })));
+    const k = await menu('这个讨论用哪个连接', list.map(c => ({
+      key: c.id, label: connLabel(c), hint: c.model,
+    })), { anchor: chip, selected: conn?.id });
     if (k === null) return;
     d.connId = k;
     await saveDiscussion(d);

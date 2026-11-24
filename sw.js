@@ -2,12 +2,13 @@
 // 只缓存本站的页面文件；API 请求一律不经过缓存。
 // 先向服务器核验最新文件，取不到再用离线缓存；安装时绕过 HTTP 旧缓存。
 const CACHE_PREFIX = 'moyu-yl2c-personal-';
-const CACHE = CACHE_PREFIX + '0.6.16-personal.29';
+const CACHE = CACHE_PREFIX + '0.6.16-personal.30';
 const ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
   './css/app.css',
+  './css/patent.css',
   './assets/kinghwa-old-song.css',
   './assets/paper-grain.jpg',
   './js/main.js',
@@ -38,6 +39,7 @@ const ASSETS = [
   './js/tavern.js',
   './js/vertex.js',
   './js/discuss.js',
+  './js/views/document-reader.js',
   './js/views/discuss.js',
   './js/views/attachment-ui.js',
   './js/views/rules-ui.js',

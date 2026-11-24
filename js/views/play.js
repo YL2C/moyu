@@ -2,7 +2,7 @@
 
 import { db, exportStory } from '../db.js';
 import { el, uid, toast, menu, promptText, sheet, saveFile, autoGrow, insertAtCursor, approxTokens } from '../util.js';
-import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo, watchStory } from '../state.js';
+import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo, watchStory, usesPatentTheme } from '../state.js';
 import { streamWithRetry, ApiError, holdStoryJob, releaseStoryJob } from '../api.js';
 import { cancelRelayJob } from '../relay.js';
 import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, latestCheckpoint } from '../prompt.js';
@@ -14,6 +14,7 @@ import { recoverableOutput, stripReasoning } from '../reasoning.js';
 import { CHOICE_LABELS, expandOptionInput, choiceInput, toggleChoice } from '../personal.js';
 import { inlineText } from '../inline.js';
 import { openExportDialog } from '../exporter.js';
+import { documentLines, documentStatus } from './document-reader.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage, getMonthSpend, getBudget, hasPrice, priceMode, CUR, getUsageLog, getRequestLog } from '../cost.js';
 
 export async function render(root, { id }) {
@@ -82,6 +83,13 @@ export async function render(root, { id }) {
   const chip = el('button', { class: 'model-chip', onclick: () => pickConnection() });
   const feed = el('div', { class: 'feed' });
   const scroller = el('div', { class: 'scroll' }, feed);
+  const documentFooter = documentStatus('章节进度');
+  const lineNumbers = documentLines(feed);
+  const chapterIndex = el('button', { class: 'btn small', 'aria-haspopup': 'dialog', onclick: () => chooseChapter() }, '章节');
+  const documentTools = el('div', { class: 'document-toolbar', hidden: true },
+    chapterIndex,
+    el('button', { class: 'btn small', 'aria-haspopup': 'dialog', onclick: () => openAnnotations() }, '批注'),
+    el('button', { class: 'btn small', onclick: () => go(`memory/${encodeURIComponent(story.id)}`) }, '前情档案'));
   const ta = el('textarea', { rows: '1', enterkeyhint: 'enter', placeholder: '自由输入…' });
   const sendBtn = el('button', { class: 'send', onclick: () => onSend() });
   const chipQuote = el('button', { class: 'bracket-btn', 'aria-label': '插入动作或心理括号', onmousedown: (e) => e.preventDefault(), onclick: () => insertAtCursor(ta, '（', '）') }, '（ ）');
@@ -96,7 +104,7 @@ export async function render(root, { id }) {
     } catch { story.danmu = before; }
     finally { chipDanmu.disabled = false; updateComposer(); }
   } });
-  const chipCont = el('button', { class: 'chip', onclick: () => send('continue', '') }, '继续');
+  const chipCont = el('button', { class: 'chip continue-chip', onclick: () => send('continue', '') }, '继续');
   const chipStyle = el('button', { class: 'chip', 'aria-haspopup': 'dialog', onclick: () => openStylePresets().catch(e => toast(e.message)) });
   const oocId = 'ooc-' + uid();
   const chipOoc = el('button', { class: 'chip', role: 'switch', 'aria-label': '出戏', 'aria-controls': oocId, onclick: () => setOoc(!st.ooc) }, '出戏');
@@ -109,37 +117,85 @@ export async function render(root, { id }) {
     el('div', { class: 'ooc-head' }, el('strong', {}, '场外讨论'), carryBtn),
     oocFeed, el('div', { class: 'inrow' }, oocInput, oocSend));
   const playInputRow = el('div', { class: 'inrow' }, el('div', { class: 'input-shell' }, ta, chipQuote), sendBtn);
+  const composerTitle = el('button', { class: 'document-composer-title', hidden: true,
+    'aria-expanded': 'true', onclick: () => setComposerCollapsed(!composer.classList.contains('document-collapsed')) },
+    el('span', {}, '续写'), el('span', { 'aria-hidden': 'true', class: 'document-fold' }));
+  const pickedChoices = el('div', { class: 'document-picks', hidden: true });
+  const composerTools = el('div', { class: 'bar' }, chipDanmu, chipStyle, chipOoc, el('span', { class: 'spacer' }), chipCont);
   const composer = el('div', { class: 'composer' },
-    statusRow,
-    el('div', { class: 'bar' }, chipDanmu, chipStyle, chipOoc, el('span', { class: 'spacer' }), chipCont),
+    composerTitle, statusRow, pickedChoices, composerTools,
     playInputRow, oocPanel
   );
   const fit = autoGrow(ta);
   const fitOoc = autoGrow(oocInput, .14);
   const syncChoices = () => {
     const selected = choiceInput(ta.value).labels;
-    feed.querySelectorAll('.options button[data-choice]').forEach((button) => {
+    const current = [...feed.querySelectorAll('.options button[data-choice]')];
+    current.forEach((button) => {
       const on = selected.includes(button.dataset.choice);
       button.classList.toggle('selected', on); button.setAttribute('aria-pressed', String(on));
     });
+    if (!usesPatentTheme()) return;
+    const labels = selected.filter(label => current.some(button => button.dataset.choice === label));
+    pickedChoices.textContent = labels.length ? '已选 ' + labels.map(label => {
+      const option = current.find(button => button.dataset.choice === label);
+      return label + ' · ' + option.lastChild.textContent;
+    }).join('　/　') : '';
   };
   ta.addEventListener('input', syncChoices);
   for (const [input, kind] of [[ta, 'play'], [oocInput, 'ooc']]) {
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSend(kind); } });
   }
 
-  root.append(el('div', { class: 'view' },
+  root.append(el('div', { class: 'view document-play' },
     el('div', { class: 'topbar' },
       el('button', { class: 'icon-btn', 'aria-label': '返回', onclick: () => go('') }, '‹'),
       titleEl, chip,
       el('button', { class: 'icon-btn', 'aria-label': '更多', onclick: () => storyMenu() }, '⋯')
     ),
-    scroller, composer
+    documentTools, scroller, composer, documentFooter.bar
   ));
+  scroller.addEventListener('scroll', syncDocumentPosition, { passive: true });
+
+  function syncDocumentPosition() {
+    if (!usesPatentTheme()) return;
+    const chapters = [...feed.querySelectorAll('[data-document-chapter]')];
+    const threshold = scroller.getBoundingClientRect().top + scroller.clientHeight / 3;
+    const current = nearBottom(scroller) ? chapters.at(-1) :
+      chapters.findLast(chapter => chapter.getBoundingClientRect().top <= threshold) || chapters[0];
+    documentFooter.position.textContent = current ? `第 ${current.dataset.documentChapter} / ${chapters.length} 章` : '尚未开篇';
+  }
+
+  function setComposerCollapsed(collapsed) {
+    composer.classList.toggle('document-collapsed', collapsed);
+    composerTitle.setAttribute('aria-expanded', String(!collapsed));
+  }
+
+  async function chooseChapter() {
+    const chapters = headPath().filter(isPlayReply);
+    const target = await menu('章节', chapters.map((node, index) => ({
+      key: node.id, label: `第 ${index + 1} 章`, hint: parseReply(node.text).title || '',
+    })), { anchor: chapterIndex });
+    if (target) feed.querySelector(`[data-id="${CSS.escape(target)}"]`)?.scrollIntoView({ block: 'start' });
+  }
+
+  async function openAnnotations() {
+    const clicked = await menu('批注', [
+      { key: 'danmu', label: chipDanmu.textContent },
+      { key: 'style', label: chipStyle.textContent },
+      !chipOoc.hidden && !chipOoc.disabled ? { key: 'ooc', label: st.ooc ? '回到正文' : '场外讨论' } : null,
+      { key: 'director', label: '导演指令' },
+    ]);
+    if (clicked === 'danmu') chipDanmu.click();
+    if (clicked === 'style') chipStyle.click();
+    if (clicked === 'ooc') chipOoc.click();
+    if (clicked === 'director') editDirector();
+  }
 
   function updateHeader() {
     const n = chapterCount(headPath());
     titleEl.replaceChildren(story.title || '未命名故事', n ? el('div', { class: 'sub', text: `第 ${n} 章` }) : '');
+    chapterIndex.disabled = !n;
     chip.textContent = st.conn ? connLabel(st.conn) : '未连接';
     chip.classList.toggle('warn', !st.conn);
   }
@@ -151,6 +207,9 @@ export async function render(root, { id }) {
     chipStyle.textContent = `文风预设：${styleOn ? '开' : '关'}`;
     const started = headPath().length > 0;
     const busy = !!st.streaming;
+    composerTitle.disabled = busy || st.ooc;
+    if (composerTitle.disabled) setComposerCollapsed(false);
+    pickedChoices.classList.toggle('out-of-scene', st.ooc);
     chipOoc.setAttribute('aria-checked', String(st.ooc));
     chipOoc.classList.toggle('on', st.ooc);
     chipOoc.hidden = !started;
@@ -182,6 +241,7 @@ export async function render(root, { id }) {
         el('span', { class: 'lbl', text: `情境：${m.name}（每轮都会带上，直到关掉）` }),
         el('button', { 'aria-label': '关掉情境', onclick: () => { story.manualOn[m.id] = false; saveStory(); updateComposer(); } }, '✕'))),
     ].filter(Boolean));
+    composerTools.classList.toggle('document-no-continue', !started || st.ooc);
     chipCont.style.display = started && !st.ooc ? '' : 'none';
     chipCont.disabled = busy;
     chipCont.style.opacity = busy ? .45 : 1;
@@ -371,8 +431,10 @@ export async function render(root, { id }) {
       const g = el('div', { class: 'gm' + (picking ? ' picking' : '') });
       const p = parseReply(n.text || '');
       if (n.text?.trim() || live) {
+        wrap.dataset.documentChapter = chapter;
         g.append(el('div', { class: 'chapter-row' },
           el('div', { class: 'chapter', text: `第 ${chapter} 章${n.edited ? ' · 已修改' : ''}` }),
+          el('span', { class: 'document-chapter-number', hidden: true, 'aria-hidden': 'true', text: chapter }),
           live ? null : versionCtl(n),
           live || !n.text?.trim() ? null : moreBtn(() => replyMenu(n, { isLast }))
         ));
@@ -390,7 +452,8 @@ export async function render(root, { id }) {
       }, inlineText(t, getPrefs().emphasis !== false, getPrefs().dialogueColor !== false))));
       if (live && !n.text) g.append(el('div', { class: 'thinking', text: n.thinking ? '模型思考中' : '正在构思' }));
       if (story.danmu !== false && p.danmu.length && !picking) {
-        const d = el('details', { class: 'danmu' }, el('summary', { text: `弹幕 · ${p.danmu.length}` }));
+        const label = usesPatentTheme() ? '批注' : '弹幕';
+        const d = el('details', { class: 'danmu' }, el('summary', { text: `${label} · ${p.danmu.length}` }));
         if (prefs.danmuOpen) d.open = true;
         for (const m of p.danmu) d.append(el('div', { class: 'dm' }, m.name ? el('b', { text: m.name + ':' }) : null, m.text));
         g.append(d);
@@ -403,7 +466,16 @@ export async function render(root, { id }) {
           box.append(el('div', { class: 'option-row' },
             el('button', {
               'data-choice': label, 'aria-pressed': String(selected), class: selected ? 'selected' : '',
-              onclick: () => { st.choiceSource = n.id; ta.value = toggleChoice(ta.value, label); fit(); syncChoices(); },
+              onclick: () => {
+                const documentMode = usesPatentTheme();
+                const stick = documentMode && nearBottom(scroller);
+                if (documentMode) setComposerCollapsed(false);
+                st.choiceSource = n.id;
+                ta.value = toggleChoice(ta.value, label);
+                fit();
+                syncChoices();
+                if (stick) toBottom(scroller);
+              },
             }, el('span', { class: 'k', text: label }), text),
             el('button', {
               class: 'option-edit', 'aria-label': '修改选项 ' + label,
@@ -546,6 +618,7 @@ export async function render(root, { id }) {
     }
     const stick = !focusId && (!keepScroll || nearBottom(scroller));
     const path = headPath().filter(n => !isOoc(n));
+    lineNumbers.disconnect();
     feed.replaceChildren();
     if (!path.length) {
       feed.append(el('div', { class: 'empty' },
@@ -576,6 +649,9 @@ export async function render(root, { id }) {
     }
     updateHeader();
     updateComposer();
+    syncChoices();
+    lineNumbers.observe();
+    syncDocumentPosition();
     if (st.ooc) renderOocFeed({ focusId });
     if (focusId) {
       requestAnimationFrame(() => feed.querySelector(`[data-id="${CSS.escape(focusId)}"]`)?.scrollIntoView({ block: 'start' }));
@@ -604,7 +680,10 @@ export async function render(root, { id }) {
       if (!old) return;
       const stick = nearBottom(scroll);
       const chapter = chapterCount(headPath().filter((x) => x.id !== n.id)) + 1;
-      old.replaceWith(renderAssistant(n, { isLast: true, chapter }));
+      const updated = renderAssistant(n, { isLast: true, chapter });
+      if (!isOoc(n)) lineNumbers.unobserve(old);
+      old.replaceWith(updated);
+      if (!isOoc(n)) lineNumbers.observe(updated);
       if (stick) toBottom(scroll);
     });
   }
@@ -1161,7 +1240,7 @@ export async function render(root, { id }) {
     const items = conns.map((c) => ({ key: c.id, label: connLabel(c) + (story.connectionId === c.id ? '  ✓' : ''), hint: c.model }));
     items.push({ key: '__default', label: '跟随默认连接' + (!story.connectionId ? '  ✓' : '') });
     items.push({ key: '__manage', label: '管理连接…' });
-    const k = await menu('这个故事用哪个连接', items);
+    const k = await menu('这个故事用哪个连接', items, { anchor: chip, selected: st.conn?.id });
     if (!k) return;
     if (k === '__manage') { go('settings'); return; }
     story.connectionId = k === '__default' ? null : k;
@@ -1390,10 +1469,14 @@ export async function render(root, { id }) {
   document.addEventListener('visibilitychange', onVisible);
   st.ooc = oocPath().some(n => n.relayJob);
   renderFeed();
+  if (usesPatentTheme() && !st.ooc && feed.querySelector('.options') && !ta.value.trim()) {
+    setComposerCollapsed(true);
+  }
   requestAnimationFrame(fit);
   void resumePending(false);
   const destroy = () => {
     destroyed = true;
+    lineNumbers.disconnect();
     clearInterval(archTimer);
     window.removeEventListener('moyu:checkpoint', onCheckpoint);
     window.removeEventListener('moyu:cards', onCards);
@@ -1419,6 +1502,10 @@ export async function render(root, { id }) {
     if (!st.streaming) { try { st.conn = await resolveConnection(story); } catch {} }
     if (nodesDirty || !st.streaming) { nodesDirty = false; renderFeed({ keepScroll: true }); }
     updateComposer();
+    lineNumbers.observe();
+    documentFooter.refresh();
+    syncChoices();
+    syncDocumentPosition();
     requestAnimationFrame(fit);
     if (st.ooc) requestAnimationFrame(fitOoc);
     void resumePending(false);

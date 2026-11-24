@@ -1,6 +1,6 @@
 // 墨游 · 小工具
 
-export const APP_VERSION = '0.6.16-personal.29';
+export const APP_VERSION = '0.6.16-personal.30';
 
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -83,20 +83,55 @@ export function sheet({ title = '', onClose } = {}) {
 }
 
 /** 简单的选择菜单，返回被点的 key（或 null） */
-export function menu(title, items) {
+export function menu(title, items, { anchor, selected } = {}) {
   return new Promise((resolve) => {
     let picked = null;
-    const s = sheet({ title, onClose: () => resolve(picked) });
+    const anchored = anchor?.isConnected && document.documentElement.dataset.theme === 'patent';
     const list = el('div', { class: 'menu-list' });
+    const s = sheet({ title, onClose: () => {
+      if (anchored && anchor.isConnected) anchor.focus({ preventScroll: true });
+      resolve(picked);
+    } });
+    if (anchored) {
+      const backdrop = s.panel.parentElement;
+      const area = backdrop.getBoundingClientRect();
+      const button = anchor.getBoundingClientRect();
+      backdrop.classList.add('document-menu-backdrop');
+      s.panel.classList.add('document-menu');
+      s.panel.style.setProperty('--menu-top', Math.max(8, button.bottom - area.top + 4) + 'px');
+      s.panel.style.setProperty('--menu-right', Math.max(8, area.right - button.right) + 'px');
+      s.panel.setAttribute('aria-label', title);
+      s.panel.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          s.close();
+        } else if (event.key === 'Tab') {
+          const first = s.panel.querySelector('button');
+          const last = list.lastElementChild || first;
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }
+      });
+      backdrop.addEventListener('pointerdown', event => {
+        if (event.target === backdrop) event.preventDefault();
+      });
+    }
     for (const it of items) {
       if (!it) continue;
       list.append(el('button', {
         class: it.danger ? 'danger' : '',
+        'aria-current': anchored && it.key === selected ? 'true' : null,
         onclick: () => { picked = it.key; s.close(); },
       }, it.label, it.hint ? el('small', { text: it.hint }) : null));
     }
     s.body.append(list);
     s.foot.remove();
+    if (anchored) (list.querySelector('[aria-current]') || list.firstElementChild)?.focus({ preventScroll: true });
   });
 }
 
