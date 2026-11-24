@@ -8,10 +8,10 @@ function checkMigrationReady() {
 }
 
 export function migrationControls() {
-  const startExport = el('button', { class: 'btn small', onclick: () => migrationDialog() }, '导出完整迁移包');
+  const startExport = el('button', { class: 'btn small', onclick: () => openMigrationDialog() }, '导出完整迁移包');
   const startImport = el('button', { class: 'btn small', onclick: async () => {
-    const file = await pickRawFile();
-    if (file) migrationDialog(file);
+    const file = await pickRawFile(null);
+    if (file) openMigrationDialog(file);
   } }, '导入完整迁移包');
 
   return el('div', {},
@@ -19,7 +19,7 @@ export function migrationControls() {
     el('div', { class: 'row', style: { marginTop: '8px' } }, startExport, startImport));
 }
 
-function migrationDialog(file) {
+export function openMigrationDialog(file) {
   const importing = !!file;
   let busy = false;
   let encrypted;
@@ -32,6 +32,17 @@ function migrationDialog(file) {
     ? '导入会用迁移包替换当前入口的墨游数据。请在你自己的墨游网址操作。'
     : `设置至少 ${MIGRATION_PASSWORD_LENGTH} 个字符的密码，导入时需要用到。迁移包在本机加密。` });
   const status = el('div', { class: 'hint', role: 'status' });
+  if (!importing) {
+    const count = el('div', { id: 'migration-password-count', class: 'hint' });
+    password.setAttribute('aria-describedby', count.id);
+    const updateCount = () => {
+      const length = [...password.value].length;
+      count.textContent = `已输入 ${length} 个字符，至少需要 ${MIGRATION_PASSWORD_LENGTH} 个`;
+    };
+    password.addEventListener('input', updateCount);
+    updateCount();
+    form.append(count);
+  }
   const panel = sheet({
     title: importing ? '导入完整迁移包' : '导出完整迁移包',
     canDismiss: () => !busy,
@@ -41,7 +52,9 @@ function migrationDialog(file) {
   const action = importing ? '解密并恢复' : '加密并导出';
   const submit = el('button', { class: 'btn primary', type: 'submit', form: 'migration-form' }, action);
   form.id = 'migration-form';
-  panel.body.append(info, importing ? el('p', { class: 'hint', text: file.name }) : null, form, status);
+  panel.body.append(info);
+  if (importing) panel.body.append(el('p', { class: 'hint', text: file.name }));
+  panel.body.append(form, status);
   panel.foot.append(cancel, submit);
 
   form.addEventListener('submit', async event => {

@@ -1,6 +1,7 @@
 // 墨游 · 设置：连接、默认规则、阅读、备份
 
 import { db, exportAll, importData, storageInfo } from '../db.js';
+import { isMigrationFile } from '../migration.js';
 import { el, uid, toast, sheet, saveFile, pickFile, pickRawFile, APP_VERSION, promptText } from '../util.js';
 import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, modulesFromMarkdown, modulesToMarkdown, isReadingColor, DEFAULT_PREFS, READING_THEMES, READING_DIMENSIONS, readingTheme, readingDimension } from '../state.js';
 import { listReadingFonts, importReadingFont, deleteReadingFont } from '../reading-fonts.js';
@@ -13,7 +14,7 @@ import { getTemplates, saveTemplates, getBase, saveBase, DEFAULT_BASE, builtinTe
 import { detectKind, getPacks, deleteGlobalPack, KIND_LABEL, readTavernFile } from '../tavern.js';
 import { importFlow, importTavernResult } from './packs-ui.js';
 import { openWordImport } from './word-import.js';
-import { migrationControls } from './migration.js';
+import { migrationControls, openMigrationDialog } from './migration.js';
 import { rulePanel, collapseSettings, editRuleModule } from './rules-ui.js';
 import { importMarkdownPack, importRuleJsonPack, ruleJsonEntries, groupModules, deleteModules, undoModuleDelete, undoWordImport, WORD_IMPORT_UNDO } from '../rules.js';
 
@@ -428,12 +429,13 @@ export async function render(root, { section }) {
         el('button', {
           class: 'btn small',
           onclick: async () => {
-            const f = await pickFile();
-            if (!f) return;
-            let data;
-            try { data = JSON.parse(f.text); } catch { toast('文件格式不对'); return; }
-            if (!confirm('导入后，同一个故事会被备份里的版本覆盖。继续？')) return;
+            // iOS 会将自定义的 .moyu 文件排除在 JSON 类型选择器之外。
+            const file = await pickRawFile(null);
+            if (!file) return;
             try {
+              if (await isMigrationFile(file)) { openMigrationDialog(file); return; }
+              const data = JSON.parse(await file.text());
+              if (!confirm('导入后，同一个故事会被备份里的版本覆盖。继续？')) return;
               const r = await importData(data);
               toast(`已导入 ${r.stories} 个故事${r.connections ? `、${r.connections} 个连接（需要重新填密钥）` : ''}`);
               draw();

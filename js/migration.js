@@ -72,9 +72,17 @@ function validateEntries(entries, validValue) {
     Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && validValue(entry[1], entry[0]));
 }
 
+const hasMigrationHeader = bytes => magic.every((byte, index) => byte === bytes[index]);
+
+export async function isMigrationFile(file) {
+  if (/\.moyu$/i.test(file.name)) return true;
+  const prefix = new Uint8Array(await file.slice(0, magic.length).arrayBuffer());
+  return hasMigrationHeader(prefix);
+}
+
 export async function openMigration(file, password) {
   const header = new Uint8Array(await file.slice(0, headerSize).arrayBuffer());
-  if (header.length !== headerSize || !magic.every((byte, index) => byte === header[index]) ||
+  if (header.length !== headerSize || !hasMigrationHeader(header) ||
       file.size < headerSize + 16) {
     throw new Error('请选择这一版本墨游导出的 .moyu 完整迁移包');
   }

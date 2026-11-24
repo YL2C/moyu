@@ -1492,3 +1492,28 @@ test('番外自动人物在界面预告首位角色卡，生成快照保存该�
     assert.equal(saved.cast.owner.cardId,'lead');
   } finally { dispose?.(); }
 });
+
+test('设置的两个备份导入入口均可选已有的 .moyu 文件', async () => {
+  await settings.render(root, { section: '' });
+  for (const label of ['导入备份', '导入完整迁移包']) {
+    button(label, root).click();
+    const input = document.querySelector('body > input[type="file"]');
+    assert.ok(input);
+    assert.equal(input.hasAttribute('accept'), false);
+    Object.defineProperty(input, 'files', { value: [new File(['MOYU-MIGRATION-V1\n'], '旧存档.moyu')] });
+    input.dispatchEvent(new Event('change'));
+    await wait(() => document.getElementById('migration-password'));
+    assert.equal(document.querySelector('.sheet .sh .t').textContent, '导入完整迁移包');
+    button('取消', document.querySelector('.sheet')).click();
+  }
+});
+
+test('完整迁移导出的弹窗显示字符数和要求', async () => {
+  await settings.render(root, { section: '' });
+  button('导出完整迁移包', root).click();
+  const input = document.getElementById('migration-password');
+  input.value = '12345678901';
+  input.dispatchEvent(new Event('input'));
+  assert.match(document.getElementById('migration-password-count').textContent, /已输入 11 个字符，至少需要 12 个/);
+  assert.doesNotMatch(document.querySelector('.sheet').textContent, /null/);
+});
