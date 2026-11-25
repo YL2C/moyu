@@ -5,6 +5,7 @@ import { db } from './db.js';
 import { streamWithRetry } from './api.js';
 import { latestCheckpoint, memoryText, applyCardState, splitNames, protagonistText } from './prompt.js';
 import { chaptersOf } from './fanwai.js';
+import { protagonistState, reviewProtagonistChanges } from './protagonist.js';
 import { normalizeUsage, computeCost, recordUsage } from './cost.js';
 
 export const BATCH = 10;          // 一次最多整理多少章（太多会写不完，JSON 被截断）
@@ -38,7 +39,18 @@ function parseJson(raw) {
   const b = t.lastIndexOf('}');
   if (a >= 0 && b > a) { try { return JSON.parse(t.slice(a, b + 1)); } catch {} }
   if (a < 0) throw new Error('没有找到 JSON');
-  return repairJson(t.slice(a));
+  const body = t.slice(a);
+  // 恢复已经完整的前情。附在最后的主角建议即使截断，也无需重发这批章节。
+  const tail = /,\s*"protagonistChanges"\s*:/.exec(body);
+  if (tail) {
+    try {
+      const core = JSON.parse(body.slice(0, tail.index) + '}');
+      if (typeof core.summary === 'string' && core.summary.trim() &&
+          ['irreversible', 'items', 'threads', 'knowledge', 'offscreen', 'repeats', 'newCharacters', 'conflicts', 'unsure'].every(key => Array.isArray(core[key])) &&
+          core.cards && typeof core.cards === 'object') return core;
+    } catch {}
+  }
+  return repairJson(body);
 }
 
 /** 写到一半被截断的 JSON：退回到最后一个完整的值，把没关的括号补上 */
@@ -68,10 +80,10 @@ export function repairJson(t) {
 }
 
 function chapterBlock(c) {
-  return `【第${c.no}章${c.title ? ' · ' + c.title : ''}】\n${c.said ? '（主角：' + c.said.trim() + '）\n' : ''}${c.text}`;
+  return `【chapter:${c.no} · 第${c.no}章${c.title ? ' · ' + c.title : ''}】\n${c.said ? '（主角：' + c.said.trim() + '）\n' : ''}${c.text}`;
 }
 
-function archivistPrompt(story, prev, batch) {
+function archivistPrompt(story, prev, batch, chapterPath) {
   const cards = (story.cards || []).filter((c) => c.name?.trim()).map((c) => {
     const s = applyCardState(c, prev);
     return [`· ${c.name}${c.aliases?.trim() ? '（' + c.aliases.trim() + '）' : ''}`,
@@ -87,7 +99,7 @@ function archivistPrompt(story, prev, batch) {
     system: '你是这部文字互动小说的存档员。把新发生的剧情整理进前情档案：只记正文里确实发生的事，不脑补、不美化、不写感想；拿不准的放进“unsure”。只输出一个 JSON 对象，不要任何说明，也不要代码块标记。',
     user: [
       story.world?.trim() ? '【世界设定】\n' + story.world.trim().slice(0, 4000) : '',
-      protagonistText(story),
+      protagonistText(story, chapterPath),
       cards ? '【角色卡（初始设定、原话、禁止清单这些不归你改；你只负责“当前状态”“变化轨迹”“关系档案”）】\n' + cards : '【角色卡】\n（还没有任何角色卡）',
       '【已有的前情档案】\n' + prevText,
       `【新的剧情：第${from}–${to}章】\n` + batch.map(chapterBlock).join('\n\n'),
@@ -113,14 +125,22 @@ function archivistPrompt(story, prev, batch) {
         cards: { 角色名: { now: '现在走到哪一步、对主角的立场、彼此怎么称呼（整段重写成最新的）', arcAdd: '这一段里让他发生变化的节点：第几章、发生了什么、哪里变了哪里没变；没有就空字符串', relation: '和主角的关系档案：相处梗、称呼史、生效的约定、亲密档案。在旧的基础上合并更新，不要丢掉旧内容' } },
         conflicts: ['新剧情和已有设定或档案矛盾的地方（不要自己改，列出来给玩家裁决）'],
         unsure: ['拿不准的地方'],
+        protagonistChanges: [{
+          field: 'identity / abilities / status / relations 四选一',
+          value: '当前身份、能力与资源、当前状态或关系变化。只写这一栏更新后仍成立的完整内容，简短保留仍有效的原有事实。',
+          conflict: false,
+          evidence: [{ source: 'chapter:' + from, quote: '逐字摘录新章节中证明这条变化的一小段连续原文' }],
+        }],
       }, null, 1),
       'cards 里只写这一段出场或有变化、而且已经有角色卡的角色，键用角色卡上的名字；还没有卡的重要新角色写进 newCharacters。',
+      '前情各栏完成后，最后才填 protagonistChanges。它只记录已明确发生、属于玩家主角的变化，每栏最多一条，没有变化就填空数组。只引用本批新章节，source 复制章标题上的 ID，quote 原样连续摘引至少四个字。未选提案、猜测及主角尚不知道的秘密不算主角的事实。与已确认状态有冲突时 conflict 填 true。姓名、性别和初始设定无需建议。',
     ].filter(Boolean).join('\n\n'),
   };
 }
 
 function merge(prev, j, from, to, story) {
   const m = { ...emptyMemory(), ...prev };
+  delete m.protagonistDraft;
   m.upTo = to;
   m.summaries = [...(prev.summaries || []), { from, to, text: String(j.summary || '').trim() || '（这一段没有整理出摘要）' }];
   m.irreversible = dedupeAppend(prev.irreversible || [], arr(j.irreversible));
@@ -243,7 +263,10 @@ async function runInner(story, nodes, path, conn, { signal, onProgress = () => {
     const from = batch[0].no;
     const to = batch[batch.length - 1].no;
     onProgress(`正在整理第 ${from}–${to} 章`);
-    const p = archivistPrompt(story, prev, batch);
+    const anchor = batch[batch.length - 1].id;
+    const chapterPath = path.slice(0, path.findIndex(node => node.id === anchor) + 1);
+    const current = protagonistState(story.protagonist, chapterPath);
+    const p = archivistPrompt(story, prev, batch, chapterPath);
     let r;
     let raw = '';
     r = await streamWithRetry(conn, {
@@ -269,10 +292,20 @@ async function runInner(story, nodes, path, conn, { signal, onProgress = () => {
     }
     delete j.__repaired;
     newCards.push(...(await addNewCharacters(story, j, from, to)).map((c) => c.name));
+    const sources = batch.map(c => ({ id: 'chapter:' + c.no, label: `第${c.no}章`,
+      text: [c.said, c.text].filter(Boolean).join('\n') }));
+    const reviewed = reviewProtagonistChanges({ changes: j.protagonistChanges }, sources, current);
+    const seenFields = new Set();
+    const suggestions = reviewed.filter(change => {
+      if (seenFields.has(change.field)) return false;
+      seenFields.add(change.field);
+      return true;
+    });
     let m = merge(prev, j, from, to, story);
+    if (suggestions.length) m.protagonistDraft = { id: newId(), changes: suggestions };
     m = await compressIfLong(m, conn, signal, track, story.id);
     m.lastRun = { at: Date.now(), from, to, model: conn?.model || '', cost: costSum };
-    const node = nodes.get(batch[batch.length - 1].id);
+    const node = nodes.get(anchor);
     if (!node) break;
     node.checkpoint = m;
     await db.put('nodes', node);

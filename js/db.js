@@ -71,6 +71,29 @@ export const db = {
     if (store !== 'kv') { try { window.dispatchEvent(new CustomEvent('moyu:put', { detail: { store, obj: value } })); } catch {} }
     return r;
   },
+  async updateStory(id, update) {
+    let saved, failure;
+    try {
+      await run('stories', 'readwrite', store => {
+        const request = store.get(id);
+        request.onsuccess = () => {
+          try {
+            saved = update(request.result);
+            store.put(saved);
+          } catch (error) {
+            failure = error;
+            store.transaction.abort();
+          }
+        };
+      });
+    } catch (error) {
+      if (failure) throw failure;
+      reportWriteError(error);
+      throw error;
+    }
+    try { window.dispatchEvent(new CustomEvent('moyu:put', { detail: { store: 'stories', obj: saved } })); } catch {}
+    return saved;
+  },
   async putMany(store, values) {
     try {
       return await run(store, 'readwrite', (os) => { for (const v of values) os.put(v); });

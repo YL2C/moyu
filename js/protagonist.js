@@ -30,11 +30,39 @@ export function reviewProtagonistChanges(raw, sources, current = {}) {
   }).filter(c => c.value !== c.previous);
 }
 
+// A later draft supersedes the older suggestion for the same field on this path.
+export function pendingProtagonistChanges(protagonist = {}, path = []) {
+  const current = protagonistState(protagonist, path);
+  const pathIds = new Set(path.map(node => node.id));
+  const accepted = new Set((protagonist.stateEntries || [])
+    .filter(entry => entry.archiveDraftId && pathIds.has(entry.sourceNodeId))
+    .map(entry => entry.archiveDraftId + ':' + entry.field));
+  const seen = new Set();
+  const pending = [];
+  for (let i = path.length - 1; i >= 0; i--) {
+    const node = path[i];
+    const draft = node.checkpoint?.protagonistDraft;
+    if (!draft?.id || !Array.isArray(draft.changes)) continue;
+    for (const change of draft.changes) {
+      if (!Object.hasOwn(PROTAGONIST_FIELDS, change?.field) || seen.has(change.field)) continue;
+      seen.add(change.field);
+      const previous = current[change.field]?.value || '';
+      const archiveDraftId = draft.id;
+      if (change.value === previous || accepted.has(archiveDraftId + ':' + change.field)) continue;
+      const changedSinceDraft = change.previous !== previous;
+      pending.push({ ...change, previous, changedSinceDraft, conflict: change.conflict || changedSinceDraft,
+        archiveNodeId: node.id, archiveDraftId });
+    }
+  }
+  return pending;
+}
+
 export function applyProtagonistChanges(protagonist, changes, sourceNodeId) {
   const selected = changes.filter(c => (c.valid || c.manualConfirmed === true) && Object.hasOwn(PROTAGONIST_FIELDS, c.field));
   if (!selected.length) throw new Error('请先勾选要保存的变化');
   const entries = protagonist.stateEntries || [];
   return { ...protagonist, updateUndo: { entries: structuredClone(entries), sourceNodeId, at: Date.now() },
     stateEntries: [...entries, ...selected.map(c => ({ field: c.field, value: c.value, evidence: c.evidence, sourceNodeId, updatedAt: Date.now(),
+      ...(c.archiveDraftId ? { archiveDraftId: c.archiveDraftId } : {}),
       ...(!c.valid ? { manualConfirmed: true } : {}) }))] };
 }

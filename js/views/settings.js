@@ -3,7 +3,7 @@
 import { db, exportAll, importData, storageInfo } from '../db.js';
 import { isMigrationFile } from '../migration.js';
 import { el, uid, toast, sheet, saveFile, pickFile, pickRawFile, APP_VERSION, promptText } from '../util.js';
-import { getConnections, getDefaultConnId, setDefaultConnId, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, modulesFromMarkdown, modulesToMarkdown, isReadingColor, DEFAULT_PREFS, READING_THEMES, READING_DIMENSIONS, readingTheme, readingDimension } from '../state.js';
+import { getConnections, getDefaultConnId, setDefaultConnId, getMemoryConnId, setMemoryConnId, canUseMemoryConnection, getDefaultRules, getPrefs, setPrefs, connLabel, go, getModules, saveModules, modulesFromMarkdown, modulesToMarkdown, isReadingColor, DEFAULT_PREFS, READING_THEMES, READING_DIMENSIONS, readingTheme, readingDimension } from '../state.js';
 import { listReadingFonts, importReadingFont, deleteReadingFont } from '../reading-fonts.js';
 import { FORMAT_LABEL, normalizeUrl, guessFormat, testConnection, listModels } from '../api.js';
 import { parseServiceAccount } from '../vertex.js';
@@ -143,7 +143,30 @@ export async function render(root, { section }) {
     const defId = await getDefaultConnId();
 
     // ── 连接 ──
-    wrap.append(el('div', { class: 'section-title', text: 'API 连接' }));
+    wrap.append(el('div', { class: 'section-title', id: 'sec-connections', 'data-fold-key': 'API 连接', text: 'API 连接' }));
+    const memoryId = await getMemoryConnId();
+    let usableMemoryId = conns.some(c => c.id === memoryId && canUseMemoryConnection(c)) ? memoryId : '';
+    const memoryPicker = el('select', { 'aria-label': '记忆整理 API' },
+      el('option', { value: '' }, memoryId && !usableMemoryId ? '原连接不可用，请重新选择' : '未配置'),
+      ...conns.map(c => el('option', { value: c.id, disabled: !canUseMemoryConnection(c) }, `${connLabel(c)}（${c.model || '未填模型'}）`)));
+    memoryPicker.value = usableMemoryId;
+    memoryPicker.addEventListener('change', async () => {
+      memoryPicker.disabled = true;
+      try {
+        await setMemoryConnId(memoryPicker.value || null);
+        usableMemoryId = memoryPicker.value;
+        memoryPicker.options[0].textContent = '未配置';
+        toast(memoryPicker.value ? '已设置全局记忆整理 API' : '已清除记忆整理 API');
+      } catch {
+        memoryPicker.value = usableMemoryId;
+        toast('记忆整理 API 保存失败');
+      } finally { memoryPicker.disabled = false; }
+    });
+    wrap.append(el('div', { class: 'card' },
+      el('div', { class: 'field', style: { marginBottom: 0 } },
+        el('label', { text: '记忆整理 API' }), memoryPicker,
+        el('div', { class: 'hint', text: '所有故事的前情档案和主角卡更新共用。未配置时暂停整理。' }))));
+
     if (!conns.length) wrap.append(el('div', { class: 'card hint', style: { marginTop: 0 }, text: '还没有连接。点下面添加：需要接口地址、密钥和模型名。' }));
     for (const c of conns) {
       const isDef = c.id === defId || (!defId && c === conns[0]);
@@ -792,6 +815,7 @@ export async function render(root, { section }) {
 
   await draw();
   if (section === 'new') editConn(null);
+  if (section === 'connections') requestAnimationFrame(() => document.getElementById('sec-connections')?.scrollIntoView({ block: 'start' }));
   if (section === 'fanwai') requestAnimationFrame(() => document.getElementById('sec-fanwai')?.scrollIntoView({ block: 'start' }));
   if (section === 'modules') requestAnimationFrame(() => document.getElementById('sec-modules')?.scrollIntoView({ block: 'start' }));
 }

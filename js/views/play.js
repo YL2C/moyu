@@ -2,12 +2,12 @@
 
 import { db, exportStory } from '../db.js';
 import { el, uid, toast, menu, promptText, sheet, saveFile, autoGrow, insertAtCursor, approxTokens } from '../util.js';
-import { resolveConnection, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo, watchStory, usesPatentTheme } from '../state.js';
+import { resolveConnection, resolveMemoryConnection, MEMORY_CONNECTION_HINT, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo, watchStory, usesPatentTheme } from '../state.js';
 import { streamWithRetry, ApiError, holdStoryJob, releaseStoryJob } from '../api.js';
 import { cancelRelayJob } from '../relay.js';
 import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
-import { archiveConn, DEFAULT_EVERY } from './memory.js';
+import { DEFAULT_EVERY } from './memory.js';
 import { getPacks } from '../tavern.js';
 import { parseReply, paragraphs, optionsForReply, replyForContext } from '../parse.js';
 import { recoverableOutput, stripReasoning } from '../reasoning.js';
@@ -40,6 +40,7 @@ export async function render(root, { id }) {
     globalMemo: await getGlobalMemo(),
     archiving: null,   // 后台整理前情 { ctrl, text }
     archiveError: null,
+    archiveNeedsConnection: false,
     choiceSource: null,
   };
   story.manualOn = story.manualOn || {};
@@ -234,6 +235,9 @@ export async function render(root, { id }) {
           el('span', { class: 'lbl', onclick: () => go(`memory/${encodeURIComponent(story.id)}`), text: a.text + '（后台进行，可以继续玩）' }),
           el('button', { 'aria-label': '停止整理', onclick: () => a.ctrl?.abort('user') }, '✕'));
       })(),
+      st.archiveNeedsConnection ? el('div', { class: 'status' },
+        el('span', { class: 'lbl', onclick: () => go('settings/connections'), text: '前情待整理 · 点这里设置记忆整理 API' }),
+        el('button', { 'aria-label': '关掉整理提醒', onclick: () => { st.archiveNeedsConnection = false; updateComposer(); } }, '✕')) : null,
       st.archiveError ? el('div', { class: 'status' },
         el('span', { class: 'lbl', onclick: () => autoArchive(true), text: '整理前情失败：' + st.archiveError + '（点这里重试）' }),
         el('button', { 'aria-label': '关掉', onclick: () => { st.archiveError = null; updateComposer(); } }, '✕')) : null,
@@ -924,8 +928,15 @@ export async function render(root, { id }) {
     const { pending } = pendingChapters(headPath());
     if (!pending.length) { if (force) toast('没有需要整理的章节'); return; }
     if (!force && (!every || pending.length < every)) return;
-    const conn = await archiveConn(story);
-    if (!conn) return;
+    const conn = await resolveMemoryConnection();
+    if (st.archiving || destroyed || archivingNow(story.id)) return;
+    st.archiveNeedsConnection = !conn;
+    if (!conn) {
+      st.archiveError = null;
+      updateComposer();
+      if (force) toast(MEMORY_CONNECTION_HINT);
+      return;
+    }
     const ctrl = new AbortController();
     st.archiving = { ctrl, text: `正在整理第 ${pending[0].no}–${pending[pending.length - 1].no} 章的前情` };
     st.archiveError = null;

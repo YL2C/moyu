@@ -89,6 +89,17 @@ export async function getConnections() {
 }
 export async function getDefaultConnId() { return db.kvGet('defaultConn', null); }
 export async function setDefaultConnId(id) { return db.kvSet('defaultConn', id); }
+export const MEMORY_CONNECTION_HINT = '先在设置 → API 连接选择有效的记忆整理 API';
+export const getMemoryConnId = () => db.kvGet('memoryConn', null);
+export const setMemoryConnId = id => db.kvSet('memoryConn', id);
+export const canUseMemoryConnection = conn => !!(conn?.apiKey?.trim() && conn?.model?.trim());
+
+export async function resolveMemoryConnection() {
+  const id = await getMemoryConnId();
+  const conn = id ? (await getConnections()).find(c => c.id === id) : null;
+  return canUseMemoryConnection(conn) ? conn : null;
+}
+
 
 /** 故事用的连接：故事自己选的 → 默认连接 → 第一个 */
 export async function resolveConnection(story) {

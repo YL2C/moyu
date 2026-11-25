@@ -20,7 +20,7 @@ const { readAttachment, attachmentBytes, selectedImport } = await import('../js/
 const { chatMessages, newDiscussion, saveDiscussion, getDiscussion, exportDiscussions } = await import('../js/discuss.js');
 const { markdownPack, importMarkdownPack, groupModules, deleteModules, undoModuleDelete } = await import('../js/rules.js');
 const { getModules, saveModules, loadPrefs } = await import('../js/state.js');
-const { protagonistState, reviewProtagonistChanges, applyProtagonistChanges } = await import('../js/protagonist.js');
+const { protagonistState, reviewProtagonistChanges, pendingProtagonistChanges, applyProtagonistChanges } = await import('../js/protagonist.js');
 const { buildContext } = await import('../js/prompt.js');
 const { inlineText } = await import('../js/inline.js');
 const play = await import('../js/views/play.js');
@@ -28,6 +28,9 @@ const extras = await import('../js/views/extras.js');
 const settings = await import('../js/views/settings.js');
 const discussion = await import('../js/views/discuss.js');
 const chars = await import('../js/views/chars.js');
+const memory = await import('../js/views/memory.js');
+const { runArchivist } = await import('../js/memory.js');
+const { resolveMemoryConnection } = await import('../js/state.js');
 const storyView = await import('../js/views/story.js');
 const libraryView = await import('../js/views/library.js');
 let requests = [], responses = [], root;
@@ -46,7 +49,7 @@ async function seedStory() {
 }
 beforeEach(async () => {
   for(const store of ['stories','nodes','extras','connections']) for(const item of await db.all(store)) await db.del(store,item.id);
-  for(const key of ['modules','packs','disc.index','relay','defaultConn','globalMemo','modules.undo','fwTemplates','fwBase','fwPlaybooksV1','extraConnectionId','usageLog','requestLog','spend']) await db.kvSet(key,null);
+  for(const key of ['modules','packs','disc.index','relay','defaultConn','memoryConn','globalMemo','modules.undo','fwTemplates','fwBase','fwPlaybooksV1','extraConnectionId','usageLog','requestLog','spend']) await db.kvSet(key,null);
   Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
   localStorage.clear(); document.body.innerHTML='<div id="fixture"></div><div id="toast"></div>'; root=document.querySelector('#fixture');
   requests=[]; responses=[];
@@ -507,12 +510,13 @@ test('主角更新只接受有原文依据的状态字段，并隔离分支及�
 });
 
 test('主角卡实际整理、审阅保存、撤销，正文上下文读取当前变化',async()=>{
-  const {story,nodes}=await seedStory();const dispose=await chars.render(root,{id:story.id});
+  const {story,nodes}=await seedStory();await configureMemory();const dispose=await chars.render(root,{id:story.id});
   try{
     responses.push(JSON.stringify({changes:[{field:'identity',value:'设计公司职员',conflict:false,evidence:{source:'第1章',quote:'“林舟已经毕业, 入职**设计公司**。”'}}]}));
     button('根据当前剧情更新').click();await wait(()=>!!button('读取剧情并生成建议'));button('读取剧情并生成建议').click();
     await wait(()=>!button('保存勾选项').disabled);button('保存勾选项').click();
     await wait(async()=>(await db.get('stories',story.id)).protagonist.stateEntries?.length===1);
+    assert.equal(requests[0].body.model, 'memory-model');
     const saved=await db.get('stories',story.id);assert.equal(saved.protagonist.name,'林舟');assert.equal(saved.protagonist.note,'初始是大学生。');
     assert.equal(saved.protagonist.stateEntries[0].evidence[0].source,'chapter:1');
     assert.equal(saved.protagonist.stateEntries[0].manualConfirmed,undefined);
@@ -1516,4 +1520,156 @@ test('完整迁移导出的弹窗显示字符数和要求', async () => {
   input.dispatchEvent(new Event('input'));
   assert.match(document.getElementById('migration-password-count').textContent, /已输入 11 个字符，至少需要 12 个/);
   assert.doesNotMatch(document.querySelector('.sheet').textContent, /null/);
+});
+
+async function configureMemory() {
+  await db.put('connections', {
+    id: 'qa-memory', format: 'openai', name: '独立记忆连接', model: 'memory-model',
+    baseUrl: 'https://memory.qa.example/v1', apiKey: 'virtual-memory-key', stream: false,
+  });
+  await db.kvSet('memoryConn', 'qa-memory');
+}
+
+const archiveResponse = (changes = []) => ({
+  summary: '林舟正式入职。', irreversible: [], items: [], threads: [], knowledge: [],
+  offscreen: [], repeats: [], newCharacters: [], cards: {}, conflicts: [], unsure: [],
+  protagonistChanges: changes,
+});
+
+test('全局选择适用于各故事档案，旧故事设置和失效的 API 不会触发回退', async () => {
+  const { story } = await seedStory();
+  story.memConnId = story.connectionId = 'qa-conn';
+  await db.put('stories', story);
+  await db.put('stories', { ...story, id: 'other', headId: 'other-a1' });
+  await db.put('nodes', { id: 'other-a1', storyId: 'other', role: 'assistant', text: '另一个故事开始了。' });
+  const disposeUnconfigured = await memory.render(root, { id: story.id });
+  assert.ok(button('现在整理（1 章）', root).disabled);
+  assert.ok(root.textContent.includes('未配置或连接不可用'));
+  disposeUnconfigured();
+  root.replaceChildren();
+  await configureMemory();
+  await db.kvSet('memoryConn', null);
+  await settings.render(root, { section: 'connections' });
+  const picker = root.querySelector('[aria-label="记忆整理 API"]');
+  assert.ok(picker.closest('details').open);
+  changeValue(picker, 'qa-memory');
+  await wait(async () => (await db.kvGet('memoryConn')) === 'qa-memory');
+  for (const id of [story.id, 'other']) {
+    root.replaceChildren();
+    const dispose = await memory.render(root, { id });
+    try {
+      responses.push(JSON.stringify(archiveResponse()));
+      button('现在整理（1 章）', root).click();
+      await wait(() => !!button('已是最新', root));
+    } finally { dispose(); }
+  }
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every(({ url, body }) => url.startsWith('https://memory.qa.example/') && body.model === 'memory-model'));
+  await db.del('connections', 'qa-memory');
+  assert.equal(await resolveMemoryConnection(), null);
+  root.replaceChildren();
+  const disposeDeleted = await memory.render(root, { id: story.id });
+  assert.match(root.textContent, /未配置或连接不可用/);
+  assert.ok(button('重新整理最近一次', root).disabled);
+  disposeDeleted();
+});
+
+test('达到故事整理频率后，同一份前情响应生成待审建议，保存前不影响主角卡', async () => {
+  const { story } = await seedStory();
+  story.memEvery = 1;
+  story.connectionId = story.memConnId = 'qa-conn';
+  await db.put('stories', story);
+  await configureMemory();
+  const disposePlay = await play.render(root, { id: story.id });
+  try {
+    responses.push('# 新职位\n\n林舟领到了设计部的正式工牌。' + options, JSON.stringify(archiveResponse([
+      { field: 'identity', value: '设计部正式职员', evidence: [{ source: 'chapter:2', quote: '林舟领到了设计部的正式工牌。' }] },
+      { field: 'identity', value: '重复的身份建议', evidence: [{ source: 'chapter:2', quote: '林舟领到了设计部的正式工牌。' }] },
+      { field: 'abilities', value: '拥有未证实的权力', evidence: [{ source: 'chapter:2', quote: '小说没有写过的内容' }] },
+    ])));
+    const textarea = root.querySelector('.composer textarea');
+    textarea.value = '继续工作';
+    button('发送', root.querySelector('.composer')).click();
+    await wait(async () => (await db.byStory(story.id)).some(n => n.checkpoint?.protagonistDraft));
+    assert.deepEqual(requests.map(r => r.body.model), ['test', 'memory-model']);
+    assert.match(requests[1].body.messages[1].content, /protagonistChanges/);
+    const head = (await db.get('stories', story.id)).headId;
+    const checkpoint = (await db.get('nodes', head)).checkpoint;
+    assert.deepEqual(checkpoint.protagonistDraft.changes.map(c => [c.field, c.valid]), [['identity', true], ['abilities', false]]);
+    assert.equal((await db.get('stories', story.id)).protagonist.stateEntries, undefined);
+    assert.ok(!buildContext(await db.get('stories', story.id), [await db.get('nodes', head)]).system.includes('拥有未证实的权力'));
+  } finally { disposePlay(); }
+});
+
+test('前情完整时截断的主角建议不会触发拆批或额外调用', async () => {
+  const { story, nodes } = await seedStory();
+  for (let i = 2; i <= 3; i++) {
+    nodes.push({ id: 'a' + i, storyId: story.id, parentId: 'a' + (i - 1), role: 'assistant',
+      text: '新的故事章节 ' + i, createdAt: i + 1 });
+  }
+  await db.putMany('nodes', nodes);
+  await configureMemory();
+  const { protagonistChanges, ...core } = archiveResponse();
+  const incomplete = JSON.stringify(core).slice(0, -1) + ',"protagonistChanges":[{"field":"identity","value":"一半';
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ choices: [{ message: { content: incomplete }, finish_reason: 'length' }] }),
+      { headers: { 'Content-Type': 'application/json' } });
+  };
+  await runArchivist(story, new Map(nodes.map(n => [n.id, n])), nodes, await resolveMemoryConnection());
+  const checkpoint = (await db.get('nodes', 'a3')).checkpoint;
+  assert.equal(checkpoint.upTo, 3);
+  assert.equal(checkpoint.summaries[0].text, '林舟正式入职。');
+  assert.equal(checkpoint.protagonistDraft, undefined);
+  assert.equal(requests.length, 1);
+});
+
+test('归档主角建议可在后续章节审阅，字段变化默认取消勾选，原分支外不可见', async () => {
+  const { story, nodes } = await seedStory();
+  nodes[1].checkpoint = { upTo: 1, protagonistDraft: { id: 'draft-id', changes: [
+    { field: 'identity', value: '设计部正式职员', previous: '', valid: true, conflict: false,
+      evidence: [{ source: 'chapter:1', label: '第1章', quote: '林舟已经毕业，入职设计公司。' }] },
+    { field: 'status', value: '准备上班', previous: '', valid: true, conflict: false,
+      evidence: [{ source: 'chapter:1', label: '第1章', quote: '林舟已经毕业，入职设计公司。' }] },
+  ] } };
+  const followup = { id: 'a2', storyId: story.id, parentId: 'a1', role: 'assistant', text: '林舟到了公司。' };
+  const branch = { id: 'alternate', storyId: story.id, parentId: 'u1', role: 'assistant', text: '故事有另一种展开。' };
+  const sibling = { id: 'sibling', storyId: story.id, parentId: 'a1', role: 'assistant', text: '林舟改变了主意。' };
+  await db.putMany('nodes', [...nodes, followup, branch, sibling]);
+  story.headId = 'a2';
+  story.protagonist.stateEntries = [{ sourceNodeId: 'a2', field: 'status', value: '已完成报到' }];
+  await db.put('stories', story);
+  const dispose = await chars.render(root, { id: story.id });
+  try {
+    button('主角卡有待确认更新（2）', root).click();
+    await wait(() => !!button('保存勾选项'));
+    const firstReview = document.querySelector('[role=dialog]');
+    const checks = [...firstReview.querySelectorAll('input[type=checkbox]')];
+    assert.deepEqual(checks.map(check => check.checked), [true, false]);
+    assert.match(firstReview.textContent, /这一栏在生成建议后已更新/);
+    const concurrent = await db.get('stories', story.id);
+    concurrent.protagonist.stateEntries.push({ sourceNodeId: 'a2', field: 'identity', value: '已调到产品部' });
+    await db.put('stories', concurrent);
+    button('保存勾选项').click();
+    await wait(() => firstReview.textContent.includes('分支或主角状态已变化'));
+    assert.deepEqual([...firstReview.querySelectorAll('input[type=checkbox]')].map(check => check.checked), [false, false]);
+    firstReview.querySelector('input[type=checkbox]').click();
+    button('保存勾选项').click();
+    await wait(() => !document.querySelector('[role=dialog]'));
+    const saved = await db.get('stories', story.id);
+    const state = protagonistState(saved.protagonist, [...nodes, followup]);
+    assert.equal(state.identity.value, '设计部正式职员');
+    assert.equal(state.identity.sourceNodeId, 'a2');
+    assert.equal(protagonistState(saved.protagonist, [...nodes, sibling]).identity, undefined);
+    assert.equal(pendingProtagonistChanges(saved.protagonist, [...nodes, sibling]).length, 2);
+    assert.equal(state.status.value, '已完成报到');
+    assert.ok(button('主角卡有待确认更新（1）', root));
+    assert.equal(requests.length, 0);
+    saved.headId = branch.id;
+    await db.put('stories', saved);
+    root.replaceChildren();
+    const disposeBranch = await chars.render(root, { id: story.id });
+    try { assert.doesNotMatch(root.textContent, /主角卡有待确认更新/); }
+    finally { disposeBranch(); }
+  } finally { dispose(); }
 });

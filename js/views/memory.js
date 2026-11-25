@@ -2,7 +2,7 @@
 
 import { db } from '../db.js';
 import { el, toast, sheet } from '../util.js';
-import { resolveConnection, getConnections, connLabel, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
+import { resolveMemoryConnection, MEMORY_CONNECTION_HINT, connLabel, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
 import { latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { fmtMoney } from '../cost.js';
@@ -17,20 +17,11 @@ function pathTo(nodes, nodeId) {
   return out;
 }
 
-/** 整理用的连接：故事单独指定的 → 故事的连接 */
-export async function archiveConn(story) {
-  if (story.memConnId) {
-    const c = (await getConnections()).find((x) => x.id === story.memConnId);
-    if (c) return c;
-  }
-  return resolveConnection(story);
-}
-
 export async function render(root, { id }) {
   const story = await db.get('stories', id);
   if (!story) { toast('找不到这个故事'); setCurrentStory(null); go(''); return; }
   const nodes = new Map((await db.byStory(id)).map((n) => [n.id, n]));
-  const conns = await getConnections();
+  let memoryConn = await resolveMemoryConnection();
   let running = null;
   let destroyed = false;
   let statusEl = null;
@@ -55,24 +46,22 @@ export async function render(root, { id }) {
     const every = el('input', { type: 'number', min: '0', max: '60', step: '1', style: { width: '90px', flex: 'none' } });
     every.value = String(story.memEvery ?? DEFAULT_EVERY);
     every.addEventListener('change', () => { story.memEvery = Math.max(0, Math.min(60, Number(every.value) || 0)); saveStory(); toast(story.memEvery ? `每 ${story.memEvery} 章自动整理一次` : '已关闭自动整理'); });
-    const connSel = el('select', { onchange: () => { story.memConnId = connSel.value || null; saveStory(); } });
-    connSel.append(el('option', { value: '' }, '跟随故事的连接'));
-    conns.forEach((c) => connSel.append(el('option', { value: c.id }, `${connLabel(c)}（${c.model}）`)));
-    connSel.value = story.memConnId || '';
     const status = el('div', { class: 'hint' });
     statusEl = status;
     const ext = !running && archivingNow(story.id);
     const runBtn = el('button', { class: 'btn small primary', onclick: () => run() }, pending.length ? `现在整理（${pending.length} 章）` : '已是最新');
-    runBtn.disabled = !pending.length || !!running || !!ext;
+    runBtn.disabled = !memoryConn || !pending.length || !!running || !!ext;
     const redoBtn = cp ? el('button', {
       class: 'btn small ghost',
       onclick: async () => {
         if (running || archivingNow(story.id)) return;
+        const conn = await getMemoryConnection();
+        if (!conn || running || archivingNow(story.id)) return;
         if (!confirm(`删掉最近这次整理（第 ${cp.mem.lastRun?.from || '?'}–${cp.mem.upTo} 章），从上一次的档案重新整理？你在这次档案里手动改过的内容也会丢掉。`)) return;
         const backup = cp.node.checkpoint;
         delete cp.node.checkpoint;
         await db.put('nodes', cp.node);
-        const ok = await run();
+        const ok = await run(conn);
         if (!ok && !cp.node.checkpoint) {   // 没整理成：把原来的档案放回去
           cp.node.checkpoint = backup;
           await db.put('nodes', cp.node).catch(() => {});
@@ -81,11 +70,13 @@ export async function render(root, { id }) {
         }
       },
     }, '重新整理最近一次') : null;
-    if (redoBtn) redoBtn.disabled = !!running || !!ext;
+    if (redoBtn) redoBtn.disabled = !memoryConn || !!running || !!ext;
     wrap.append(el('div', { class: 'card' },
       el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '每几章自动整理一次', el('small', { text: '设为 0 时手动整理。前情和正文按顺序请求，可以切页。' })), every),
-      el('div', { class: 'field', style: { margin: '6px 0 10px' } }, el('label', { text: '整理用的连接' }), connSel,
-        el('div', { class: 'hint', text: '可以换一个便宜点的模型来整理；但便宜模型更容易漏细节或编造，你在意准确的话建议用和正文一样的。' })),
+      el('div', { class: 'switch-row' },
+        el('div', { class: 'lbl' }, '记忆整理 API',
+          el('small', { text: memoryConn ? `${connLabel(memoryConn)}（${memoryConn.model}）` : '未配置或连接不可用' })),
+        el('button', { class: 'btn small', onclick: () => go('settings/connections') }, '去更换')),
       el('div', { class: 'row' }, runBtn, redoBtn), status));
     if (running) status.textContent = running.text + '（可以离开这页，整理会在后台继续）';
     else if (ext) status.textContent = ext.text + '（游玩页在后台整理，完成后这里会自动刷新）';
@@ -167,10 +158,16 @@ export async function render(root, { id }) {
       el('span', { class: 'hint', style: { margin: 0 }, text: '只改最新这一份；回退到更早的章节时，会用当时那一份。' })));
   }
 
-  async function run() {
+  async function getMemoryConnection() {
+    memoryConn = await resolveMemoryConnection();
+    if (!memoryConn) { if (!destroyed) draw(); toast(MEMORY_CONNECTION_HINT); }
+    return memoryConn;
+  }
+
+  async function run(selectedConnection = null) {
     if (running || archivingNow(story.id)) return false;
-    const conn = await archiveConn(story);
-    if (!conn) { toast('先在设置里添加连接'); return false; }
+    const conn = selectedConnection || await getMemoryConnection();
+    if (!conn || running || archivingNow(story.id)) return false;
     const ctrl = new AbortController();
     running = { ctrl, text: '准备整理…' };
     draw();

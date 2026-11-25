@@ -74,7 +74,7 @@ export function collapseSettings(wrap, section = '') {
   const groups = [];
   for (const child of children) {
     if (child.classList.contains('section-title')) {
-      const key = 'moyu-yl2c.settings.fold.' + (child.id || child.textContent);
+      const key = 'moyu-yl2c.settings.fold.' + (child.dataset.foldKey || child.id || child.textContent);
       let stored = null; try { stored = localStorage.getItem(key); } catch {}
       const active = child.id === 'sec-' + section;
       current = el('details', { class: 'settings-section', id: child.id || 'settings-section-' + index++ });
