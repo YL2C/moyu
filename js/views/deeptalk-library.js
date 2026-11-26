@@ -7,6 +7,13 @@ import { deepTalkMaterials, deepTalkMemory, deepTalkSettings, deepTalkConnection
 
 const button = (label, click, attrs = {}) => el('button', { type: 'button', class: 'btn small', onclick: click, ...attrs }, label);
 const date = timestamp => new Date(timestamp).toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
+const PACKAGE_FILE_TYPES = '.json,application/json';
+const TOPIC_FILE_TYPES = `${PACKAGE_FILE_TYPES},.md,.markdown,.txt,text/markdown,text/plain`;
+
+async function readPackage(file, options) {
+  if (file.size > MATERIAL_MAX_BYTES) throw new Error('资料包不能超过 4 MB');
+  return parseMaterialPackage(await file.text(), options);
+}
 
 export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
   const panel = sheet({ title: '资料与记忆', onClose });
@@ -45,7 +52,11 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
       if (!documents) return;
       const present = await deepTalkMaterials();
       const changed = Object.entries(documents).some(([slot, original]) => present[slot] && present[slot].original.sha256 !== original.sha256);
-      if (changed && !window.confirm('导入后会启用新资料。旧原件和编辑记录仍可在版本中查看。继续导入吗？')) return;
+      if (changed) {
+        const activation = Object.keys(TOPIC_SLOTS).every(slot => Object.hasOwn(documents, slot))
+          ? '导入后会同时启用两份专题。' : '导入后会启用新资料。';
+        if (!window.confirm(activation + '旧原件和编辑记录仍可在版本中查看。继续导入吗？')) return;
+      }
       const result = await saveDeepTalkMaterials(documents);
       toast(result.changed ? '已导入' : '这份资料已经导入');
       if (token === request && panel.panel.isConnected) await draw();
@@ -55,10 +66,8 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
 
   function drawMaterials(data) {
     const importButton = button('导入资料包', event => importDocuments(event.currentTarget, async () => {
-      const file = await pickRawFile('.json,application/json');
-      if (!file) return null;
-      if (file.size > MATERIAL_MAX_BYTES) throw new Error('日常聊天资料包不能超过 4 MB');
-      return parseMaterialPackage(await file.text());
+      const file = await pickRawFile(PACKAGE_FILE_TYPES);
+      return file ? readPackage(file) : null;
     }));
     const cards = slots => Object.entries(slots).map(([slot, label]) => {
       const document = currentMaterial(data[slot]);
@@ -68,15 +77,18 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
         el('div', { class: 'deeptalk-subtle' }, document ? document.sourceName : '等待导入'),
         el('div', { class: 'deeptalk-panel-actions' },
           document && button('查看全文与编辑', () => drawDocument(slot, data[slot])),
-          isTopic && button(document ? '导入新版本' : '导入文档', event => importDocuments(event.currentTarget, async () => {
-            const file = await pickRawFile('.md,.markdown,.txt,text/markdown,text/plain');
-            return file ? { [slot]: await parseTopicDocument(slot, file) } : null;
+          isTopic && button(document ? '导入新版本' : '导入专题', event => importDocuments(event.currentTarget, async () => {
+            const file = await pickRawFile(TOPIC_FILE_TYPES);
+            if (!file) return null;
+            if (/\.json$/i.test(file.name) || file.type === 'application/json') return readPackage(file, { topicsOnly: true });
+            return { [slot]: await parseTopicDocument(slot, file) };
           }))));
     });
     content.replaceChildren(
       el('div', { class: 'deeptalk-panel-actions' }, importButton),
       ...cards(MATERIAL_SLOTS),
       el('h3', {}, '专题资料'),
+      el('p', { class: 'deeptalk-subtle' }, '可单独导入 Markdown 或 TXT。专题 JSON 资料包会一次导入两份。'),
       ...cards(TOPIC_SLOTS));
   }
 

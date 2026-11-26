@@ -44,13 +44,14 @@ function checkSections(sections, text, slot) {
   return checked;
 }
 
-export async function parseMaterialPackage(source) {
+export async function parseMaterialPackage(source, { topicsOnly = false } = {}) {
   if (typeof source !== 'string' || new TextEncoder().encode(source).length > MATERIAL_MAX_BYTES) throw new Error('资料包过大或无法读取');
   let pack;
   try { pack = JSON.parse(source); } catch { throw new Error('资料包不是有效的 JSON 文件'); }
   if (![MATERIAL_FORMAT, TOPIC_FORMAT].includes(pack?.format) || pack.version !== 1 || pack.offsetUnit !== 'utf16') {
     throw new Error('请选择墨游的日常聊天资料包或专题资料包');
   }
+  if (topicsOnly && pack.format !== TOPIC_FORMAT) throw new Error('请选择墨游的专题资料包');
   const isTopic = pack.format === TOPIC_FORMAT;
   const expectedSlots = Object.keys(isTopic ? TOPIC_SLOTS : MATERIAL_SLOTS);
   if (!Array.isArray(pack.documents) || pack.documents.length !== expectedSlots.length) throw new Error(`资料包需要完整的${isTopic ? '两份专题' : '三份资料'}`);

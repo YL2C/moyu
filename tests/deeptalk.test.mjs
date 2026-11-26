@@ -173,7 +173,7 @@ test('加密迁移保存资料、聊天和设置，迁入后清除旧入口的�
   assert.equal((await deepTalkMaterials()).sensitive_memory.original.text, pack.documents[0].text);
 });
 
-test('聊天页显示每轮用量和花费面板，资料包导入后可打开全文', async t => {
+test('聊天页显示用量和花费，普通入口和专题卡片都能导入资料包', async t => {
   const dom = new JSDOM('<main id="root"></main><div id="toast"></div>', { url: 'https://moyu.example.test/#/chat', pretendToBeVisual: true });
   const bindings = { window: dom.window, document: dom.window.document, Node: dom.window.Node,
     getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
@@ -233,6 +233,26 @@ test('聊天页显示每轮用量和花费面板，资料包导入后可打开�
   findButton('查看全文与编辑').click();
   assert.equal(document.querySelector('[aria-label="核心名片全文"]').value, pack.documents[2].text);
   assert.doesNotMatch(document.querySelector('.deeptalk-feed').textContent, /^false/);
+
+  const fitness = source('fitness', [['fitness-1', '训练记录🐾\r\n这次学会了新动作。', 'soft_recall']]);
+  fitness.sections[0].hint = '聊学习新动作时';
+  const shengweian = source('shengweian', [['story-1', '朋友组的故事原文。', 'soft_recall']]);
+  shengweian.sections[0].hint = '提到朋友组时';
+  const topicPack = { format: TOPIC_FORMAT, version: 1, offsetUnit: 'utf16', documents: [fitness, shengweian] };
+  findButton('返回资料').click();
+  (await until(() => findButton('导入专题'))).click();
+  const topicPicker = document.querySelector('input[type="file"]');
+  assert.ok(topicPicker.accept.split(',').includes('.json'));
+  assert.ok(topicPicker.accept.split(',').includes('.md'));
+  const topicFile = new File([JSON.stringify(topicPack)], '专题.JSON', { type: 'application/octet-stream' });
+  Object.defineProperty(topicPicker, 'files', { value: [topicFile] });
+  topicPicker.dispatchEvent(new dom.window.Event('change'));
+  await until(() => [...document.querySelectorAll('.deeptalk-sheet .deeptalk-list-item button')].filter(button => button.textContent === '查看全文与编辑').length === 5);
+  const materials = await deepTalkMaterials();
+  for (const original of topicPack.documents) {
+    assert.equal(materials[original.slot].original.text, original.text);
+    assert.equal(materials[original.slot].original.sections[0].hint, original.sections[0].hint);
+  }
 });
 
 test('专题原件和目录分别导入，按章节查看，旧资料与历史版本仍可读取', async () => {
