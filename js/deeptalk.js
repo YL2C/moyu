@@ -2,7 +2,7 @@ import { db } from './db.js';
 import { getConnections, canUseMemoryConnection } from './state.js';
 import { streamWithRetry, supportsReasoningEffort, guessFormat } from './api.js';
 import { cancelRelayJob } from './relay.js';
-import { normalizeUsage, computeCost, recordUsage } from './cost.js';
+import { normalizeUsage, computeCost, recordUsage, getRequestLog, CUR } from './cost.js';
 import { uid } from './util.js';
 import { buildDeepTalkContext, isRecallFeedback } from './deeptalk-context.js';
 import { editMaterial, mergeMaterials } from './deeptalk-materials.js';
@@ -11,10 +11,21 @@ const PREFIX = 'deeptalk.v1.';
 const SETTINGS_KEY = PREFIX + 'settings';
 const MATERIALS_KEY = PREFIX + 'materials';
 const THREAD_KEY = PREFIX + 'thread';
+const MEMORY_USAGE_KEY = PREFIX + 'memoryUsage';
 export const MEMORY_KEY = PREFIX + 'memory';
 export const EFFORT_LABELS = Object.freeze({ default: '接口默认', low: '轻松', medium: '标准', high: '深入', xhigh: '极深', max: '最大' });
-export const CHAT_KIND = '日常聊天';
+const CHAT_KIND = '日常聊天';
 export const MEMORY_KIND = '日常记忆整理';
+const REWRITE_KIND = '重写日常回复';
+const RETRY_KIND = '重试日常回复';
+const RESUME_KIND = '接回日常回复';
+const CHAT_LABEL = '聊天回复';
+const REPEAT_LABEL = '重写 / 重试';
+const MEMORY_LABEL = '整理记忆';
+const REQUEST_LABELS = {
+  [CHAT_KIND]: CHAT_LABEL, [REWRITE_KIND]: '重写回复', [RETRY_KIND]: '重试回复',
+  [RESUME_KIND]: '接回回复', [MEMORY_KIND]: MEMORY_LABEL,
+};
 export const MAX_USER_CHARS = 24_000;
 const turnKey = id => PREFIX + 'turn.' + id;
 const defaultSettings = { connectionId: '', efforts: {}, memoryConnectionId: '', autoMemory: false };
@@ -69,45 +80,106 @@ export async function readDeepTalkTurn(id) { return db.kvGet(turnKey(id), null);
 
 const validTokenCount = value => Number.isSafeInteger(value) && value >= 0;
 
+export function deepTalkUsageSplit(usage) {
+  const input = Number(usage?.input ?? NaN);
+  const output = Number(usage?.output ?? NaN);
+  return validTokenCount(input) && validTokenCount(output) ? { input, output, est: !!usage.est } : null;
+}
+
 export function deepTalkReplyTokens(reply) {
   const usage = reply?.usage;
   if (!usage) return null;
   if (validTokenCount(usage.total)) return { total: usage.total, estimated: !!usage.totalEstimated };
-  const total = Number(usage.input) + Number(usage.output);
-  return validTokenCount(total) ? { total, estimated: !!usage.est } : null;
+  const split = deepTalkUsageSplit(usage);
+  return split ? { total: split.input + split.output, estimated: split.est } : null;
 }
 
-export async function deepTalkTokenTotals(now = Date.now()) {
+function memoryUsageReceipts(receipt) {
+  // 旧整理用量从全站最近调用记录迁入，后续整理的用量独立保留。
+  return db.kvUpdate([MEMORY_USAGE_KEY, 'usageLog'], values => {
+    const saved = values[MEMORY_USAGE_KEY];
+    const receipts = saved ?? (values.usageLog || []).filter(row => row.kind === MEMORY_KIND).map(row => ({
+      at: row.at, model: row.model, usage: row, cost: row.cost,
+    }));
+    if (receipt) receipts.push(receipt);
+    return { values: receipt || (!saved && receipts.length) ? { [MEMORY_USAGE_KEY]: receipts } : {}, result: receipts };
+  });
+}
+
+function spendBucket() {
+  return { count: 0, total: 0, counted: 0, estimated: false, input: 0, output: 0, splitCount: 0,
+    splitEstimated: false, cached: 0, written: 0, cacheCount: 0, priced: 0, costs: {} };
+}
+
+function addReceipt(bucket, receipt) {
+  const { usage, cost } = receipt;
+  const tokens = deepTalkReplyTokens(receipt);
+  bucket.count++;
+  if (tokens) {
+    bucket.total += tokens.total;
+    bucket.counted++;
+    bucket.estimated ||= tokens.estimated;
+  }
+  const split = deepTalkUsageSplit(usage);
+  if (split) {
+    bucket.splitCount++;
+    bucket.input += split.input;
+    bucket.output += split.output;
+    bucket.splitEstimated ||= split.est;
+  }
+  if (usage?.cacheReported || usage?.cached > 0 || usage?.written > 0) {
+    bucket.cacheCount++;
+    bucket.cached += Number(usage.cached) || 0;
+    bucket.written += Number(usage.written) || 0;
+  }
+  if (Object.hasOwn(CUR, cost?.currency) && Number.isFinite(cost.amount)) {
+    bucket.priced++;
+    bucket.costs[cost.currency] = (bucket.costs[cost.currency] || 0) + cost.amount;
+  }
+}
+
+function summarizeSpend(receipts, requests) {
+  const total = spendBucket();
+  const byKind = { [CHAT_LABEL]: spendBucket(), [REPEAT_LABEL]: spendBucket(), [MEMORY_LABEL]: spendBucket() };
+  for (const receipt of receipts) {
+    addReceipt(total, receipt);
+    addReceipt(byKind[receipt.group], receipt);
+  }
+  const chat = byKind[CHAT_LABEL];
+  return { total, byKind, averageInput: chat.splitCount ? Math.round(chat.input / chat.splitCount) : null,
+    recent: receipts.filter(row => row.usage || row.cost).slice(0, 30), requests: requests.slice(0, 30) };
+}
+
+export async function getDeepTalkSpend(now = Date.now()) {
   const date = new Date(now);
   const year = date.getFullYear(), month = date.getMonth(), day = date.getDate();
   const todayStart = +new Date(year, month, day);
   const todayEnd = +new Date(year, month, day + 1);
   const monthStart = +new Date(year, month, 1);
   const monthEnd = +new Date(year, month + 1, 1);
-  const bucket = () => ({ total: 0, counted: 0, estimated: 0, missing: 0 });
-  const totals = { today: bucket(), month: bucket(), all: bucket() };
-  const tally = (summary, usage) => {
-    if (!usage) { summary.missing++; return; }
-    summary.total += usage.total;
-    summary.counted++;
-    if (usage.estimated) summary.estimated++;
-  };
+  const [ids, memoryReceipts, requestLog] = await Promise.all([db.kvGet(THREAD_KEY, []), memoryUsageReceipts(), getRequestLog()]);
+  const receipts = memoryReceipts.map(row => ({ ...row, kind: MEMORY_LABEL, group: MEMORY_LABEL }));
+  const latestFirst = (a, b) => b.at - a.at;
+  const requests = requestLog.filter(row => !row.storyId && Object.hasOwn(REQUEST_LABELS, row.kind))
+    .map(row => ({ ...row, kind: REQUEST_LABELS[row.kind] })).sort(latestFirst);
 
   // 每个回复版本保留自己的用量，换版本显示和最近用量日志的上限不影响统计。
-  const ids = await db.kvGet(THREAD_KEY, []);
   for (let start = 0; start < ids.length; start += 80) {
     const turns = await Promise.all(ids.slice(start, start + 80).map(readDeepTalkTurn));
     for (const turn of turns) {
-      for (const reply of turn?.replies || []) {
-        const usage = deepTalkReplyTokens(reply);
-        const at = reply.at ?? turn.at;
-        tally(totals.all, usage);
-        if (at >= monthStart && at < monthEnd) tally(totals.month, usage);
-        if (at >= todayStart && at < todayEnd) tally(totals.today, usage);
-      }
+      turn?.replies?.forEach((reply, index) => {
+        if (reply.status === 'running' && !reply.usage) return;
+        const group = index ? REPEAT_LABEL : CHAT_LABEL;
+        receipts.push({ at: reply.at ?? turn.at, kind: REQUEST_LABELS[reply.kind] || group, group,
+          model: reply.model, usage: reply.usage, cost: reply.cost });
+      });
     }
   }
-  return totals;
+  receipts.sort(latestFirst);
+  const today = row => row.at >= todayStart && row.at < todayEnd;
+  const thisMonth = row => row.at >= monthStart && row.at < monthEnd;
+  return { today: summarizeSpend(receipts.filter(today), requests.filter(today)),
+    month: summarizeSpend(receipts.filter(thisMonth), requests.filter(thisMonth)), all: summarizeSpend(receipts, requests) };
 }
 
 function obsoleteDerivedMemory(memory, id, nextVersion) {
@@ -185,9 +257,9 @@ function reportedTokenTotal(raw) {
 
 function errorTokenUsage(raw) {
   const total = reportedTokenTotal(raw);
-  if (total != null) return { total };
   const hasBreakdown = [[raw?.prompt_tokens, raw?.completion_tokens], [raw?.input_tokens, raw?.output_tokens],
     [raw?.promptTokenCount, raw?.candidatesTokenCount]].some(pair => pair.every(validTokenCount));
+  if (total != null) return { ...(hasBreakdown ? normalizeUsage(raw) : {}), total, totalEstimated: false };
   return hasBreakdown ? normalizeUsage(raw) : null;
 }
 
@@ -195,10 +267,11 @@ async function recordDeepTalkUsage(conn, result, context, replyId, elapsed, kind
   const inChars = context ? contextLength(context) : savedInputChars;
   const normalized = normalizeUsage(result.usage, { inChars: inChars ?? 0, outChars: result.text?.length || 0 });
   const total = reportedTokenTotal(result.usage);
-  const usage = total != null ? { ...normalized, total, totalEstimated: false }
+  const usage = result.failed ? errorTokenUsage(result.usage) : total != null ? { ...normalized, total, totalEstimated: false }
     : normalized.est && inChars == null ? null : normalized;
-  const cost = computeCost(usage, conn);
-  await recordUsage({ kind, requestId: replyId, model: conn.model, usage, cost }).catch(() => {});
+  const cost = deepTalkUsageSplit(usage) ? computeCost(usage, conn) : null;
+  if (kind === MEMORY_KIND) await memoryUsageReceipts({ at: Date.now(), model: conn.model, usage, cost }).catch(() => {});
+  if (!result.failed || usage) await recordUsage({ kind, requestId: replyId, model: conn.model, usage, cost });
   return { usage, cost, elapsed, reasoningTokens: result.usage?.completion_tokens_details?.reasoning_tokens ?? null };
 }
 
@@ -222,7 +295,8 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
     const context = pending ? null : buildDeepTalkContext({ text: prompt, turns: history, materials, memory, manualKeys });
     const storedEffort = settings.efforts[conn.id];
     const effort = supportsReasoningEffort(conn) ? (deeper ? 'high' : Object.hasOwn(EFFORT_LABELS, storedEffort) ? storedEffort : 'medium') : null;
-    const reply = pending || { id: uid(), connectionId: conn.id, model: conn.model, format: guessFormat(conn), stream: conn.stream !== false,
+    const kind = !previousTurn ? CHAT_KIND : selectedReply(previousTurn)?.status === 'done' ? REWRITE_KIND : RETRY_KIND;
+    const reply = pending || { id: uid(), kind, connectionId: conn.id, model: conn.model, format: guessFormat(conn), stream: conn.stream !== false,
       effort, status: 'running', text: '', at: Date.now(), inputChars: contextLength(context),
       refs: context.used, always: context.always, contextKey: context.contextKey };
     const draft = pending ? null : { id: turnId || uid(), at: Date.now(), text: prompt, sensitiveTopics: context.activeSensitive };
@@ -252,7 +326,7 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
           void putReply(turn.id, reply.id, { text: full }, true).catch(() => {});
         },
         onThinking,
-      }, { retries: 0, requestKind: CHAT_KIND });
+      }, { retries: 0, requestKind: resume ? RESUME_KIND : kind });
       const receipt = await recordDeepTalkUsage(conn, result, context, reply.id, Date.now() - started, CHAT_KIND, reply.inputChars);
       turn = await putReply(turn.id, reply.id, { status: result.truncated ? 'partial' : 'done', text: result.text,
         error: result.truncated ? '回复达到输出上限' : '', relayJob: '', relayServer: '', ...receipt });
@@ -264,7 +338,7 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
       turn = await putReply(turn.id, reply.id, { status: stopped ? 'stopped' : visible ? 'partial' : 'error',
         text: visible, relayJob: canResume ? relayJob : '', relayServer: canResume ? relayServer : '',
         error: stopped ? '已停止' : [error.message || '日常聊天请求失败', error.hint].filter(Boolean).join('。'),
-        elapsed: Date.now() - started, ...(usage ? { usage } : {}) });
+        elapsed: Date.now() - started, ...(usage ? { usage, cost: deepTalkUsageSplit(usage) ? computeCost(usage, conn) : null } : {}) });
     }
     return turn;
   });

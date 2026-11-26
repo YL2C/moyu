@@ -1,16 +1,70 @@
 import { el, sheet, toast, menu, autoGrow } from '../util.js';
 import { connLabel, getCurrentStory, go } from '../state.js';
 import { supportsReasoningEffort } from '../api.js';
-import { fmtMoney } from '../cost.js';
+import { fmtMoney, fmtTokens } from '../cost.js';
 import { deepTalkSettings, deepTalkConnections, selectedReply, readDeepTalkThread, saveDeepTalkSettings, generateDeepTalk,
   chooseDeepTalkReply, rememberDeepTalkTurn, setTurnExcluded, stopPendingDeepTalk, deepTalkRequestPreview,
-  deepTalkReplyTokens, deepTalkTokenTotals, EFFORT_LABELS, MAX_USER_CHARS } from '../deeptalk.js';
+  deepTalkReplyTokens, deepTalkUsageSplit, getDeepTalkSpend, EFFORT_LABELS, MAX_USER_CHARS } from '../deeptalk.js';
 import { organizeDeepTalk } from '../deeptalk-memory.js';
 import { openDeepTalkLibrary } from './deeptalk-library.js';
 
 const button = (label, click, attrs = {}) => el('button', { type: 'button', class: 'btn small', onclick: click, ...attrs }, label);
 const tokenNumbers = new Intl.NumberFormat('zh-CN');
 const formatTokenAmount = ({ total, estimated }) => `${estimated ? '约 ' : ''}${tokenNumbers.format(total)}`;
+const spendPeriods = [['today', '今天'], ['month', '本月'], ['all', '累计']];
+const spendTimestamp = new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const usageSplit = (input, output, estimated) => `${estimated ? '约 ' : ''}入 ${fmtTokens(input)} · 出 ${fmtTokens(output)}`;
+const spendAmount = costs => Object.entries(costs).map(([currency, amount]) => fmtMoney({ currency, amount })).join(' + ');
+
+function spendDetails({ total, byKind, averageInput, requests, recent }) {
+  const amount = spendAmount(total.costs);
+  const headline = amount ? `约 ${amount}` : total.splitCount ? '没设计价方式，算不出金额' : total.count ? '暂无可计价用量' : '暂无花费记录';
+  const notes = [
+    `共 ${total.count} 次调用${total.splitCount ? ` · ${total.splitEstimated ? '约 ' : ''}输入 ${fmtTokens(total.input)} · 输出 ${fmtTokens(total.output)} token` : ''}`,
+    averageInput != null ? `聊天回复平均每轮 ${byKind['聊天回复'].splitEstimated ? '约 ' : ''}${fmtTokens(averageInput)} 输入 token` : '',
+    total.cacheCount ? `缓存命中 ${fmtTokens(total.cached)}${total.written ? ` · 写入 ${fmtTokens(total.written)}` : ''}${total.cacheCount < total.count ? `（${total.cacheCount} 次有缓存用量）` : ''}`
+      : total.count ? '接口未回传缓存用量' : '',
+    total.count > total.counted ? `${total.count - total.counted} 次未回传用量` : '',
+    total.counted > total.splitCount ? `${total.counted - total.splitCount} 次仅有用量合计` : '',
+    amount && total.priced < total.count ? `金额合计自 ${total.priced} 次有价格记录的调用` : '',
+  ].filter(Boolean);
+  const groups = Object.entries(byKind).filter(([, entry]) => entry.count).map(([kind, entry]) => {
+    const money = spendAmount(entry.costs);
+    const usage = entry.splitCount ? usageSplit(entry.input, entry.output, entry.splitEstimated)
+      : entry.counted ? `${formatTokenAmount(entry)} Token` : '用量未回传';
+    return el('div', { class: 'deeptalk-spend-row' }, el('span', {}, `${kind} × ${entry.count}`),
+      el('span', { class: 'deeptalk-spend-value' }, [usage, money && `约 ${money}`].filter(Boolean).join(' · ')));
+  });
+  const requestRows = requests.map(row => el('div', { class: 'hint', text: [
+    spendTimestamp.format(row.at), row.kind, row.model, `${row.posts} 次请求`,
+    row.cachePosts ? `含 ${row.cachePosts} 次缓存请求` : '', row.relayPosts ? '经转发' : '',
+    row.status ? `HTTP ${row.status}` : ({ ok: '完成', ratelimit: '限流', aborted: '已停止', timeout: '超时' }[row.outcome] || '失败'),
+  ].filter(Boolean).join(' · ') }));
+  const usageRows = recent.map(row => {
+    const usage = row.usage;
+    const tokens = deepTalkReplyTokens(row);
+    const split = deepTalkUsageSplit(usage);
+    return el('div', { class: 'deeptalk-spend-call' },
+      el('div', {}, [spendTimestamp.format(row.at), row.kind, row.model].filter(Boolean).join(' · ')),
+      el('div', { class: 'hint' }, [
+        tokens && `${formatTokenAmount(tokens)} Token`,
+        split && usageSplit(split.input, split.output, split.est),
+        (usage?.cacheReported || usage?.cached > 0 || usage?.written > 0) && `命中 ${fmtTokens(usage.cached)}`,
+        usage?.written > 0 && `写入 ${fmtTokens(usage.written)}`,
+        row.cost && `约 ${fmtMoney({ ...row.cost, est: false })}`,
+      ].filter(Boolean).join(' · ')));
+  });
+  return [
+    el('div', { class: 'card' }, el('div', { class: 'deeptalk-spend-amount' }, headline),
+      ...notes.map(text => el('div', { class: 'hint', text }))),
+    groups.length && el('div', { class: 'card' }, groups),
+    requestRows.length && el('div', { class: 'section-title' }, '最近操作的请求次数'),
+    requestRows.length && el('div', { class: 'card deeptalk-spend-requests' }, requestRows),
+    usageRows.length && el('div', { class: 'section-title' }, '最近的调用'),
+    usageRows.length && el('div', { class: 'card' }, usageRows),
+    el('p', { class: 'hint' }, '今天、本月以设备日期为准。金额按调用时的连接价格估算，实际扣费以服务商账单为准。'),
+  ].filter(Boolean);
+}
 
 export function playModeSwitch(mode, storyId) {
   const story = storyId ? `#/play/${encodeURIComponent(storyId)}` : '#/';
@@ -29,7 +83,7 @@ export async function render(root) {
   let lastMessage = '';
   let oneShot = false;
   let drawer = null;
-  let refreshTokenUsage = null;
+  let refreshSpend = null;
   const carry = new Map();
   const idleListeners = new Set();
 
@@ -67,7 +121,7 @@ export async function render(root) {
 
   root.append(el('section', { class: 'view deeptalk-view' },
     el('div', { class: 'topbar' }, el('div', { class: 'title' }, '日常聊天'),
-      button('Token 用量', openTokenUsage, { 'aria-haspopup': 'dialog' }), button('资料与记忆', showLibrary)),
+      button('花费', openSpend, { 'aria-haspopup': 'dialog' }), button('资料与记忆', showLibrary)),
     playModeSwitch('chat', getCurrentStory()),
     el('div', { class: 'deeptalk-controls' }, el('label', { class: 'deeptalk-field deeptalk-model' }, '模型', models), effortField, addConnection),
     status, viewport, composer));
@@ -198,33 +252,44 @@ export async function render(root) {
     } catch (error) { toast(error.message); }
   }
 
-  function openTokenUsage() {
+  function openSpend() {
     drawer?.close();
-    const panel = sheet({ title: 'Token 用量', onClose: () => { drawer = null; refreshTokenUsage = null; } });
-    panel.panel.classList.add('deeptalk-sheet');
+    const panel = sheet({ title: '花费', onClose: () => { drawer = null; refreshSpend = null; } });
+    panel.panel.classList.add('deeptalk-sheet', 'deeptalk-spend');
+    panel.panel.setAttribute('aria-label', '日常聊天花费');
     drawer = panel;
-    const results = el('div', { 'aria-live': 'polite' }, el('p', { class: 'deeptalk-subtle' }, '正在读取用量…'));
-    panel.body.append(results);
-    panel.foot.append(button('关闭', panel.close));
+    let period = 'all';
+    let spend = null;
+    const periodButtons = spendPeriods.map(([key, label]) => button(label, () => { period = key; update(); }, { 'aria-pressed': String(key === period) }));
+    const periods = el('div', { class: 'deeptalk-spend-periods', role: 'group', 'aria-label': '统计时段', hidden: true }, periodButtons);
+    const results = el('div', { 'aria-live': 'polite' }, el('p', { class: 'hint' }, '正在读取用量…'));
+    panel.body.append(el('div', { class: 'section-title', text: '这个聊天' }), periods, results);
+    panel.foot.append(button('去设价格 / 提醒线', () => { panel.close(); go('settings'); }, { class: 'btn ghost' }),
+      button('关闭', panel.close, { class: 'btn primary' }));
+    function update() {
+      spendPeriods.forEach(([key, label], i) => {
+        const entry = spend[key].total;
+        const tokens = entry.counted || !entry.count ? `${formatTokenAmount(entry)} Token` : '—';
+        periodButtons[i].setAttribute('aria-pressed', String(period === key));
+        periodButtons[i].setAttribute('aria-label', `${label} ${tokens}`);
+        periodButtons[i].replaceChildren(el('span', {}, label), el('strong', {}, tokens));
+      });
+      periods.hidden = false;
+      results.replaceChildren(...spendDetails(spend[period]));
+    }
     let newestRequest = 0;
-    refreshTokenUsage = async () => {
+    refreshSpend = async () => {
       const request = ++newestRequest;
       try {
-        const totals = await deepTalkTokenTotals();
+        const next = await getDeepTalkSpend();
         if (drawer !== panel || request !== newestRequest) return;
-        const cards = [['今天', totals.today], ['本月', totals.month], ['累计', totals.all]].map(([label, entry]) =>
-          el('div', { class: 'deeptalk-token-stat' },
-            el('dt', {}, label),
-            el('dd', { class: 'deeptalk-token-amount' }, entry.counted || !entry.missing ? formatTokenAmount(entry) : '—'),
-            entry.missing > 0 && el('dd', { class: 'deeptalk-token-missing' }, `${tokenNumbers.format(entry.missing)} 次未返回用量`)));
-        results.replaceChildren(el('dl', { class: 'deeptalk-token-grid', 'aria-label': '日常聊天 Token 用量' }, cards),
-          el('p', { class: 'deeptalk-subtle' }, '统计日常聊天回复用量，包含输入和输出。重写与重试按次计入，以设备日期为准。'),
-          ...(totals.all.estimated ? [el('p', { class: 'deeptalk-subtle' }, '带「约」的数字包含接口未回传时的估算。')] : []));
+        spend = next;
+        update();
       } catch {
-        if (drawer === panel && request === newestRequest) results.replaceChildren(el('p', { class: 'deeptalk-subtle' }, '暂时读不到用量，请关闭后重开。'));
+        if (drawer === panel && request === newestRequest) results.replaceChildren(el('p', { class: 'hint' }, '暂时读不到用量，请关闭后重开。'));
       }
     };
-    void refreshTokenUsage();
+    void refreshSpend();
   }
 
   async function openPreview() {
@@ -249,7 +314,10 @@ export async function render(root) {
       if (finished) lastMessage = finished.added ? `已整理，${finished.added} 条记忆待确认` : '近期脉络已更新';
       else if (!automatic) lastMessage = '暂时没有可整理的稳定发言';
     } catch (error) { lastMessage = error.message || '整理失败，聊天原文已保留'; }
-    finally { organizing = false; organizingVisible = false; sync(); notifyIdle(); }
+    finally {
+      if (organizingVisible) void refreshSpend?.();
+      organizing = false; organizingVisible = false; sync(); notifyIdle();
+    }
   }
 
   async function run(turnId = '', resume = false) {
@@ -288,7 +356,7 @@ export async function render(root) {
     } catch (error) { lastMessage = error.message || '聊天暂时不可用'; }
     finally {
       running = null; sync(); renderConversation({ follow: atBottom() });
-      void refreshTokenUsage?.();
+      void refreshSpend?.();
       if (completed) void organize(true);
       notifyIdle();
     }

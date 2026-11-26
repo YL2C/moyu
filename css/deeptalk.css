@@ -120,13 +120,18 @@
 .deeptalk-document-text { width: 100%; font-family: var(--ui-font); font-size: 1rem; }
 .deeptalk-check { display: flex; align-items: center; gap: 7px; color: var(--text2); font-size: .875rem; }
 .deeptalk-panel-actions input[type="search"] { flex: 1; min-width: 0; }
-.deeptalk-token-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 0 0 12px; }
-.deeptalk-token-stat { padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
-.deeptalk-token-stat dt { font-size: .875rem; color: var(--text2); }
-.deeptalk-token-stat dd { margin: 4px 0 0; overflow-wrap: anywhere; }
-.deeptalk-token-amount { font-size: 1.125rem; color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
-.deeptalk-token-missing { font-size: .75rem; color: var(--text2); }
-.deeptalk-token-grid ~ .deeptalk-subtle + .deeptalk-subtle { margin-top: 6px; }
+.deeptalk-spend .sb > .section-title { margin-top: 0; }
+.deeptalk-spend-periods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
+.deeptalk-spend-periods .btn { display: grid; gap: 3px; padding: 8px; text-align: left; white-space: normal; }
+.deeptalk-spend-periods span { color: var(--text2); }
+.deeptalk-spend-periods strong { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.deeptalk-spend-amount { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.deeptalk-spend-row { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; padding: 3px 0; font-size: 14px; }
+.deeptalk-spend-value { color: var(--text2); overflow-wrap: anywhere; }
+.deeptalk-spend-requests, .deeptalk-spend-call { overflow-wrap: anywhere; }
+.deeptalk-spend-call { padding: 6px 0; font-size: 13px; }
+.deeptalk-spend-call + .deeptalk-spend-call { border-top: 1px solid var(--line); }
+.deeptalk-spend-call .hint { margin-top: 2px; }
 
 @media (max-width: 420px) {
   .deeptalk-controls { padding-inline: 12px; gap: 7px; }

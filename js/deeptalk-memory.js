@@ -60,9 +60,16 @@ export async function organizeDeepTalk({ automatic = false, signal, onStart = ()
     }))) }] };
     onStart();
     const start = Date.now();
-    const result = await streamWithRetry({ ...conn, stream: false }, { ...context, signal,
-      reasoningEffort: supportsReasoningEffort(conn) ? 'low' : undefined, maxTokens: 3600 }, { retries: 0, requestKind: MEMORY_KIND });
-    await recordDeepTalkUsage(conn, result, context, uid(), Date.now() - start, MEMORY_KIND);
+    const requestId = uid();
+    let result;
+    try {
+      result = await streamWithRetry({ ...conn, stream: false }, { ...context, signal, retainErrorUsage: true,
+        reasoningEffort: supportsReasoningEffort(conn) ? 'low' : undefined, maxTokens: 3600 }, { retries: 0, requestKind: MEMORY_KIND });
+    } catch (error) {
+      await recordDeepTalkUsage(conn, { failed: true, usage: error.usage }, context, requestId, Date.now() - start, MEMORY_KIND);
+      throw error;
+    }
+    await recordDeepTalkUsage(conn, result, context, requestId, Date.now() - start, MEMORY_KIND);
     const { snapshot, candidates } = parseResult(result.text, sources);
     const added = await saveOrganizedDeepTalk(batch, snapshot, candidates);
     return { added, count: batch.length };
