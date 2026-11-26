@@ -92,6 +92,7 @@
   padding: 0 3px;
 }
 .deeptalk-message-tools .btn { min-height: 28px; padding: 3px 7px; font-size: .75rem; }
+.deeptalk-turn-tokens { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .deeptalk-receipt { overflow-wrap: anywhere; }
 .deeptalk-reply-status { color: var(--danger); font-size: .875rem; overflow-wrap: anywhere; }
 .deeptalk-earlier { align-self: center; }
@@ -119,6 +120,13 @@
 .deeptalk-document-text { width: 100%; font-family: var(--ui-font); font-size: 1rem; }
 .deeptalk-check { display: flex; align-items: center; gap: 7px; color: var(--text2); font-size: .875rem; }
 .deeptalk-panel-actions input[type="search"] { flex: 1; min-width: 0; }
+.deeptalk-token-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 0 0 12px; }
+.deeptalk-token-stat { padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
+.deeptalk-token-stat dt { font-size: .875rem; color: var(--text2); }
+.deeptalk-token-stat dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.deeptalk-token-amount { font-size: 1.125rem; color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.deeptalk-token-missing { font-size: .75rem; color: var(--text2); }
+.deeptalk-token-grid ~ .deeptalk-subtle + .deeptalk-subtle { margin-top: 6px; }
 
 @media (max-width: 420px) {
   .deeptalk-controls { padding-inline: 12px; gap: 7px; }

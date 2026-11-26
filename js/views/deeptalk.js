@@ -4,11 +4,13 @@ import { supportsReasoningEffort } from '../api.js';
 import { fmtMoney } from '../cost.js';
 import { deepTalkSettings, deepTalkConnections, selectedReply, readDeepTalkThread, saveDeepTalkSettings, generateDeepTalk,
   chooseDeepTalkReply, rememberDeepTalkTurn, setTurnExcluded, stopPendingDeepTalk, deepTalkRequestPreview,
-  EFFORT_LABELS, MAX_USER_CHARS } from '../deeptalk.js';
+  deepTalkReplyTokens, deepTalkTokenTotals, EFFORT_LABELS, MAX_USER_CHARS } from '../deeptalk.js';
 import { organizeDeepTalk } from '../deeptalk-memory.js';
 import { openDeepTalkLibrary } from './deeptalk-library.js';
 
 const button = (label, click, attrs = {}) => el('button', { type: 'button', class: 'btn small', onclick: click, ...attrs }, label);
+const tokenNumbers = new Intl.NumberFormat('zh-CN');
+const formatTokenAmount = ({ total, estimated }) => `${estimated ? '约 ' : ''}${tokenNumbers.format(total)}`;
 
 export function playModeSwitch(mode, storyId) {
   const story = storyId ? `#/play/${encodeURIComponent(storyId)}` : '#/';
@@ -27,6 +29,7 @@ export async function render(root) {
   let lastMessage = '';
   let oneShot = false;
   let drawer = null;
+  let refreshTokenUsage = null;
   const carry = new Map();
   const idleListeners = new Set();
 
@@ -63,7 +66,8 @@ export async function render(root) {
   }
 
   root.append(el('section', { class: 'view deeptalk-view' },
-    el('div', { class: 'topbar' }, el('div', { class: 'title' }, '日常聊天'), button('资料与记忆', showLibrary)),
+    el('div', { class: 'topbar' }, el('div', { class: 'title' }, '日常聊天'),
+      button('Token 用量', openTokenUsage, { 'aria-haspopup': 'dialog' }), button('资料与记忆', showLibrary)),
     playModeSwitch('chat', getCurrentStory()),
     el('div', { class: 'deeptalk-controls' }, el('label', { class: 'deeptalk-field deeptalk-model' }, '模型', models), effortField, addConnection),
     status, viewport, composer));
@@ -131,6 +135,7 @@ export async function render(root) {
     const time = new Date(turn.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     const details = [reply?.model, reply?.effort && EFFORT_LABELS[reply.effort],
       reply?.elapsed && `${(reply.elapsed / 1000).toFixed(1)} 秒`, reply?.cost && fmtMoney(reply.cost)].filter(Boolean).join(' · ');
+    const tokens = deepTalkReplyTokens(reply);
     const user = el('div', { class: 'deeptalk-message user' },
       el('div', { class: 'deeptalk-bubble', text: turn.text }),
       el('div', { class: 'deeptalk-message-tools' }, el('span', {}, time), button('⋯', () => void turnMenu(turn), { 'aria-label': '你的消息操作' })));
@@ -140,6 +145,7 @@ export async function render(root) {
       output,
       error && el('div', { class: 'deeptalk-reply-status' }, error),
       !active && el('div', { class: 'deeptalk-message-tools' },
+        reply && el('span', { class: 'deeptalk-turn-tokens' }, tokens ? `本轮 ${formatTokenAmount(tokens)} Token` : '本轮用量未返回'),
         details && el('span', { class: 'deeptalk-receipt' }, details),
         turn.replies.length > 1 && button('上一版', () => void switchReply(turn, position - 1), { disabled: position <= 0 || busy() }),
         turn.replies.length > 1 && el('span', {}, `${position + 1}/${turn.replies.length}`),
@@ -190,6 +196,35 @@ export async function render(root) {
         replaceTurn(updated); renderConversation(); toast(updated.excludeContext ? '此轮不再进入未来上下文' : '已恢复此轮上下文');
       }
     } catch (error) { toast(error.message); }
+  }
+
+  function openTokenUsage() {
+    drawer?.close();
+    const panel = sheet({ title: 'Token 用量', onClose: () => { drawer = null; refreshTokenUsage = null; } });
+    panel.panel.classList.add('deeptalk-sheet');
+    drawer = panel;
+    const results = el('div', { 'aria-live': 'polite' }, el('p', { class: 'deeptalk-subtle' }, '正在读取用量…'));
+    panel.body.append(results);
+    panel.foot.append(button('关闭', panel.close));
+    let newestRequest = 0;
+    refreshTokenUsage = async () => {
+      const request = ++newestRequest;
+      try {
+        const totals = await deepTalkTokenTotals();
+        if (drawer !== panel || request !== newestRequest) return;
+        const cards = [['今天', totals.today], ['本月', totals.month], ['累计', totals.all]].map(([label, entry]) =>
+          el('div', { class: 'deeptalk-token-stat' },
+            el('dt', {}, label),
+            el('dd', { class: 'deeptalk-token-amount' }, entry.counted || !entry.missing ? formatTokenAmount(entry) : '—'),
+            entry.missing > 0 && el('dd', { class: 'deeptalk-token-missing' }, `${tokenNumbers.format(entry.missing)} 次未返回用量`)));
+        results.replaceChildren(el('dl', { class: 'deeptalk-token-grid', 'aria-label': '日常聊天 Token 用量' }, cards),
+          el('p', { class: 'deeptalk-subtle' }, '统计日常聊天回复用量，包含输入和输出。重写与重试按次计入，以设备日期为准。'),
+          ...(totals.all.estimated ? [el('p', { class: 'deeptalk-subtle' }, '带「约」的数字包含接口未回传时的估算。')] : []));
+      } catch {
+        if (drawer === panel && request === newestRequest) results.replaceChildren(el('p', { class: 'deeptalk-subtle' }, '暂时读不到用量，请关闭后重开。'));
+      }
+    };
+    void refreshTokenUsage();
   }
 
   async function openPreview() {
@@ -253,6 +288,7 @@ export async function render(root) {
     } catch (error) { lastMessage = error.message || '聊天暂时不可用'; }
     finally {
       running = null; sync(); renderConversation({ follow: atBottom() });
+      void refreshTokenUsage?.();
       if (completed) void organize(true);
       notifyIdle();
     }

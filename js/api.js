@@ -327,14 +327,18 @@ export async function streamChat(conn, opts = {}) {
         throw error;
       }
     }
-    if(!visible.trim())throw emptyError(result.finish,thinking);
+    if (!visible.trim()) {
+      const error = emptyError(result.finish, thinking);
+      if (opts.retainErrorUsage) error.usage = result.usage;
+      throw error;
+    }
     return {...result,text:visible};
   } catch(e) {
     if(e instanceof ApiError){const text=stripReasoning(e.partial||visible,{streaming:true});e.partial=opts.outputBoundary?(e.partial?extractFinalOutput(text,{streaming:true}).text:visible):text;e.receivedOutput=received;}
     throw e;
   }
 }
-async function streamChatRaw(conn, { system, messages = [], maxTokens, reasoningEffort, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000, cachePrefix = '', cacheScope = '', onCache = () => {}, requestStats = null }) {
+async function streamChatRaw(conn, { system, messages = [], maxTokens, reasoningEffort, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000, cachePrefix = '', cacheScope = '', onCache = () => {}, requestStats = null, retainErrorUsage = false }) {
   const vertex = conn?.format === 'vertex';
   if (!resumeJob) { checkConn(conn); conn = await effectiveConn(conn); }
   const format = guessFormat(conn);
@@ -406,7 +410,11 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, reasoning
   let finish = null;
   let usage = null;
   let sawThinking = false;
-  const fail = (e) => { if (e instanceof ApiError && !e.partial) e.partial = text; return e; };
+  const fail = (error) => {
+    if (!error.partial) error.partial = text;
+    if (retainErrorUsage && usage) error.usage = usage;
+    return error;
+  };
   const abortedErr = () => (timedOut
     ? new ApiError(viaRelay ? 'relay_network' : 'timeout', '长时间没有响应', { hint: viaRelay ? '服务器仍会继续生成，回到前台或点“接回后台生成”可重新获取。' : '网络太慢或接口卡住了。已收到的部分会保留，可以续写或重试。', partial: text, url })
     : new ApiError('aborted', '已停止', { partial: text, url }));
@@ -531,15 +539,15 @@ async function streamChatRaw(conn, { system, messages = [], maxTokens, reasoning
     }
   } catch (e) {
     clearTimeout(timer);
-    if (e instanceof RelayError) throw new ApiError(e.kind, e.message, { ...e, partial: text });
+    if (e instanceof RelayError) throw fail(new ApiError(e.kind, e.message, { ...e, partial: text }));
     if (e instanceof ApiError) throw fail(e);
-    if (ctrl.signal.aborted) throw abortedErr();
+    if (ctrl.signal.aborted) throw fail(abortedErr());
     const ne = new ApiError(viaRelay ? 'relay_network' : 'network', '连接中途断开了', { url, detail: String(e?.message || e), partial: text, hint: viaRelay ? '后台仍在生成，回到前台或点“接回后台生成”可重新获取。' : '常见于切走应用、网络切换。已收到的部分已保留，可以点“续写”。' });
-    throw ne;
+    throw fail(ne);
   }
   clearTimeout(timer);
 
-  if (!text.trim()) throw emptyError(finish, sawThinking);
+  if (!text.trim()) throw fail(emptyError(finish, sawThinking));
   const f = String(finish || '');
   return {
     text,

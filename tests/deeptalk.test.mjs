@@ -9,7 +9,7 @@ import { parseMaterialPackage, currentMaterial, MATERIAL_FORMAT } from '../js/de
 import { buildDeepTalkContext } from '../js/deeptalk-context.js';
 import { deepTalkMaterials, deepTalkMemory, generateDeepTalk, readDeepTalkThread, rememberDeepTalkTurn,
   restoreMaterialEdition, reviseDeepTalkMemory, saveDeepTalkMaterials, saveDeepTalkSettings, saveMaterialEdit,
-  selectedReply, setTurnExcluded } from '../js/deeptalk.js';
+  selectedReply, setTurnExcluded, deepTalkReplyTokens, deepTalkTokenTotals } from '../js/deeptalk.js';
 import { organizeDeepTalk } from '../js/deeptalk-memory.js';
 
 globalThis.indexedDB = new IDBFactory();
@@ -107,7 +107,8 @@ test('切换 Sol / Flex、单条深入和重写使用同一线程与各自参数
     const content = archive ? JSON.stringify({ snapshot: [{ category: '近期近况', turnId: input.turnId, quote: input.text }],
       memories: [{ turnId: input.turnId, quote: input.text }, { turnId: input.turnId, quote: '测试模型编造的内容' }] }) : '<think>hidden</think>测试回复';
     return Response.json({ choices: [{ message: { content }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 10, completion_tokens: 4, completion_tokens_details: { reasoning_tokens: 2 } } });
+      usage: { prompt_tokens: 10, completion_tokens: 4, completion_tokens_details: { reasoning_tokens: 2 },
+        ...(body.model === 'openai/gpt-5.6-sol' ? { total_tokens: 18 } : {}) } });
   });
   await saveDeepTalkSettings({ connectionId: 'standard' });
   const first = await generateDeepTalk({ text: '测试中我学会了一道新菜' });
@@ -122,6 +123,8 @@ test('切换 Sol / Flex、单条深入和重写使用同一线程与各自参数
   assert.equal(requestBodies[1].temperature, undefined);
   assert.equal(requestBodies[1].messages[1].content, first.text);
   assert.doesNotMatch(selectedReply(first).text, /hidden/);
+  assert.deepEqual(deepTalkReplyTokens(selectedReply(first)), { total: 18, estimated: false });
+  assert.deepEqual(deepTalkReplyTokens(selectedReply(second)), { total: 14, estimated: false });
   assert.equal((await readDeepTalkThread()).turns[1].replies.length, 2);
   assert.equal(await organizeDeepTalk({ automatic: true }), null);
   await generateDeepTalk({ text: '今天还买了好喝的茶' });
@@ -160,7 +163,7 @@ test('加密迁移保存资料、聊天和设置，迁入后清除旧入口的�
   assert.equal((await deepTalkMaterials()).sensitive_memory.original.text, pack.documents[0].text);
 });
 
-test('聊天页的文件选择按钮导入三份资料，并能在界面打开全文', async t => {
+test('聊天页显示每轮和汇总 Token 用量，资料包导入后可打开全文', async t => {
   const dom = new JSDOM('<main id="root"></main><div id="toast"></div>', { url: 'https://moyu.example.test/#/chat', pretendToBeVisual: true });
   const bindings = { window: dom.window, document: dom.window.document, Node: dom.window.Node,
     getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
@@ -184,8 +187,15 @@ test('聊天页的文件选择按钮导入三份资料，并能在界面打开�
       if (result) return result;
       await new Promise(resolve => setTimeout(resolve, 5));
     }
-    assert.fail('没有显示预期的导入界面');
+    assert.fail('没有显示预期的聊天界面');
   };
+  assert.equal(document.querySelector('.deeptalk-turn-tokens').textContent, '本轮 18 Token');
+  findButton('Token 用量').click();
+  const grid = await until(() => document.querySelector('.deeptalk-token-grid'));
+  assert.deepEqual([...grid.querySelectorAll('dt')].map(element => element.textContent), ['今天', '本月', '累计']);
+  assert.equal(grid.querySelector('.deeptalk-token-stat:last-child dd').textContent, '60');
+  assert.equal(grid.querySelector('.deeptalk-token-stat:last-child').textContent, '累计60');
+  document.querySelector('.deeptalk-sheet .sf button').click();
   findButton('资料与记忆').click();
   (await until(() => findButton('导入资料包'))).click();
   const picker = document.querySelector('input[type="file"]');
@@ -198,4 +208,43 @@ test('聊天页的文件选择按钮导入三份资料，并能在界面打开�
   findButton('查看全文与编辑').click();
   assert.equal(document.querySelector('[aria-label="核心名片全文"]').value, pack.documents[2].text);
   assert.doesNotMatch(document.querySelector('.deeptalk-feed').textContent, /^false/);
+});
+
+test('有回传的失败请求可统计；完成但缺少回传时显示估算', async t => {
+  const responses = [
+    { choices: [{ message: { content: '' } }], usage: { total_tokens: 27 } },
+    { choices: [{ message: { content: '测试回复' } }] },
+  ];
+  t.mock.method(globalThis, 'fetch', async () => Response.json(responses.shift()));
+  const failed = selectedReply(await generateDeepTalk({ text: '模拟有用量的空回复' }));
+  assert.equal(failed.status, 'error');
+  assert.deepEqual(deepTalkReplyTokens(failed), { total: 27, estimated: false });
+  const completed = selectedReply(await generateDeepTalk({ text: '模拟无用量的正常回复' }));
+  assert.equal(completed.status, 'done');
+  assert.ok(deepTalkReplyTokens(completed).estimated);
+  assert.ok(deepTalkReplyTokens(completed).total > completed.text.length);
+});
+
+test('按回复时间和设备日期计算今天、本月、累计，早期记录和重写不会漏算', async () => {
+  const today = +new Date(2026, 10, 26);
+  const thisMonth = +new Date(2026, 10, 2, 15);
+  const lastMonth = +new Date(2026, 9, 31, 23, 59);
+  const fixture = Array.from({ length: 305 }, (_, i) => ({ id: `earlier-${i}`, at: lastMonth,
+    replies: [{ status: 'done', usage: { input: 2, output: 1 } }] }));
+  fixture.push(
+    { id: 'a', at: lastMonth, selectedId: 'new', replies: [
+      { id: 'old', at: lastMonth, status: 'done', usage: { input: 100, output: 20 } },
+      { id: 'new', at: today, status: 'done', usage: { input: 60, output: 40, est: true } },
+    ] },
+    { id: 'b', at: thisMonth, replies: [{ status: 'done', usage: { total: 200, input: 80, output: 5, est: true } }] },
+    { id: 'c', at: today + 60_000, replies: [{ status: 'stopped' }] },
+  );
+  await Promise.all(fixture.map(turn => db.kvSet(`deeptalk.v1.turn.${turn.id}`, turn)));
+  await db.kvSet('deeptalk.v1.thread', fixture.map(turn => turn.id));
+  await db.kvSet('usageLog', [{ kind: '日常记忆整理', at: today, input: 100_000, output: 500 }]);
+  assert.deepEqual(await deepTalkTokenTotals(today + 12 * 3600_000), {
+    today: { total: 100, counted: 1, estimated: 1, missing: 1 },
+    month: { total: 300, counted: 2, estimated: 1, missing: 1 },
+    all: { total: 1335, counted: 308, estimated: 1, missing: 1 },
+  });
 });
