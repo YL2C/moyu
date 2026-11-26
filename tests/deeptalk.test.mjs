@@ -5,7 +5,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { JSDOM } from 'jsdom';
 import { db, exportAll, readMigrationDatabase } from '../js/db.js';
 import { exportMigration, openMigration, restoreMigration } from '../js/migration.js';
-import { parseMaterialPackage, currentMaterial, MATERIAL_FORMAT } from '../js/deeptalk-materials.js';
+import { parseMaterialPackage, parseTopicDocument, currentMaterial, MATERIAL_FORMAT, TOPIC_FORMAT } from '../js/deeptalk-materials.js';
 import { buildDeepTalkContext } from '../js/deeptalk-context.js';
 import { deepTalkMaterials, deepTalkMemory, generateDeepTalk, readDeepTalkThread, rememberDeepTalkTurn,
   restoreMaterialEdition, reviseDeepTalkMemory, saveDeepTalkMaterials, saveDeepTalkSettings, saveMaterialEdit,
@@ -227,12 +227,34 @@ test('聊天页显示每轮用量和花费面板，资料包导入后可打开�
   const file = new File([JSON.stringify(pack)], '虚构资料.json', { type: 'application/json' });
   Object.defineProperty(picker, 'files', { value: [file] });
   picker.dispatchEvent(new dom.window.Event('change'));
-  await until(() => document.querySelectorAll('.deeptalk-sheet .deeptalk-list-item > button').length === 3);
+  await until(() => [...document.querySelectorAll('.deeptalk-sheet .deeptalk-list-item button')].filter(button => button.textContent === '查看全文与编辑').length === 3);
   const names = [...document.querySelectorAll('.deeptalk-sheet .deeptalk-list-title')].map(item => item.textContent);
-  assert.deepEqual(names, ['核心名片', '长期档案', '敏感记忆']);
+  assert.deepEqual(names, ['核心名片', '长期档案', '敏感记忆', '健身与运动', '兰瓷×颜令']);
   findButton('查看全文与编辑').click();
   assert.equal(document.querySelector('[aria-label="核心名片全文"]').value, pack.documents[2].text);
   assert.doesNotMatch(document.querySelector('.deeptalk-feed').textContent, /^false/);
+});
+
+test('专题原件和目录分别导入，按章节查看，旧资料与历史版本仍可读取', async () => {
+  const exercise = '\uFEFF\\# 训练支持 🐾\r\n\r\n\\## 进步\r\n\r\n已经更快学会新动作。\r\n';
+  const stories = '# 故事\n\n## 朋友\n原文记下了友情的变化。\n';
+  const fitness = await parseTopicDocument('fitness', new File([exercise], '运动.md'));
+  const shengweian = await parseTopicDocument('shengweian', new File([stories], '故事.md'));
+  assert.equal(fitness.text, exercise);
+  assert.equal(fitness.sha256, createHash('sha256').update(exercise).digest('hex'));
+  assert.equal(fitness.text.slice(fitness.sections[1].start, fitness.sections[1].end), '\\## 进步\r\n\r\n已经更快学会新动作。\r\n');
+  assert.equal(fitness.sections[1].hint, '进步');
+  const document = { ...fitness, sections: fitness.sections.map(part => part.id === 'fitness-2' ? { ...part, hint: '聊动作学习时' } : part) };
+  const parsed = await parseMaterialPackage(JSON.stringify({ format: TOPIC_FORMAT, version: 1, offsetUnit: 'utf16', documents: [document, shengweian] }));
+  await saveDeepTalkMaterials({ fitness });
+  await saveDeepTalkMaterials(parsed);
+  const materials = await deepTalkMaterials();
+  assert.equal(materials.fitness.original.text, exercise);
+  assert.equal(materials.fitness.original.sections[1].hint, '聊动作学习时');
+  assert.ok(materials.core_card);
+  assert.ok(materials.sensitive_memory);
+  const restored = await openMigration(await exportMigration('测试专题原文能通过加密迁移备份'), '测试专题原文能通过加密迁移备份');
+  assert.equal(restored.stores.kv.find(([key]) => key === 'deeptalk.v1.materials')[1].fitness.original.text, exercise);
 });
 
 test('有回传的失败请求可统计；完成但缺少回传时显示估算', async t => {
@@ -297,4 +319,51 @@ test('按回复时间和设备日期计算今天、本月、累计，早期记�
   assert.equal(spend.all.requests.length, 2);
   await db.kvSet('usageLog', []);
   assert.equal((await getDeepTalkSpend(now)).all.total.total, 101835);
+});
+
+test('专题筛选只看短目录与普通发言，选一段并记账，失败时回到聊天', async t => {
+  await db.kvSet('deeptalk.v1.thread', []);
+  const fitness = await parseTopicDocument('fitness', new File(['# 能力变化\n\n测试健身原文：动作变熟练。'], '健身.md'));
+  const storyText = '# 朋友组\n\n测试友情原文：和朋友有合作，也替对方上心。\n\n'
+    + '朋友们都过着自己的生活。'.repeat(100) + '\n\n# 另一节\n测试完全不同的章节。';
+  const shengweian = await parseTopicDocument('shengweian', new File([storyText], '故事.md'));
+  await saveDeepTalkMaterials({ fitness, shengweian });
+  await saveDeepTalkSettings({ connectionId: 'standard', memoryConnectionId: 'archivist', autoTopics: true });
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    const selecting = body.model === 'example-archivist';
+    const input = body.messages.at(-1).content;
+    const current = input.split('\n', 1)[0];
+    if (selecting && current.includes('模拟筛选失败')) return new Response('service unavailable', { status: 503 });
+    const choice = input.match(/^(\d+) 兰瓷×颜令／朋友组/m)?.[1];
+    const content = selecting ? (current.includes('其实能真心') ? choice : '0') : '测试回复';
+    return Response.json({ choices: [{ message: { content }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 9, completion_tokens: 1, total_tokens: 10 } });
+  });
+  await generateDeepTalk({ text: '我想聊我和前任的经历' });
+  assert.equal(calls.length, 1);
+  const first = selectedReply(await generateDeepTalk({ text: '会计算朋友的合作价值，其实能真心待人吗？' }));
+  const selector = calls.at(-2);
+  const main = calls.at(-1);
+  assert.equal(selector.model, 'example-archivist');
+  assert.equal(main.model, 'openai/gpt-5.6-sol');
+  assert.doesNotMatch(JSON.stringify(selector), /前任|测试友情原文|测试健身原文|测试名片/);
+  assert.match(main.messages[0].content, /测试友情原文/);
+  assert.doesNotMatch(main.messages[0].content, /测试健身原文|测试完全不同的章节/);
+  assert.ok(main.messages[0].content.length < storyText.length);
+  assert.deepEqual(first.refs.filter(ref => ref.topic).map(ref => [ref.key, ref.topic]), [['shengweian/shengweian-1', 'automatic']]);
+  const none = selectedReply(await generateDeepTalk({ text: '我今天见了几位朋友。' }));
+  assert.ok(!none.refs.some(ref => ref.topic));
+  const failed = selectedReply(await generateDeepTalk({ text: '我想聊运动，模拟筛选失败。' }));
+  assert.equal(failed.status, 'done');
+  assert.ok(!failed.refs.some(ref => ref.topic));
+  const before = calls.length;
+  await generateDeepTalk({ text: '谢谢你！' });
+  assert.equal(calls.length, before + 1);
+  const spend = (await getDeepTalkSpend()).all;
+  assert.equal(spend.byKind['专题联想'].count, 3);
+  assert.equal(spend.byKind['专题联想'].total, 20);
+  assert.ok(spend.requests.some(row => row.kind === '专题联想' && row.status === 503));
 });

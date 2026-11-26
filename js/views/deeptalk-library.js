@@ -1,6 +1,7 @@
 import { el, sheet, pickRawFile, toast, promptText } from '../util.js';
 import { connLabel, go } from '../state.js';
-import { MATERIAL_SLOTS, MATERIAL_MAX_BYTES, RECALL_LABELS, parseMaterialPackage, currentMaterial } from '../deeptalk-materials.js';
+import { MATERIAL_SLOTS, MATERIAL_LABELS, TOPIC_SLOTS, MATERIAL_MAX_BYTES, RECALL_LABELS,
+  parseMaterialPackage, parseTopicDocument, currentMaterial } from '../deeptalk-materials.js';
 import { deepTalkMaterials, deepTalkMemory, deepTalkSettings, deepTalkConnections, saveDeepTalkMaterials, saveMaterialEdit,
   restoreMaterialEdition, reviseDeepTalkMemory, saveDeepTalkSettings, readDeepTalkTurn } from '../deeptalk.js';
 
@@ -36,33 +37,47 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
     } catch (error) { if (token === request) content.replaceChildren(el('p', { class: 'deeptalk-subtle' }, error.message)); }
   }
 
+  async function importDocuments(button, load) {
+    const token = request;
+    button.disabled = true;
+    try {
+      const documents = await load();
+      if (!documents) return;
+      const present = await deepTalkMaterials();
+      const changed = Object.entries(documents).some(([slot, original]) => present[slot] && present[slot].original.sha256 !== original.sha256);
+      if (changed && !window.confirm('导入后会启用新资料。旧原件和编辑记录仍可在版本中查看。继续导入吗？')) return;
+      const result = await saveDeepTalkMaterials(documents);
+      toast(result.changed ? '已导入' : '这份资料已经导入');
+      if (token === request && panel.panel.isConnected) await draw();
+    } catch (error) { toast(error.message || '资料导入失败', 4200); }
+    finally { button.disabled = false; }
+  }
+
   function drawMaterials(data) {
-    const importButton = button('导入资料包', async () => {
-      importButton.disabled = true;
-      try {
-        const file = await pickRawFile('.json,application/json');
-        if (!file) return;
-        if (file.size > MATERIAL_MAX_BYTES) throw new Error('日常聊天资料包不能超过 4 MB');
-        const documents = await parseMaterialPackage(await file.text());
-        const present = await deepTalkMaterials();
-        const changed = Object.entries(documents).some(([slot, original]) => present[slot] && present[slot].original.sha256 !== original.sha256);
-        if (changed && !window.confirm('导入后会启用新资料。旧原件和编辑记录仍可在版本中查看。继续导入吗？')) return;
-        const result = await saveDeepTalkMaterials(documents);
-        toast(result.changed ? '已导入核心名片、长期档案和敏感记忆' : '这份资料包已经导入');
-        await draw();
-      } catch (error) { toast(error.message || '资料导入失败', 4200); }
-      finally { importButton.disabled = false; }
+    const importButton = button('导入资料包', event => importDocuments(event.currentTarget, async () => {
+      const file = await pickRawFile('.json,application/json');
+      if (!file) return null;
+      if (file.size > MATERIAL_MAX_BYTES) throw new Error('日常聊天资料包不能超过 4 MB');
+      return parseMaterialPackage(await file.text());
+    }));
+    const cards = slots => Object.entries(slots).map(([slot, label]) => {
+      const document = currentMaterial(data[slot]);
+      const isTopic = Object.hasOwn(TOPIC_SLOTS, slot);
+      return el('div', { class: 'deeptalk-list-item' },
+        el('div', { class: 'deeptalk-list-title' }, label),
+        el('div', { class: 'deeptalk-subtle' }, document ? document.sourceName : '等待导入'),
+        el('div', { class: 'deeptalk-panel-actions' },
+          document && button('查看全文与编辑', () => drawDocument(slot, data[slot])),
+          isTopic && button(document ? '导入新版本' : '导入文档', event => importDocuments(event.currentTarget, async () => {
+            const file = await pickRawFile('.md,.markdown,.txt,text/markdown,text/plain');
+            return file ? { [slot]: await parseTopicDocument(slot, file) } : null;
+          }))));
     });
     content.replaceChildren(
       el('div', { class: 'deeptalk-panel-actions' }, importButton),
-      el('p', { class: 'deeptalk-subtle' }, '在本机读取一个 JSON。聊天时，选中的原文片段会随本轮请求发给所选 API。'),
-      ...Object.entries(MATERIAL_SLOTS).map(([slot, label]) => {
-        const document = currentMaterial(data[slot]);
-        return el('div', { class: 'deeptalk-list-item' },
-          el('div', { class: 'deeptalk-list-title' }, label),
-          el('div', { class: 'deeptalk-subtle' }, document ? document.sourceName : '等待导入'),
-          document && button('查看全文与编辑', () => drawDocument(slot, data[slot])));
-      }));
+      ...cards(MATERIAL_SLOTS),
+      el('h3', {}, '专题资料'),
+      ...cards(TOPIC_SLOTS));
   }
 
   function drawDocument(slot, record, versionId = currentMaterial(record).id, partId = '') {
@@ -76,7 +91,7 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
     const versionSelect = el('select', { 'aria-label': '资料版本', onchange: event => drawDocument(slot, record, event.target.value, part.id) },
       versions.map(version => el('option', { value: version.id, selected: version.id === document.id },
         `${version.id === record.original.id ? '导入原件' : date(version.at)}${version.id === active.id ? ' · 使用中' : ''}`)));
-    const full = el('textarea', { readonly: true, rows: '9', 'aria-label': `${MATERIAL_SLOTS[slot]}全文`, class: 'deeptalk-document-text' });
+    const full = el('textarea', { readonly: true, rows: '9', 'aria-label': `${MATERIAL_LABELS[slot]}全文`, class: 'deeptalk-document-text' });
     full.value = document.text;
     const find = el('input', { type: 'search', placeholder: '搜索原文', 'aria-label': '搜索原文' });
     const search = () => {
@@ -102,7 +117,7 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
       } catch (error) { toast(error.message); save.disabled = false; }
     });
     content.replaceChildren(button('返回资料', () => void draw()),
-      el('h3', {}, MATERIAL_SLOTS[slot]),
+      el('h3', {}, MATERIAL_LABELS[slot]),
       el('div', { class: 'deeptalk-panel-actions' }, versionSelect,
         !editable && button('启用该版本', async () => {
           try { const result = await restoreMaterialEdition(slot, document.id); drawDocument(slot, result[slot], document.id, part.id); }
@@ -110,10 +125,12 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
         })),
       el('div', { class: 'deeptalk-panel-actions' }, find, button('查找', search)), full,
       el('h3', {}, '按段编辑'), sectionSelect,
-      el('p', { class: 'deeptalk-subtle' }, `默认调用 · ${RECALL_LABELS[part.recall]}`), editor,
+      el('p', { class: 'deeptalk-subtle' }, `默认调用 · ${RECALL_LABELS[part.recall]}`),
+      part.hint && el('p', { class: 'deeptalk-subtle' }, part.hint), editor,
       ...(editable ? [el('label', { class: 'deeptalk-check' }, onlyManual, '仅手动带入')] : []),
       el('div', { class: 'deeptalk-panel-actions' }, editable && save,
-        editable && !part.duplicateOf && button('带入下一条', () => { onCarry(`${slot}/${part.id}`, part.title); panel.close(); })));
+        editable && !part.duplicateOf && !(Object.hasOwn(TOPIC_SLOTS, slot) && part.recall === 'view_only') &&
+          button('带入下一条', () => { onCarry(`${slot}/${part.id}`, part.title); panel.close(); })));
   }
 
   function drawMemories(memory) {
@@ -157,13 +174,20 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
       el('option', { value: '' }, '暂不选择'), connections.map(conn => el('option', { value: conn.id }, `${connLabel(conn)} · ${conn.model}`)));
     select.value = connections.some(conn => conn.id === settings.memoryConnectionId) ? settings.memoryConnectionId : '';
     const automatic = el('input', { type: 'checkbox', checked: !!select.value && settings.autoMemory, disabled: !select.value });
-    select.addEventListener('change', () => { automatic.disabled = !select.value; if (!select.value) automatic.checked = false; });
-    const save = async () => saveDeepTalkSettings({ memoryConnectionId: select.value, autoMemory: !!select.value && automatic.checked });
+    const topics = el('input', { type: 'checkbox', checked: !!select.value && settings.autoTopics, disabled: !select.value });
+    select.addEventListener('change', () => {
+      automatic.disabled = topics.disabled = !select.value;
+      if (!select.value) automatic.checked = topics.checked = false;
+    });
+    const save = async () => saveDeepTalkSettings({ memoryConnectionId: select.value,
+      autoMemory: !!select.value && automatic.checked, autoTopics: !!select.value && topics.checked });
     content.replaceChildren(
       el('label', { class: 'deeptalk-field' }, '日常记忆整理 API', select),
       el('p', { class: 'deeptalk-subtle' }, '可选用与跑团相同的 API。整理请求只带日常聊天里已稳定的普通发言。'),
       ...(!connections.length ? [button('前往 API 连接设置', () => { panel.close(); go('settings/connections'); })] : []),
       el('label', { class: 'deeptalk-check' }, automatic, '满约 20 轮自动整理'),
+      el('label', { class: 'deeptalk-check' }, topics, '专题自动联想'),
+      el('p', { class: 'deeptalk-subtle' }, '整理连接根据本轮发言、最近一句普通发言和短目录选段。专题联想在花费里单独显示。'),
       el('div', { class: 'deeptalk-panel-actions' },
         button('保存设置', async () => { try { await save(); toast('日常记忆设置已保存'); } catch (error) { toast(error.message); } }),
         button('整理记忆', async () => {

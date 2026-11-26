@@ -4,8 +4,9 @@ import { streamWithRetry, supportsReasoningEffort, guessFormat } from './api.js'
 import { cancelRelayJob } from './relay.js';
 import { normalizeUsage, computeCost, recordUsage, getRequestLog, CUR } from './cost.js';
 import { uid } from './util.js';
-import { buildDeepTalkContext, isRecallFeedback } from './deeptalk-context.js';
+import { buildDeepTalkContext, isRecallFeedback, sensitiveTopics } from './deeptalk-context.js';
 import { editMaterial, mergeMaterials } from './deeptalk-materials.js';
+import { TOPIC_RECALL_KIND, readTopicChoice, topicSelectionInput } from './deeptalk-topics.js';
 
 const PREFIX = 'deeptalk.v1.';
 const SETTINGS_KEY = PREFIX + 'settings';
@@ -22,13 +23,14 @@ const RESUME_KIND = '接回日常回复';
 const CHAT_LABEL = '聊天回复';
 const REPEAT_LABEL = '重写 / 重试';
 const MEMORY_LABEL = '整理记忆';
+const AUXILIARY_LABELS = { [MEMORY_KIND]: MEMORY_LABEL, [TOPIC_RECALL_KIND]: TOPIC_RECALL_KIND };
 const REQUEST_LABELS = {
   [CHAT_KIND]: CHAT_LABEL, [REWRITE_KIND]: '重写回复', [RETRY_KIND]: '重试回复',
-  [RESUME_KIND]: '接回回复', [MEMORY_KIND]: MEMORY_LABEL,
+  [RESUME_KIND]: '接回回复', ...AUXILIARY_LABELS,
 };
 export const MAX_USER_CHARS = 24_000;
 const turnKey = id => PREFIX + 'turn.' + id;
-const defaultSettings = { connectionId: '', efforts: {}, memoryConnectionId: '', autoMemory: false };
+const defaultSettings = { connectionId: '', efforts: {}, memoryConnectionId: '', autoMemory: false, autoTopics: false };
 
 export const deepTalkSettings = async () => ({ ...defaultSettings, ...await db.kvGet(SETTINGS_KEY, {}) });
 export const deepTalkMaterials = () => db.kvGet(MATERIALS_KEY, {});
@@ -140,7 +142,7 @@ function addReceipt(bucket, receipt) {
 
 function summarizeSpend(receipts, requests) {
   const total = spendBucket();
-  const byKind = { [CHAT_LABEL]: spendBucket(), [REPEAT_LABEL]: spendBucket(), [MEMORY_LABEL]: spendBucket() };
+  const byKind = { [CHAT_LABEL]: spendBucket(), [REPEAT_LABEL]: spendBucket(), [MEMORY_LABEL]: spendBucket(), [TOPIC_RECALL_KIND]: spendBucket() };
   for (const receipt of receipts) {
     addReceipt(total, receipt);
     addReceipt(byKind[receipt.group], receipt);
@@ -158,7 +160,10 @@ export async function getDeepTalkSpend(now = Date.now()) {
   const monthStart = +new Date(year, month, 1);
   const monthEnd = +new Date(year, month + 1, 1);
   const [ids, memoryReceipts, requestLog] = await Promise.all([db.kvGet(THREAD_KEY, []), memoryUsageReceipts(), getRequestLog()]);
-  const receipts = memoryReceipts.map(row => ({ ...row, kind: MEMORY_LABEL, group: MEMORY_LABEL }));
+  const receipts = memoryReceipts.map(row => {
+    const kind = AUXILIARY_LABELS[row.kind] || MEMORY_LABEL;
+    return { ...row, kind, group: kind };
+  });
   const latestFirst = (a, b) => b.at - a.at;
   const requests = requestLog.filter(row => !row.storyId && Object.hasOwn(REQUEST_LABELS, row.kind))
     .map(row => ({ ...row, kind: REQUEST_LABELS[row.kind] })).sort(latestFirst);
@@ -270,13 +275,38 @@ async function recordDeepTalkUsage(conn, result, context, replyId, elapsed, kind
   const usage = result.failed ? errorTokenUsage(result.usage) : total != null ? { ...normalized, total, totalEstimated: false }
     : normalized.est && inChars == null ? null : normalized;
   const cost = deepTalkUsageSplit(usage) ? computeCost(usage, conn) : null;
-  if (kind === MEMORY_KIND) await memoryUsageReceipts({ at: Date.now(), model: conn.model, usage, cost }).catch(() => {});
+  if (Object.hasOwn(AUXILIARY_LABELS, kind)) await memoryUsageReceipts({ at: Date.now(), kind, model: conn.model, usage, cost }).catch(() => {});
   if (!result.failed || usage) await recordUsage({ kind, requestId: replyId, model: conn.model, usage, cost });
   return { usage, cost, elapsed, reasoningTokens: result.usage?.completion_tokens_details?.reasoning_tokens ?? null };
 }
 
+async function selectTopic(connection, selection, signal) {
+  const { context, keys } = selection;
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) return '';
+  signal?.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(() => controller.abort('timeout'), 4500);
+  const requestId = uid();
+  const started = Date.now();
+  let response;
+  try {
+    response = await streamWithRetry({ ...connection, stream: false }, { ...context,
+      signal: controller.signal, maxTokens: 128, reasoningEffort: supportsReasoningEffort(connection) ? 'low' : undefined,
+      retainErrorUsage: true,
+    }, { retries: 0, requestKind: TOPIC_RECALL_KIND });
+  } catch (error) {
+    response = { failed: true, usage: error.usage };
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
+  }
+  await recordDeepTalkUsage(connection, response, context, requestId, Date.now() - started, TOPIC_RECALL_KIND);
+  return response.text && !response.flagged && !response.truncated ? readTopicChoice(keys, response.text) : '';
+}
+
 export async function generateDeepTalk({ text, turnId = '', resume = false, deeper = false, manualKeys = [], signal,
-  onStart = () => {}, onText = () => {}, onThinking = () => {} }) {
+  onSearching = () => {}, onStart = () => {}, onText = () => {}, onThinking = () => {} }) {
   return generationLock(async () => {
     const [settings, connections, thread, materials, memory] = await Promise.all([
       deepTalkSettings(), deepTalkConnections(), readDeepTalkThread(), deepTalkMaterials(), deepTalkMemory(),
@@ -292,7 +322,19 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
     if (!prompt || prompt.length > MAX_USER_CHARS) throw new Error('请输入 1 至 24000 字');
     if (!turnId && isRecallFeedback(prompt)) await muteLastRecall(thread.turns.at(-1));
     const history = previousTurn ? thread.turns.slice(0, -1) : thread.turns;
-    const context = pending ? null : buildDeepTalkContext({ text: prompt, turns: history, materials, memory, manualKeys });
+    const selector = settings.autoTopics && connections.find(conn => conn.id === settings.memoryConnectionId);
+    const previous = history.at(-1);
+    let automaticTopic = '';
+    if (!pending && selector && !manualKeys.length && !isRecallFeedback(prompt) && !sensitiveTopics(prompt, previous).length) {
+      const recent = previous && !previous.excludeContext && !previous.sensitiveTopics?.length ? previous.text : '';
+      const selection = topicSelectionInput({ text: prompt, materials, recent });
+      if (selection) {
+        onSearching();
+        automaticTopic = await selectTopic(selector, selection, signal);
+        if (signal?.aborted) return null;
+      }
+    }
+    const context = pending ? null : buildDeepTalkContext({ text: prompt, turns: history, materials, memory, manualKeys, automaticTopic });
     const storedEffort = settings.efforts[conn.id];
     const effort = supportsReasoningEffort(conn) ? (deeper ? 'high' : Object.hasOwn(EFFORT_LABELS, storedEffort) ? storedEffort : 'medium') : null;
     const kind = !previousTurn ? CHAT_KIND : selectedReply(previousTurn)?.status === 'done' ? REWRITE_KIND : RETRY_KIND;

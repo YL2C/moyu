@@ -1,4 +1,5 @@
 import { currentMaterial, MATERIAL_SLOTS } from './deeptalk-materials.js';
+import { topicReferences } from './deeptalk-topics.js';
 
 const CONVERSATION_GUIDE = `这是独立的日常文字聊天。先接住用户在这条消息里真正想说的事。用户只是分享或玩梗时自然接话，需要分析时再展开。用自然的完整段落，不使用跑团、角色动作或选项格式，不为延续对话强行追问。
 下方按需提供的档案是有出处的背景，不是实时事实。只使用确实有助于当下的一件往事，尊重用户最新的说法。把她说过的话、她的感受和你的推断区分开。不要根据旧材料诊断、给他人定性或把一个新处境套进同一个解释。用户说关联不对就放下。`;
@@ -123,7 +124,7 @@ function memoryCandidates(entries, query, topics, activeSensitive, selected) {
   });
 }
 
-export function buildDeepTalkContext({ text, turns = [], materials = {}, memory = {}, manualKeys = [] }) {
+export function buildDeepTalkContext({ text, turns = [], materials = {}, memory = {}, manualKeys = [], automaticTopic = '' }) {
   const previous = turns.at(-1);
   const topics = topicList(text);
   const activeSensitive = sensitiveTopics(text, previous);
@@ -131,6 +132,7 @@ export function buildDeepTalkContext({ text, turns = [], materials = {}, memory 
   const candidates = [
     ...materialCandidates(materials, text, topics, activeSensitive, selected),
     ...memoryCandidates(memory.entries || [], text, topics, activeSensitive, selected),
+    ...topicReferences(materials, text, selected, automaticTopic),
   ];
   const stable = candidates.filter(part => part.always);
   const key = recallContextKey(text);
@@ -158,7 +160,10 @@ export function buildDeepTalkContext({ text, turns = [], materials = {}, memory 
   const references = picked.map(part => `【${part.title}】\n${part.text}`).join('\n\n');
   const sections = [prefix];
   if (snapshot) sections.push('【近期脉络】\n' + snapshot);
-  if (references) sections.push('【按需背景参考】\n' + references);
+  if (references) {
+    const topicNote = picked.some(part => part.topic) ? '专题只在确实贴切时自然运用。虚构故事可作为类比或创作参考。\n\n' : '';
+    sections.push('【按需背景参考】\n' + topicNote + references);
+  }
 
   const history = [];
   let characters = text.length;
@@ -172,6 +177,6 @@ export function buildDeepTalkContext({ text, turns = [], materials = {}, memory 
     history.unshift({ role: 'user', content: turn.text }, { role: 'assistant', content: reply.text });
   }
   return { system: sections.join('\n\n'), cachePrefix: prefix, messages: [...history, { role: 'user', content: text }],
-    activeSensitive, used: picked.map(({ key, title }) => ({ key, title })), contextKey: key,
+    activeSensitive, used: picked.map(({ key, title, topic, manual }) => ({ key, title, ...(topic ? { topic: manual ? 'manual' : 'automatic' } : {}) })), contextKey: key,
     always: stable.map(({ key, title }) => ({ key, title })) };
 }

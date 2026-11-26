@@ -115,7 +115,7 @@ export async function render(root) {
         carry.set(key, title); sync();
       },
       onOrganize: () => organize(false),
-      onClose: () => { drawer = null; },
+      onClose: () => { drawer = null; void refresh(); },
     });
   }
 
@@ -298,10 +298,13 @@ export async function render(root) {
       const preview = draft.value.trim() ? await deepTalkRequestPreview(draft.value, [...carry.keys()]) : previous;
       const panel = sheet({ title: draft.value.trim() ? '下一条会读取的资料' : '上一条使用的资料', onClose: () => { drawer = null; } });
       drawer = panel;
-      const groups = [['常驻原文', preview?.always], ['当轮选读', preview?.used || preview?.refs]];
+      const used = preview?.used || preview?.refs || [];
+      const groups = [['常驻原文', preview?.always], ['当轮选读', used.filter(part => part.topic !== 'automatic')]];
+      if (!draft.value.trim()) groups.push(['专题联想', used.filter(part => part.topic === 'automatic')]);
       for (const [label, parts] of groups) {
         panel.body.append(el('h3', {}, label), el('p', { class: 'deeptalk-quote' }, parts?.length ? parts.map(part => part.title).join('\n') : '无'));
       }
+      if (draft.value.trim() && settings.autoTopics) panel.body.append(el('p', { class: 'deeptalk-subtle' }, '专题联想在发送时挑选，回复后可在这里查看。'));
       panel.foot.append(button('关闭', panel.close));
     } catch (error) { toast(error.message); }
   }
@@ -335,8 +338,10 @@ export async function render(root) {
     let completed = false;
     try {
       const result = await generateDeepTalk({ text, turnId, resume, deeper: oneShot, manualKeys: [...carry.keys()], signal: controller.signal,
+        onSearching: () => { running.message = '正在查找相关专题…'; sync(); },
         onStart: turn => {
           replaceTurn(turn); running.id = turn.id; running.text = selectedReply(turn).text;
+          running.message = '正在连接…';
           if (!turnId) { draft.value = ''; draft.dispatchEvent(new Event('input')); }
           carry.clear(); oneShot = false;
           renderConversation({ follow: true }); sync();
@@ -351,6 +356,7 @@ export async function render(root) {
         },
         onThinking: () => { if (!running.text) { running.message = '正在思考…'; sync(); } },
       });
+      if (!result) return;
       replaceTurn(result);
       completed = selectedReply(result)?.status === 'done';
     } catch (error) { lastMessage = error.message || '聊天暂时不可用'; }
