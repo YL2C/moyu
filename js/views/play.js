@@ -2,10 +2,11 @@
 
 import { db, exportStory } from '../db.js';
 import { el, uid, toast, menu, promptText, sheet, saveFile, autoGrow, insertAtCursor, approxTokens } from '../util.js';
-import { resolveConnection, resolveMemoryConnection, MEMORY_CONNECTION_HINT, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo, watchStory, usesPatentTheme } from '../state.js';
+import { resolveConnection, resolveMemoryConnection, canUseMemoryConnection, MEMORY_CONNECTION_HINT, getConnections, connLabel, getPrefs, go, getModules, setCurrentStory, getGlobalMemo, watchStory, usesPatentTheme } from '../state.js';
 import { streamWithRetry, ApiError, holdStoryJob, releaseStoryJob } from '../api.js';
 import { cancelRelayJob } from '../relay.js';
 import { buildContext, CONTINUE_MSG, rewriteMsg, directorBlock, splitNames, latestCheckpoint } from '../prompt.js';
+import { runStoryRecall } from '../story-recall.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { DEFAULT_EVERY } from './memory.js';
 import { getPacks } from '../tavern.js';
@@ -820,6 +821,21 @@ export async function render(root, { id }) {
     const onHide = () => { if (document.visibilityState === 'hidden') persist(); };
     document.addEventListener('visibilitychange', onHide);
     try {
+      if (story.recallEnabled === true && story.recallConnectionId && conn?.model && !isOoc(a) &&
+          !resumeJob && !reuse && !continueNode && story.recallConnectionId !== conn.id) {
+        const recallId = story.recallConnectionId;
+        const excerpt = await (async () => {
+          const recallConn = (await getConnections()).find(item => item.id === recallId);
+          if (!canUseMemoryConnection(recallConn)) return '';
+          return runStoryRecall({ story, path: ctxPath, context: ctx, extra: extraDirector, conn: recallConn, signal: ctrl.signal });
+        })().catch(() => '');
+        if (excerpt && !ctrl.signal.aborted && story.recallEnabled === true && story.recallConnectionId === recallId && story.headId === a.id) {
+          ctx.system += '\n\n' + excerpt;
+          ctx.info.systemChars += excerpt.length + 2;
+          ctx.info.totalChars += excerpt.length + 2;
+          ctx.info.parts.push({ label: '旧剧情摘录', chars: excerpt.length, text: excerpt, kind: 'recall' });
+        }
+      }
       const r = await streamWithRetry(conn, {
         system: ctx.system, messages: ctx.messages, signal: ctrl.signal,
         cachePrefix: ctx.cachePrefix,

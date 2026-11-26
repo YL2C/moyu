@@ -2,7 +2,7 @@
 
 import { db } from '../db.js';
 import { el, toast, sheet } from '../util.js';
-import { resolveMemoryConnection, MEMORY_CONNECTION_HINT, connLabel, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
+import { resolveMemoryConnection, MEMORY_CONNECTION_HINT, canUseMemoryConnection, getConnections, connLabel, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
 import { latestCheckpoint } from '../prompt.js';
 import { pendingChapters, runArchivist, archivingNow } from '../memory.js';
 import { fmtMoney } from '../cost.js';
@@ -22,6 +22,7 @@ export async function render(root, { id }) {
   if (!story) { toast('找不到这个故事'); setCurrentStory(null); go(''); return; }
   const nodes = new Map((await db.byStory(id)).map((n) => [n.id, n]));
   let memoryConn = await resolveMemoryConnection();
+  const recallConnections = (await getConnections()).filter(canUseMemoryConnection);
   let running = null;
   let destroyed = false;
   let statusEl = null;
@@ -46,6 +47,31 @@ export async function render(root, { id }) {
     const every = el('input', { type: 'number', min: '0', max: '60', step: '1', style: { width: '90px', flex: 'none' } });
     every.value = String(story.memEvery ?? DEFAULT_EVERY);
     every.addEventListener('change', () => { story.memEvery = Math.max(0, Math.min(60, Number(every.value) || 0)); saveStory(); toast(story.memEvery ? `每 ${story.memEvery} 章自动整理一次` : '已关闭自动整理'); });
+    const recallToggle = el('input', { type: 'checkbox', 'aria-label': '跑团回忆助手' });
+    const recallModel = el('select', { 'aria-label': '回忆助手 API' },
+      el('option', { value: '' }, '选择回忆助手 API'),
+      recallConnections.map(conn => el('option', { value: conn.id }, `${connLabel(conn)} · ${conn.model}`)));
+    recallToggle.checked = story.recallEnabled === true;
+    recallModel.value = story.recallConnectionId || '';
+    recallToggle.addEventListener('change', saveRecall);
+    recallModel.addEventListener('change', saveRecall);
+    async function saveRecall() {
+      const settings = { recallEnabled: recallToggle.checked, recallConnectionId: recallModel.value };
+      recallToggle.disabled = recallModel.disabled = true;
+      try {
+        await db.updateStory(story.id, current => {
+          if (!current) throw new Error('故事已删除');
+          return { ...current, ...settings };
+        });
+        Object.assign(story, settings);
+      } catch {
+        recallToggle.checked = story.recallEnabled === true;
+        recallModel.value = story.recallConnectionId || '';
+        toast('回忆助手设置保存失败');
+      } finally {
+        recallToggle.disabled = recallModel.disabled = false;
+      }
+    }
     const status = el('div', { class: 'hint' });
     statusEl = status;
     const ext = !running && archivingNow(story.id);
@@ -78,6 +104,12 @@ export async function render(root, { id }) {
           el('small', { text: memoryConn ? `${connLabel(memoryConn)}（${memoryConn.model}）` : '未配置或连接不可用' })),
         el('button', { class: 'btn small', onclick: () => go('settings/connections') }, '去更换')),
       el('div', { class: 'row' }, runBtn, redoBtn), status));
+    wrap.append(el('div', { class: 'card' },
+      el('div', { class: 'switch-row' },
+        el('div', { class: 'lbl' }, '跑团回忆助手', el('small', {}, '按需查找当前分支的旧正文。关闭后按原有方式续写。')),
+        el('label', { class: 'switch' }, recallToggle, el('span'))),
+      el('label', { class: 'field' }, '回忆助手 API', recallModel),
+      el('div', { class: 'hint' }, '请选择独立的低价或免费连接。同一条正文连接会跳过检索。')));
     if (running) status.textContent = running.text + '（可以离开这页，整理会在后台继续）';
     else if (ext) status.textContent = ext.text + '（游玩页在后台整理，完成后这里会自动刷新）';
 
@@ -216,7 +248,7 @@ export async function render(root, { id }) {
   window.addEventListener('moyu:checkpoint', onCheckpoint);
   const onCards = (e) => { if (e.detail?.storyId === story.id && Array.isArray(e.detail.cards)) story.cards = e.detail.cards; };
   window.addEventListener('moyu:cards', onCards);
-  const unwatch = watchStory(story, null, PLAY_KEYS);
+  const unwatch = watchStory(story, null, [...PLAY_KEYS, 'recallEnabled', 'recallConnectionId']);
 
   draw();
   // 离开这页不打断整理：它会在后台写完，游玩页会收到通知
