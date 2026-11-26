@@ -5,6 +5,7 @@ import { toast } from './util.js';
 import { MIGRATION_NOTICE_KEY } from './migration.js';
 import * as library from './views/library.js';
 import * as play from './views/play.js';
+import * as deepTalk from './views/deeptalk.js';
 import * as settings from './views/settings.js';
 import * as storyPage from './views/story.js';
 import * as extrasPage from './views/extras.js';
@@ -17,6 +18,9 @@ const root = document.getElementById('app');
 let current = null;   // 正在显示的页面 { key, name, el, api }
 const parked = new Map();   // 切走时还在生成的页面：留在后台接着写，切回来接着看
 let routeToken = 0;
+const PLAY_MODE_KEY = 'moyu-yl2c-personal.playMode';
+let playMode = 'story';
+try { if (localStorage.getItem(PLAY_MODE_KEY) === 'chat') playMode = 'chat'; } catch {}
 
 function dispose(entry) {
   if (!entry) return;
@@ -52,6 +56,7 @@ async function route() {
   let mod = library;
   const params = {};
   if (name === 'play' && arg) { mod = play; params.id = decodeURIComponent(arg); }
+  else if (name === 'chat') { mod = deepTalk; }
   else if (name === 'discuss') { mod = discussPage; params.id = arg ? decodeURIComponent(arg) : ''; }
   else if (name === 'settings') { mod = settings; params.section = arg || ''; }
   else if (name === 'memory' && arg) { mod = memoryPage; params.id = decodeURIComponent(arg); }
@@ -61,6 +66,10 @@ async function route() {
   else if (name === 'story' && arg) { mod = storyPage; params.id = decodeURIComponent(arg); params.tab = arg2 || 'setting'; }
   // 进了哪个故事，底部的“游玩 / 角色 / 番外”就指向哪个故事
   if (params.id && ['play', 'chars', 'extra', 'memory', 'story'].includes(name)) setCurrentStory(params.id);
+  if (name === 'chat' || (name === 'play' && params.id)) {
+    playMode = name === 'chat' ? 'chat' : 'story';
+    try { localStorage.setItem(PLAY_MODE_KEY, playMode); } catch {}
+  }
 
   // 同一页又跳一次（比如刷新自己）：正在生成就别重来
   if (current && current.key === key && current.api?.busy?.()) { current.api.show?.(); return; }
@@ -110,13 +119,13 @@ function placeTabs(name) {
 // 底部菜单（照老版）：故事 / 游玩 / 角色 / 番外 / 设置
 const TABS = [
   { key: 'home', icon: '📚', label: '故事', documentLabel: '文档库', to: () => '' },
-  { key: 'play', icon: '📖', label: '游玩', documentLabel: '正文', story: true, to: (id) => 'play/' + encodeURIComponent(id) },
+  { key: 'play', icon: '📖', label: '游玩', documentLabel: '正文', to: (id) => playMode === 'chat' || !id ? 'chat' : 'play/' + encodeURIComponent(id) },
   { key: 'chars', icon: '👤', label: '角色', documentLabel: '人物索引', story: true, to: (id) => 'chars/' + encodeURIComponent(id) },
   { key: 'extra', icon: '🎴', label: '番外', documentLabel: '附录索引', story: true, to: (id) => 'extra/' + encodeURIComponent(id) },
   { key: 'discuss', icon: '💬', label: '讨论', documentLabel: '批注记录', to: () => 'discuss' },
   { key: 'settings', icon: '⚙️', label: '设置', documentLabel: '偏好设置', to: () => 'settings' },
 ];
-const TAB_OF = { '': 'home', play: 'play', memory: 'play', story: 'play', chars: 'chars', extra: 'extra', discuss: 'discuss', settings: 'settings' };
+const TAB_OF = { '': 'home', play: 'play', chat: 'play', memory: 'play', story: 'play', chars: 'chars', extra: 'extra', discuss: 'discuss', settings: 'settings' };
 function tabBar(routeName) {
   const active = TAB_OF[routeName || ''] || '';
   const cur = getCurrentStory();

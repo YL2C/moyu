@@ -119,7 +119,11 @@ export function tidyMessages(messages) {
   return out;
 }
 
-function buildBody(format, conn, { system, messages, stream, maxTokens }) {
+export function supportsReasoningEffort(conn) {
+  return !!conn && guessFormat(conn) === 'openai' && /^gpt-5\.6-sol(?::flex)?$/i.test(String(conn.model || '').split('/').at(-1));
+}
+
+function buildBody(format, conn, { system, messages, stream, maxTokens, reasoningEffort }) {
   const mt = num(maxTokens) || num(conn.maxTokens) || 8000;
   const temp = num(conn.temperature);
   const msgs = tidyMessages(messages);
@@ -132,7 +136,9 @@ function buildBody(format, conn, { system, messages, stream, maxTokens }) {
   }
   const b = { model: conn.model, messages: system ? [{ role: 'system', content: system }, ...msgs] : msgs };
   b[usesCompletionTokens(conn.model) ? 'max_completion_tokens' : 'max_tokens'] = mt;
-  if (temp != null) b.temperature = temp;
+  if (reasoningEffort != null && supportsReasoningEffort(conn)) {
+    if (['low', 'medium', 'high', 'xhigh', 'max'].includes(reasoningEffort)) b.reasoning_effort = reasoningEffort;
+  } else if (temp != null) b.temperature = temp;
   if (stream) {
     b.stream = true;
     // 让流式也返回用量（算花费用）；个别接口不认这个参数，会自动退回
@@ -187,6 +193,7 @@ function httpError(status, raw, url) {
     return new ApiError('model', '模型名不对，或这个接口没有这个模型', { ...o, hint: '在连接设置里点“获取模型列表”核对一下。' });
   }
   if (/temperature/i.test(msg)) return new ApiError('badreq', '这个模型不接受自定义温度', { ...o, hint: '在连接设置里把“温度”留空。' });
+  if (/reasoning_effort/i.test(msg)) return new ApiError('badreq', '这条接口不接受所选思考强度', { ...o, hint: '把思考强度设为「接口默认」后重试。' });
   if (/max_tokens|max_completion_tokens|max_output/i.test(msg)) return new ApiError('badreq', '输出上限设置不被接受', { ...o, hint: '把连接设置里的“输出上限”调小一点（例如 4000）再试。' });
   if (/(context|prompt is too long|too many tokens|maximum.*tokens|上下文|超出)/i.test(msg)) return new ApiError('toolong', '内容超出模型能接收的长度', { ...o, hint: '故事太长了。之后的版本会自动整理前情；现在可以先换个上下文更长的模型。' });
   if (/stream/i.test(msg)) return new ApiError('badreq', '这个接口不支持流式输出', { ...o, hint: '在连接设置里关掉“流式输出”。' });
@@ -327,13 +334,13 @@ export async function streamChat(conn, opts = {}) {
     throw e;
   }
 }
-async function streamChatRaw(conn, { system, messages = [], maxTokens, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000, cachePrefix = '', cacheScope = '', onCache = () => {}, requestStats = null }) {
+async function streamChatRaw(conn, { system, messages = [], maxTokens, reasoningEffort, signal, onText = () => {}, onThinking = () => {}, onJob, resumeJob = null, relayServer = '', direct = false, firstByteMs = 150000, idleMs = 90000, cachePrefix = '', cacheScope = '', onCache = () => {}, requestStats = null }) {
   const vertex = conn?.format === 'vertex';
   if (!resumeJob) { checkConn(conn); conn = await effectiveConn(conn); }
   const format = guessFormat(conn);
   const url = resumeJob ? '' : normalizeUrl(format, conn.baseUrl);
   const wantStream = conn.stream !== false;
-  const body = buildBody(format, conn, { system, messages, stream: wantStream, maxTokens });
+  const body = buildBody(format, conn, { system, messages, stream: wantStream, maxTokens, reasoningEffort });
   const ctrl = linkAbort(signal);
   const config = resumeJob || (conn.viaRelay && !direct) ? await getRelay() : null;
   const viaRelay = !!resumeJob || !!(config?.on && conn.viaRelay && !direct);

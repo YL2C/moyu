@@ -120,6 +120,14 @@ function portableChapter(chapter) {
 }
 
 function portableValue(key, value, values) {
+  if (key.startsWith('deeptalk.v1.turn.') && Array.isArray(value?.replies)) {
+    const replies = value.replies.map(reply => {
+      if (reply?.status !== 'running' && !reply?.relayJob) return reply;
+      const { relayJob, relayServer, ...saved } = reply;
+      return { ...saved, status: saved.text?.trim() ? 'partial' : 'error', error: interrupted };
+    });
+    return { ...value, replies };
+  }
   if (key.startsWith('background.') && ['running', 'pending'].includes(value?.state)) {
     const { job, server, ...saved } = value;
     return { ...saved, state: 'error', error: interrupted };

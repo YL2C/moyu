@@ -15,6 +15,7 @@ import { CHOICE_LABELS, expandOptionInput, choiceInput, toggleChoice } from '../
 import { inlineText } from '../inline.js';
 import { openExportDialog } from '../exporter.js';
 import { documentLines, documentStatus } from './document-reader.js';
+import { playModeSwitch } from './deeptalk.js';
 import { normalizeUsage, computeCost, fmtMoney, fmtTokens, recordUsage, getMonthSpend, getBudget, hasPrice, priceMode, CUR, getUsageLog, getRequestLog } from '../cost.js';
 
 export async function render(root, { id }) {
@@ -154,7 +155,7 @@ export async function render(root, { id }) {
       titleEl, chip,
       el('button', { class: 'icon-btn', 'aria-label': '更多', onclick: () => storyMenu() }, '⋯')
     ),
-    documentTools, scroller, composer, documentFooter.bar
+    playModeSwitch('story', story.id), documentTools, scroller, composer, documentFooter.bar
   ));
   scroller.addEventListener('scroll', syncDocumentPosition, { passive: true });
 
