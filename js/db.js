@@ -3,8 +3,9 @@
 
 import { toast } from './util.js';
 import { DB_NAME } from './personal.js';
+import { BACKUP_STORES, BACKUP_META, BACKUP_QUEUE, upgradeBackup, backupChanged, queueChange, trackBackup } from './backup-store.js';
 
-const DB_VER = 2;
+const DB_VER = 3;
 export const SCHEMA = 1; // 存档格式版本，以后升级格式时据此迁移
 
 let dbPromise = null;
@@ -15,6 +16,7 @@ function open() {
     const req = indexedDB.open(DB_NAME, DB_VER);
     req.onupgradeneeded = () => {
       const db = req.result;
+      upgradeBackup(db);
       if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
       if (!db.objectStoreNames.contains('connections')) db.createObjectStore('connections', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('stories')) db.createObjectStore('stories', { keyPath: 'id' });
@@ -27,7 +29,11 @@ function open() {
         s.createIndex('storyId', 'storyId', { unique: false });
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const connection = req.result;
+      connection.onversionchange = () => { connection.close(); dbPromise = null; };
+      resolve(connection);
+    };
     req.onerror = () => reject(req.error);
     req.onblocked = () => toast('请关闭其他打开着墨游的页面后再试');
   });
@@ -36,12 +42,16 @@ function open() {
 
 function run(store, mode, fn) {
   return open().then((db) => new Promise((resolve, reject) => {
-    const tx = db.transaction(store, mode);
+    const tracked = mode === 'readwrite' && BACKUP_STORES.includes(store);
+    const tx = db.transaction(tracked ? [store, BACKUP_META, BACKUP_QUEUE] : store, mode);
     const os = tx.objectStore(store);
     let result;
-    const r = fn(os);
+    const r = fn(os, tx);
     if (r && 'onsuccess' in r) r.onsuccess = () => { result = r.result; };
-    tx.oncomplete = () => resolve(result);
+    tx.oncomplete = () => {
+      resolve(result);
+      if (tracked) backupChanged();
+    };
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error || new Error('事务被中止'));
   }));
@@ -65,7 +75,13 @@ export const db = {
   async put(store, value, key) {
     let r;
     try {
-      r = await run(store, 'readwrite', (os) => (key === undefined ? os.put(value) : os.put(value, key)));
+      r = await run(store, 'readwrite', (os, tx) => {
+        const request = key === undefined ? os.put(value) : os.put(value, key);
+        if (BACKUP_STORES.includes(store) && !(store === 'nodes' && value.status === 'streaming')) {
+          trackBackup(tx, () => queueChange(tx, store, value.id, value));
+        }
+        return request;
+      });
     } catch (e) { reportWriteError(e); throw e; }
     // 告诉其他还开着的页面（比如在后台继续生成的游玩页）：这条数据变了
     if (store !== 'kv') { try { window.dispatchEvent(new CustomEvent('moyu:put', { detail: { store, obj: value } })); } catch {} }
@@ -74,12 +90,13 @@ export const db = {
   async updateStory(id, update) {
     let saved, failure;
     try {
-      await run('stories', 'readwrite', store => {
+      await run('stories', 'readwrite', (store, tx) => {
         const request = store.get(id);
         request.onsuccess = () => {
           try {
             saved = update(request.result);
             store.put(saved);
+            trackBackup(tx, () => queueChange(tx, 'stories', id, saved));
           } catch (error) {
             failure = error;
             store.transaction.abort();
@@ -96,19 +113,38 @@ export const db = {
   },
   async putMany(store, values) {
     try {
-      return await run(store, 'readwrite', (os) => { for (const v of values) os.put(v); });
+      return await run(store, 'readwrite', (os, tx) => {
+        for (const v of values) os.put(v);
+        if (BACKUP_STORES.includes(store)) trackBackup(tx, () => {
+          for (const v of new Map(values.map(value => [value.id, value])).values()) queueChange(tx, store, v.id, v);
+        });
+      });
     } catch (e) { reportWriteError(e); throw e; }
   },
   async del(store, key) {
-    try { return await run(store, 'readwrite', (os) => os.delete(key)); }
+    try { return await run(store, 'readwrite', (os, tx) => {
+      if (BACKUP_STORES.includes(store)) trackBackup(tx, () => queueChange(tx, store, key));
+      return os.delete(key);
+    }); }
     catch (e) { reportWriteError(e); throw e; }
   },
   async delStory(storyId) {
-    const nodes = await db.byStory(storyId);
-    await run('nodes', 'readwrite', (os) => { for (const n of nodes) os.delete(n.id); });
-    const extras = await db.extrasOf(storyId);
-    if (extras.length) await run('extras', 'readwrite', (os) => { for (const x of extras) os.delete(x.id); });
-    await db.del('stories', storyId);
+    try {
+      await storyBackupTransaction((tx) => {
+        // Whole-story deletion preserves its chapters and extras in the cloud recycle bin.
+        tx.objectStore('stories').delete(storyId);
+        for (const name of ['nodes', 'extras']) {
+          const request = tx.objectStore(name).index('storyId').openKeyCursor(storyId);
+          request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor) return;
+            tx.objectStore(name).delete(cursor.primaryKey);
+            cursor.continue();
+          };
+        }
+        trackBackup(tx, () => queueChange(tx, 'stories', storyId));
+      });
+    } catch (e) { reportWriteError(e); throw e; }
   },
   async kvGet(key, fallback) {
     const v = await run('kv', 'readonly', (os) => os.get(key));
@@ -162,13 +198,27 @@ export async function readMigrationDatabase() {
 export async function replaceMigrationDatabase(stores) {
   const database = await open();
   return new Promise((resolve, reject) => {
-    const tx = database.transaction(MIGRATION_STORES, 'readwrite');
+    const tx = database.transaction([...MIGRATION_STORES, BACKUP_META, BACKUP_QUEUE], 'readwrite');
+    const incomingStoryIds = new Set(stores.stories.map(story => story.id));
     let enqueueError;
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => { resolve(); backupChanged(); };
     tx.onabort = () => reject(enqueueError || tx.error || new Error('迁移写入失败'));
     try {
       for (const name of MIGRATION_STORES) {
         const store = tx.objectStore(name);
+        if (BACKUP_STORES.includes(name)) {
+          const incoming = new Set(stores[name].map(value => value.id));
+          const previous = store.getAll();
+          previous.onsuccess = () => trackBackup(tx, () => {
+            for (const value of previous.result) {
+              if (incoming.has(value.id)) continue;
+              if (name === 'stories' || incomingStoryIds.has(value.storyId)) {
+                queueChange(tx, name, value.id);
+              }
+            }
+            for (const value of stores[name]) queueChange(tx, name, value.id, value, { includeStreaming: true });
+          });
+        }
         store.clear();
         if (name === 'kv') {
           for (const [key, value] of stores.kv) store.add(value, key);
@@ -245,7 +295,13 @@ export async function importData(data) {
   const nodes = Array.isArray(data.nodes) ? data.nodes.filter(Boolean) : [];
   for (const s of stories) {
     const old = await db.byStory(s.id);
-    if (old.length) await run('nodes', 'readwrite', (os) => { for (const n of old) os.delete(n.id); });
+    const incoming = new Set(nodes.filter(node => node.storyId === s.id).map(node => node.id));
+    if (old.length) await run('nodes', 'readwrite', (os, tx) => {
+      for (const n of old) os.delete(n.id);
+      trackBackup(tx, () => {
+        for (const n of old) if (!incoming.has(n.id)) queueChange(tx, 'nodes', n.id);
+      });
+    });
   }
   if (stories.length) await db.putMany('stories', stories);
   if (nodes.length) await db.putMany('nodes', nodes);
@@ -269,3 +325,76 @@ export async function importData(data) {
   if (data.defaultRules && !(await db.kvGet('defaultRules', null))) await db.kvSet('defaultRules', data.defaultRules);
   return { stories: stories.length, nodes: nodes.length, extras: extras.length, connections: addedConn };
 }
+
+function storyBackupTransaction(callback) {
+  return open().then(database => new Promise((resolve, reject) => {
+    const tx = database.transaction([...BACKUP_STORES, BACKUP_META, BACKUP_QUEUE], 'readwrite');
+    tx.oncomplete = () => { resolve(); backupChanged(); };
+    tx.onabort = () => reject(tx.error || new Error('备份事务未完成'));
+    callback(tx);
+  }));
+}
+
+export const backupDatabase = {
+  config: () => run(BACKUP_META, 'readonly', store => store.get('config')),
+  pending: () => run(BACKUP_QUEUE, 'readonly', store => store.count()),
+  batch: () => run(BACKUP_QUEUE, 'readonly', store => store.getAll(null, 32)),
+  lastBackup: () => run(BACKUP_META, 'readonly', store => store.get('lastBackup')),
+  async ack(sequences, time) {
+    const database = await open();
+    await new Promise((resolve, reject) => {
+      const tx = database.transaction([BACKUP_QUEUE, BACKUP_META], 'readwrite');
+      tx.oncomplete = resolve;
+      tx.onabort = () => reject(tx.error || new Error('确认备份失败'));
+      for (const seq of sequences) tx.objectStore(BACKUP_QUEUE).delete(seq);
+      tx.objectStore(BACKUP_META).put(time, 'lastBackup');
+    });
+  },
+  async configure({ enabled, url, token }) {
+    await storyBackupTransaction(tx => {
+      const meta = tx.objectStore(BACKUP_META);
+      const request = meta.get('config');
+      request.onsuccess = () => {
+        const current = request.result;
+        const sameServer = current?.device && current.url === url;
+        const device = sameServer ? current.device : (enabled ? crypto.randomUUID() : null);
+        meta.put({ enabled, url, token, device }, 'config');
+        if (!enabled || sameServer) return;
+        meta.delete('lastBackup');
+        for (const name of BACKUP_STORES) {
+          const records = tx.objectStore(name).openCursor();
+          records.onsuccess = () => {
+            const cursor = records.result;
+            if (!cursor) return;
+            queueChange(tx, name, cursor.primaryKey, cursor.value, { includeStreaming: true });
+            cursor.continue();
+          };
+        }
+      };
+    });
+  },
+  async restore({ story, nodes, extras }) {
+    let exists = false;
+    try {
+      await storyBackupTransaction(tx => {
+        const request = tx.objectStore('stories').get(story.id);
+        request.onsuccess = () => {
+          if (request.result) { exists = true; tx.abort(); return; }
+          const records = { stories: [story], nodes, extras };
+          for (const name of BACKUP_STORES) {
+            const store = tx.objectStore(name);
+            for (const value of records[name]) store.add(value);
+          }
+          trackBackup(tx, () => {
+            for (const name of BACKUP_STORES) {
+              for (const value of records[name]) queueChange(tx, name, value.id, value);
+            }
+          });
+        };
+      });
+    } catch (error) {
+      if (exists) throw new Error('本机已有同一故事，请下载备份 JSON。');
+      throw error;
+    }
+  },
+};

@@ -93,3 +93,23 @@ node --test tests/*.test.mjs
 ```
 
 上线后仍需在 iPhone 实测正常正文、切走半分钟、关掉网页再开、主动停止、服务器停机及导出备份。自动测试覆盖鉴权、CORS、SSRF、字节重放、订阅断开、取消、上游错误、容量、过期、客户端解析与备份。浏览器恢复验收页见 `tests/browser-recovery.html`，需用本机 HTTP 服务打开。
+
+## 个人版跑团云端备份
+
+备份服务独立监听 `127.0.0.1:8788`，不需要改现有 API 转发服务。使用 Python 3.9+ 标准库和 SQLite。
+
+1. 在 Ubuntu 建立系统用户 `moyu-backup`（无需登录权限），把 `cloud-backup.py` 放到 `/opt/moyu/server/`。
+2. 创建仅 root 可读的 `/etc/moyu-backup.env`。设置 `MOYU_BACKUP_TOKEN` 为随机口令（可用 `openssl rand -hex 32` 生成）。`MOYU_BACKUP_ORIGINS` 默认是 `https://yl2c.github.io`，自定义域名时填网页来源，多个来源以空格分隔并加引号。
+3. 将 `moyu-backup.service` 放到 `/etc/systemd/system/`，执行 `sudo systemctl daemon-reload` 和 `sudo systemctl enable --now moyu-backup`。将 `moyu-backup.cron` 以 root:root、0644 安装到 `/etc/cron.d/moyu-backup`。快照在服务器时间 03:00 生成，保留最近 30 份。
+4. 在现有 HTTPS 站点转发 `/cloud-backup/`，保留原路径。Nginx 示例：
+
+   ```nginx
+   location /cloud-backup/ {
+       client_max_body_size 64m;
+       proxy_pass http://127.0.0.1:8788;
+   }
+   ```
+
+5. 打开墨游个人版「设置 → 备份」，填 HTTPS 站点地址和备份口令，打开总开关。第一次会补传现有跑团档案，后续按改动上传。备份地址和口令单独保存在本机，手动迁移包不会包含它们。
+
+单个故事可以从「云端存档与回收站」恢复到空缺的本机存档，或下载 JSON。误改时可以解开 `/var/lib/moyu-backup/snapshots/` 中的快照，使用 `cloud-backup.py --db 解压后的副本.sqlite3 export-story 设备ID 故事ID` 导出指定故事，然后在墨游导入 JSON。可从快照的 `records` 表查找完整设备 ID 和故事 ID。同一台服务器上的快照共享磁盘故障风险。

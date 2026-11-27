@@ -1,0 +1,2 @@
+# Install as /etc/cron.d/moyu-backup. Runs at 03:00 in the server's timezone.
+0 3 * * * moyu-backup /usr/bin/python3 /opt/moyu/server/cloud-backup.py snapshot --keep 30

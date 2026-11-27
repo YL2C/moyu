@@ -15,6 +15,7 @@ import { detectKind, getPacks, deleteGlobalPack, KIND_LABEL, readTavernFile } fr
 import { importFlow, importTavernResult } from './packs-ui.js';
 import { openWordImport } from './word-import.js';
 import { migrationControls, openMigrationDialog } from './migration.js';
+import { cloudBackupControls } from './cloud-backup.js';
 import { rulePanel, collapseSettings, editRuleModule } from './rules-ui.js';
 import { importMarkdownPack, importRuleJsonPack, ruleJsonEntries, groupModules, deleteModules, undoModuleDelete, undoWordImport, WORD_IMPORT_UNDO } from '../rules.js';
 
@@ -137,7 +138,10 @@ export async function render(root, { section }) {
     appearanceLinks, el('div', { class: 'scroll' }, wrap)
   ));
 
+  let backupView;
   async function draw() {
+    backupView?.abort();
+    const backup = backupView = new AbortController();
     wrap.replaceChildren();
     const conns = await getConnections();
     const defId = await getDefaultConnId();
@@ -438,7 +442,7 @@ export async function render(root, { section }) {
     // ── 备份 ──
     const info = await storageInfo();
     const used = info.usage != null ? `已用 ${(info.usage / 1048576).toFixed(1)} MB` : '';
-    wrap.append(el('div', { class: 'section-title', text: '备份' }));
+    wrap.append(el('div', { class: 'section-title', text: '备份' }), cloudBackupControls(backup.signal));
     wrap.append(el('div', { class: 'card' },
       el('div', { class: 'row' },
         el('button', {
@@ -476,7 +480,7 @@ export async function render(root, { section }) {
     wrap.append(el('div', { class: 'section-title', text: '关于' }));
     wrap.append(el('div', { class: 'card hint', style: { marginTop: 0 } },
       `墨游 ${APP_VERSION}`, el('br'),
-      '所有故事和密钥只存在这台设备的这个浏览器里，不经过任何服务器（除了你填的 API 地址）。',
+      '存档默认在本机浏览器保存。开启云端同步后，跑团存档会备份到你设置的服务器。',
       el('br'),
       'iPhone 上，Safari 里打开和主屏图标打开是两份不同的数据。加到主屏后，请一直从图标进入。',
       el('div', { class: 'row', style: { marginTop: '10px' } },
@@ -818,4 +822,5 @@ export async function render(root, { section }) {
   if (section === 'connections') requestAnimationFrame(() => document.getElementById('sec-connections')?.scrollIntoView({ block: 'start' }));
   if (section === 'fanwai') requestAnimationFrame(() => document.getElementById('sec-fanwai')?.scrollIntoView({ block: 'start' }));
   if (section === 'modules') requestAnimationFrame(() => document.getElementById('sec-modules')?.scrollIntoView({ block: 'start' }));
+  return () => backupView?.abort();
 }

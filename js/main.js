@@ -1,6 +1,7 @@
 // 墨游 · 启动与页面切换
 
 import { ensurePersist } from './db.js';
+import { startCloudBackup } from './cloud-backup.js';
 import { toast } from './util.js';
 import { MIGRATION_NOTICE_KEY } from './migration.js';
 import * as library from './views/library.js';
@@ -204,6 +205,7 @@ window.addEventListener('moyu:before-migration', event => {
 
 async function start() {
   fitViewport();
+  startCloudBackup();
   await loadPrefs();
   window.addEventListener('hashchange', route);
   await route();

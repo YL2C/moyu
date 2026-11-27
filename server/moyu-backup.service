@@ -1,0 +1,22 @@
+[Unit]
+Description=Moyu personal save backup
+After=network.target
+
+[Service]
+Type=simple
+User=moyu-backup
+Group=moyu-backup
+EnvironmentFile=/etc/moyu-backup.env
+StateDirectory=moyu-backup
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/moyu/server/cloud-backup.py serve
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
