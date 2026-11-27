@@ -1,17 +1,18 @@
 import { backupDatabase, SCHEMA, readChatBackup, restoreChatBackup } from '../db.js';
-import { cloudBackupStatus, setCloudBackup, syncCloudBackupNow, watchCloudBackup, listCloudStories, downloadCloudStory, listCloudChats, downloadCloudChat } from '../cloud-backup.js';
+import { cloudBackupStatus, setCloudBackup, watchCloudBackup, listCloudStories, downloadCloudStory, listCloudChats, downloadCloudChat } from '../cloud-backup.js';
 import { el, sheet, toast, saveFile, pickRawFile } from '../util.js';
-import { openEncryptedBackup } from './vault-backup.js';
+import { openEncryptedBackup, renderBackupStatus } from './vault-backup.js';
 
 export function cloudBackupControls(signal) {
   const toggle = el('input', { type: 'checkbox', role: 'switch' });
   const url = el('input', { type: 'url', 'aria-label': '云端备份地址', placeholder: 'https://你的备份域名', autocomplete: 'off' });
   const token = el('input', { type: 'password', 'aria-label': '云端备份口令', placeholder: '服务器备份口令', autocomplete: 'off' });
   const status = el('div', { class: 'hint', role: 'status' });
-  const now = el('button', { class: 'btn small', onclick: () => void syncCloudBackupNow() }, '立即备份');
-  const recover = el('button', { class: 'btn small', onclick: () => void openRecovery() }, '查看云端存档与回收站');
+  const recover = el('button', { class: 'btn small primary', onclick: () => void openEncryptedBackup() }, '查看云端存档');
+  const security = el('button', { class: 'btn small', onclick: () => void openEncryptedBackup({ section: 'settings' }) }, '备份密码与设备');
+  const settings = el('details', {}, el('summary', { text: '备份设置' }));
   const save = el('button', { class: 'btn small', onclick: () => void change(toggle.checked, true) }, '保存服务器设置');
-  const actions = [toggle, now, save];
+  const actions = [toggle, save];
   let editing = false;
   let busy = false;
   let lastRefresh = 0;
@@ -22,19 +23,13 @@ export function cloudBackupControls(signal) {
     if (signal.aborted || generation !== lastRefresh) return;
     toggle.checked = !!state.config?.enabled;
     toggle.disabled = busy;
-    now.disabled = busy || !toggle.checked || state.running;
     save.disabled = busy;
-    recover.disabled = !state.config?.url;
+    recover.disabled = security.disabled = !state.config?.url || !state.config?.token;
     if (!editing) {
       url.value = state.config?.url || '';
       token.placeholder = state.config?.token ? '已保存，留空沿用' : '服务器备份口令';
     }
-    const latest = state.lastBackup ? ' · 最近成功 ' + new Date(state.lastBackup).toLocaleString() : '';
-    status.textContent = (!toggle.checked ? '已关闭，仅保存本地'
-      : state.lastError || (state.encrypted && !state.unlocked ? '加密备份待解锁'
-        : state.running ? (state.encrypted ? '正在加密备份…' : '正在备份…')
-        : state.pending ? '等待补传' : state.encrypted ? '已启用加密备份' : '已启用旧版备份')) +
-      (state.pending ? ' · ' + state.pending + ' 项待传' : '') + latest;
+    renderBackupStatus(status, state);
   }
 
   async function change(enabled, saveOnly = false) {
@@ -47,7 +42,10 @@ export function cloudBackupControls(signal) {
       token.value = '';
     } catch (error) {
       toast(error.message, 4500);
-      if (enabled) (url.value ? token : url).focus();
+      if (enabled || saveOnly) {
+        settings.open = true;
+        (url.value ? token : url).focus();
+      }
     } finally { busy = false; await refresh(); }
   }
 
@@ -55,20 +53,22 @@ export function cloudBackupControls(signal) {
   toggle.addEventListener('change', () => void change(toggle.checked));
   watchCloudBackup(() => void refresh(), signal);
   void refresh();
+  settings.append(el('div', { class: 'field' }, url, token), el('div', { class: 'row' }, save, security));
+  const legacy = el('details', {}, el('summary', { text: '旧备份迁移' }), el('div', { class: 'row' },
+    el('button', { class: 'btn small', onclick: () => void openRecovery() }, '旧故事与回收站'),
+    el('button', { class: 'btn small', onclick: () => void openChatRecovery() }, '旧聊天备份与导入导出'),
+    el('button', { class: 'btn small', onclick: () => void openEncryptedBackup({ section: 'legacy' }) }, '旧备份加密归档')));
   return el('div', { class: 'card' },
     el('label', { class: 'row', style: { fontWeight: '600' } }, toggle, '开启/关闭云端同步'),
-    el('div', { class: 'field' }, url, token),
-    el('div', { class: 'row' }, save, now, recover,
-      el('button', { class: 'btn small', onclick: () => void openChatRecovery() }, '聊天备份与恢复')),
-    el('div', { class: 'row' },
-      el('button', { class: 'btn small primary', onclick: () => void openEncryptedBackup() }, '加密备份与恢复')),
     status,
-    el('div', { class: 'hint' }, '加密备份涵盖故事、日常聊天、讨论、资料全文、记忆和个性化设置。')
+    el('div', { class: 'row' }, recover),
+    el('p', { class: 'hint' }, '保存改动后自动备份故事、日常聊天、讨论、资料全文、记忆和个性化设置。'),
+    settings, legacy
   );
 }
 
 async function openRecovery() {
-  const s = sheet({ title: '云端存档与回收站' });
+  const s = sheet({ title: '旧故事与回收站' });
   s.body.append(el('div', { class: 'hint' }, '正在加载…'));
   try {
     const stories = await listCloudStories();
@@ -108,7 +108,7 @@ async function openRecovery() {
 
 
 async function openChatRecovery() {
-  const dialog = sheet({ title: '日常聊天备份与恢复' });
+  const dialog = sheet({ title: '旧聊天备份与导入导出' });
   const local = el('div', { class: 'row' });
   const cloud = el('div');
   dialog.body.append(local, cloud);

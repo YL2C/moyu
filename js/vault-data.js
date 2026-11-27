@@ -44,7 +44,8 @@ export async function captureVaultRecords() {
       if (store === 'connections') { const { apiKey, ...rest } = original; value = rest; }
       if (store === 'nodes') value = portableChapter(original);
       if (store === 'extras') value = { ...original, versions: (original.versions || []).map(portableChapter) };
-      rows.push({ store, key: original.id, bytes: jsonBytes({ type: 'json', value }) });
+      const storyId = (store === 'nodes' || store === 'extras') && typeof original.storyId === 'string' ? original.storyId : undefined;
+      rows.push({ store, key: original.id, storyId, bytes: jsonBytes({ type: 'json', value }) });
     }
   }
   for (const [key, value] of localEntries())
@@ -57,7 +58,7 @@ export function validateManifest(manifest) {
   const keys = new Set();
   for (const row of manifest.rows) {
     if (!row || ![...MIGRATION_STORES, 'file', 'local', 'material', 'legacy'].includes(row.store) ||
-        typeof row.key !== 'string' || !Array.isArray(row.parts) || !row.parts.length ||
+        typeof row.key !== 'string' || (row.storyId !== undefined && typeof row.storyId !== 'string') || !Array.isArray(row.parts) || !row.parts.length ||
         !row.parts.every(part => typeof part?.hash === 'string' && /^[a-f0-9]{64}$/.test(part.hash) &&
           typeof part.id === 'string' && /^[a-f0-9]{64}$/.test(part.id))) throw new Error('加密备份目录格式不正确');
     const id = JSON.stringify([row.store, row.key]);

@@ -12,6 +12,21 @@ let requested = false;
 let lastError = '';
 let epoch = 0;
 let lastVaultBackup = null;
+let vaultProgress = null;
+let pendingSince = null;
+let lastProgressNotice = 0;
+
+function reportVaultProgress(progress) {
+  const previous = vaultProgress;
+  vaultProgress = progress;
+  const now = Date.now();
+  const scanComplete = Number.isFinite(progress.total) && progress.processed === progress.total &&
+    previous?.processed !== progress.processed;
+  if (previous?.stage !== progress.stage || scanComplete || now - lastProgressNotice >= 220) {
+    lastProgressNotice = now;
+    announce();
+  }
+}
 
 function announce() {
   if (typeof window !== 'undefined' && typeof window.Event === 'function') window.dispatchEvent(new window.Event(STATUS_EVENT));
@@ -20,6 +35,8 @@ function announce() {
 function cancelRequests() {
   epoch++;
   clearTimeout(timer);
+  pendingSince = null;
+  vaultProgress = null;
   requested = false;
   controller?.abort();
   lastError = '';
@@ -32,7 +49,7 @@ export async function cloudBackupStatus() {
   const encrypted = !!vault?.enabled;
   const unlocked = encrypted && isVaultUnlocked(config, vault);
   return { config, pending: encrypted ? 0 : pending, lastBackup: encrypted ? lastVaultBackup : lastBackup,
-    lastError, running: !!running, encrypted, unlocked };
+    lastError, running: !!running, waiting: pendingSince !== null || requested, encrypted, unlocked, vaultProgress };
 }
 
 export async function setCloudBackup(input) {
@@ -50,6 +67,7 @@ export async function setCloudBackup(input) {
     if (!/^[!-~]{32,256}$/.test(token)) throw new Error('请填写服务器生成的备份口令。');
   }
   cancelRequests();
+  if (current?.url !== url) lastVaultBackup = null;
   await backupDatabase.configure({ enabled: input.enabled, url, token });
   try { localStorage.setItem(CONFIG_EVENT, crypto.randomUUID()); } catch {}
   if (input.enabled) scheduleCloudBackup(0);
@@ -79,8 +97,10 @@ async function upload(signal) {
   if (!config?.enabled || signal.aborted) return;
   if (profile?.enabled) {
     if (!isVaultUnlocked(config, profile)) return;
-    const result = await uploadVaultBackup(config, profile, signal);
-    if (result) lastVaultBackup = result.createdAt;
+    const result = await uploadVaultBackup(config, profile, signal, progress => {
+      if (!signal.aborted) reportVaultProgress(progress);
+    });
+    if (result && !signal.aborted) lastVaultBackup = result.createdAt;
     return;
   }
   await backupDatabase.prepareChat();
@@ -115,6 +135,8 @@ async function upload(signal) {
 export function syncCloudBackupNow() {
   clearTimeout(timer);
   if (running) { requested = true; return running; }
+  pendingSince = null;
+  vaultProgress = null;
   const currentEpoch = epoch;
   controller = new AbortController();
   const { signal } = controller;
@@ -127,6 +149,7 @@ export function syncCloudBackupNow() {
   }).finally(() => {
     controller = null;
     running = null;
+    vaultProgress = null;
     if (requested) { requested = false; scheduleCloudBackup(100); }
     announce();
   });
@@ -137,7 +160,11 @@ export function syncCloudBackupNow() {
 export function scheduleCloudBackup(delay = 1500) {
   if (running) { requested = true; return; }
   clearTimeout(timer);
-  timer = setTimeout(() => void syncCloudBackupNow(), delay);
+  const now = Date.now();
+  const newWait = pendingSince === null;
+  pendingSince ??= now;
+  timer = setTimeout(() => void syncCloudBackupNow(), Math.max(0, Math.min(delay, 30_000 - (now - pendingSince))));
+  if (newWait) announce();
 }
 
 export function refreshEncryptedBackup({ locked = false } = {}) {

@@ -101,12 +101,24 @@ async function uploadChunks(config, batch, signal) {
     throw new Error('服务器没有确认备份片段');
 }
 
-export async function publishVaultRecords(config, key, { rows, head, base = head, device, keyRev, signal, kind = 'complete', source }) {
+export async function publishVaultRecords(config, key, { rows, head, base = head, device, keyRev, signal, kind = 'complete', source, onProgress = () => {} }) {
   const old = base ? await readManifest(config, key, base, signal) : { rows: [] };
   const previous = new Map(old.rows.map(row => [rowId(row), row]));
   const records = [];
   let changed = rows.length !== old.rows.length;
   let batch = [];
+  let processed = 0;
+  let uploaded = 0;
+  const report = stage => onProgress({ stage, processed, total: rows.length, uploaded });
+  const flush = async () => {
+    if (!batch.length) return;
+    report('uploading');
+    await uploadChunks(config, batch, signal);
+    uploaded += batch.length;
+    batch = [];
+    report('processing');
+  };
+  report('processing');
   for (const row of rows) {
     signal?.throwIfAborted();
     const prior = previous.get(rowId(row));
@@ -121,14 +133,18 @@ export async function publishVaultRecords(config, key, { rows, head, base = head
         parts.push({ hash, id: object.id });
         batch.push([object.id, object.ciphertext]);
         changed = true;
-        if (batch.length >= 7) { await uploadChunks(config, batch, signal); batch = []; }
+        if (batch.length >= 7) await flush();
       }
     }
     if (prior?.parts.length !== parts.length) changed = true;
-    records.push({ store: row.store, key: row.key, parts });
+    if (prior?.storyId !== row.storyId) changed = true;
+    records.push({ store: row.store, key: row.key, storyId: row.storyId, parts });
+    processed++;
+    report('processing');
   }
   if (head && !changed) return head;
-  await uploadChunks(config, batch, signal);
+  await flush();
+  report('committing');
   const id = crypto.randomUUID();
   const document = { version: 1, kind, source, rows: records };
   const manifest = await sealObject(key, jsonBytes(document), 'manifest:' + id);
@@ -141,23 +157,25 @@ export async function publishVaultRecords(config, key, { rows, head, base = head
   return { ...result, device, manifest: manifest.id };
 }
 
-export async function uploadVaultBackup(config, profile, signal) {
+export async function uploadVaultBackup(config, profile, signal, onProgress = () => {}) {
   const key = sessionKey(config, profile);
   if (!key) return null;
+  onProgress({ stage: 'connecting' });
   const { envelope, snapshots } = await cloudVault(config, signal);
   requireMatchingKey(envelope, profile);
+  onProgress({ stage: 'reading' });
   return publishVaultRecords(config, key, { rows: await captureVaultRecords(), keyRev: envelope.rev, device: profile.device,
-    head: snapshots.find(snapshot => snapshot.device === profile.device), signal });
+    head: snapshots.find(snapshot => snapshot.device === profile.device), signal, onProgress });
 }
 
-export async function archiveLegacyVault(config, { onProgress = () => {} } = {}) {
+export async function archiveLegacyVault(config, { onProgress = () => {}, signal } = {}) {
   const profile = await vaultLocal.get();
   const key = sessionKey(config, profile);
   if (!key) throw new Error('请先解锁加密备份');
-  const { envelope, snapshots } = await cloudVault(config);
+  const { envelope, snapshots } = await cloudVault(config, signal);
   requireMatchingKey(envelope, profile);
   if (!snapshots.some(snapshot => snapshot.device === profile.device)) throw new Error('请先完成本机加密备份');
-  const { snapshots: daily } = await request(config, 'vault/legacy-history');
+  const { snapshots: daily } = await request(config, 'vault/legacy-history', { signal });
   let previous;
   let total = 0;
   for (const [i, source] of [...daily, null].entries()) {
@@ -169,7 +187,7 @@ export async function archiveLegacyVault(config, { onProgress = () => {} } = {})
     let after = 0;
     while (true) {
       const query = new URLSearchParams({ after: String(after), ...(source ? { history: source } : {}) });
-      const page = await request(config, 'vault/legacy?' + query);
+      const page = await request(config, 'vault/legacy?' + query, { signal });
       for (const record of page.records) {
         const { cursor, ...saved } = record;
         rows.push({ store: 'legacy', key: JSON.stringify([saved.device, saved.kind, saved.id]), bytes: jsonBytes(saved) });
@@ -180,7 +198,7 @@ export async function archiveLegacyVault(config, { onProgress = () => {} } = {})
     }
     if (!rows.length) continue;
     previous = await publishVaultRecords(config, key, { rows, keyRev: envelope.rev, device,
-      head, base: head ?? previous, source: source ?? '当前旧云端备份', kind: 'legacy' });
+      head, base: head ?? previous, signal, source: source ?? '当前旧云端备份', kind: 'legacy' });
     total += rows.length;
   }
   return total;
@@ -206,6 +224,7 @@ async function retrieveRows(config, snapshot, scope, materialKey) {
   if (!key) throw new Error('请先解锁加密备份');
   const document = await readManifest(config, key, snapshot);
   const selected = document.rows.filter(row => {
+    if (typeof scope === 'function') return scope(row);
     if (scope === 'legacy') return row.store === 'legacy';
     if (scope === 'material') return row.store === 'material' && row.key === materialKey;
     return matchesVaultScope(row, scope) || scope === 'story' && row.store === 'kv' &&
@@ -282,4 +301,17 @@ export async function restoreVaultMaterial(config, snapshot, slot) {
   return db.kvUpdate([materials], values => ({
     values: { [materials]: { ...values[materials], [slot]: value } },
   }));
+}
+
+
+export async function readVaultItems(config, snapshot, { store, keys, storyId, prefix } = {}) {
+  const selected = keys && new Set(keys);
+  const rows = await retrieveRows(config, snapshot, row =>
+    row.store === store && (!selected || selected.has(row.key)) && (!prefix || row.key.startsWith(prefix)) &&
+    (storyId === undefined || row.storyId === undefined || row.storyId === storyId));
+  return rows.flatMap(row => {
+    const entry = readJson(row.bytes);
+    if (entry.type !== 'json' || (storyId !== undefined && entry.value?.storyId !== storyId)) return [];
+    return [{ key: row.key, value: entry.value }];
+  });
 }
