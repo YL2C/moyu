@@ -1,6 +1,7 @@
 import { backupDatabase, SCHEMA, readChatBackup, restoreChatBackup } from '../db.js';
 import { cloudBackupStatus, setCloudBackup, syncCloudBackupNow, watchCloudBackup, listCloudStories, downloadCloudStory, listCloudChats, downloadCloudChat } from '../cloud-backup.js';
 import { el, sheet, toast, saveFile, pickRawFile } from '../util.js';
+import { openEncryptedBackup } from './vault-backup.js';
 
 export function cloudBackupControls(signal) {
   const toggle = el('input', { type: 'checkbox', role: 'switch' });
@@ -9,7 +10,7 @@ export function cloudBackupControls(signal) {
   const status = el('div', { class: 'hint', role: 'status' });
   const now = el('button', { class: 'btn small', onclick: () => void syncCloudBackupNow() }, '立即备份');
   const recover = el('button', { class: 'btn small', onclick: () => void openRecovery() }, '查看云端存档与回收站');
-  const save = el('button', { class: 'btn small', onclick: () => void change(true) }, '保存服务器设置');
+  const save = el('button', { class: 'btn small', onclick: () => void change(toggle.checked, true) }, '保存服务器设置');
   const actions = [toggle, now, save];
   let editing = false;
   let busy = false;
@@ -22,7 +23,7 @@ export function cloudBackupControls(signal) {
     toggle.checked = !!state.config?.enabled;
     toggle.disabled = busy;
     now.disabled = busy || !toggle.checked || state.running;
-    save.disabled = busy || !toggle.checked;
+    save.disabled = busy;
     recover.disabled = !state.config?.url;
     if (!editing) {
       url.value = state.config?.url || '';
@@ -30,16 +31,18 @@ export function cloudBackupControls(signal) {
     }
     const latest = state.lastBackup ? ' · 最近成功 ' + new Date(state.lastBackup).toLocaleString() : '';
     status.textContent = (!toggle.checked ? '已关闭，仅保存本地'
-      : state.lastError || (state.running ? '正在备份…' : state.pending ? '等待补传' : '已启用')) +
+      : state.lastError || (state.encrypted && !state.unlocked ? '加密备份待解锁'
+        : state.running ? (state.encrypted ? '正在加密备份…' : '正在备份…')
+        : state.pending ? '等待补传' : state.encrypted ? '已启用加密备份' : '已启用旧版备份')) +
       (state.pending ? ' · ' + state.pending + ' 项待传' : '') + latest;
   }
 
-  async function change(enabled) {
+  async function change(enabled, saveOnly = false) {
     if (busy) return;
     busy = true;
     for (const action of actions) action.disabled = true;
     try {
-      await setCloudBackup({ enabled, url: url.value, token: token.value });
+      await setCloudBackup({ enabled, saveOnly, url: url.value, token: token.value });
       editing = false;
       token.value = '';
     } catch (error) {
@@ -57,8 +60,10 @@ export function cloudBackupControls(signal) {
     el('div', { class: 'field' }, url, token),
     el('div', { class: 'row' }, save, now, recover,
       el('button', { class: 'btn small', onclick: () => void openChatRecovery() }, '聊天备份与恢复')),
+    el('div', { class: 'row' },
+      el('button', { class: 'btn small primary', onclick: () => void openEncryptedBackup() }, '加密备份与恢复')),
     status,
-    el('div', { class: 'hint' }, '自动备份跑团故事、章节、番外和日常聊天记录。关闭后暂停全部上传，重新开启后补传。')
+    el('div', { class: 'hint' }, '加密备份涵盖故事、日常聊天、讨论、资料全文、记忆和个性化设置。')
   );
 }
 

@@ -13,7 +13,7 @@ const ivSize = 12;
 const headerSize = magic.length + saltSize + ivSize;
 const iterations = 600_000;
 const interrupted = '迁移前未完成生成，已保留当时存下的内容。';
-const localKey = key => key === DB_NAME + '.curStory' ||
+const localKey = key => key === DB_NAME + '.curStory' || key === DB_NAME + '.playMode' ||
   key.startsWith('moyu-yl2c.settings.fold.') || key.startsWith('moyu-yl2c.protagonist.fold.');
 
 async function migrationKey(password, salt, usage) {
@@ -24,7 +24,7 @@ async function migrationKey(password, salt, usage) {
     { name: 'AES-GCM', length: 256 }, false, [usage]);
 }
 
-function localEntries() {
+export function localEntries() {
   try {
     return Object.keys(localStorage).filter(localKey).map(key => [key, localStorage.getItem(key)]);
   } catch {
@@ -109,7 +109,7 @@ export async function openMigration(file, password) {
   return snapshot;
 }
 
-function portableChapter(chapter) {
+export function portableChapter(chapter) {
   const { relayJob, relayContext, ...saved } = chapter;
   if (saved.status === 'streaming' || relayJob) {
     saved.status = saved.text?.trim() ? 'partial' : 'error';
@@ -119,7 +119,7 @@ function portableChapter(chapter) {
   return saved;
 }
 
-function portableValue(key, value, values) {
+export function portableValue(key, value, values) {
   if (key.startsWith('deeptalk.v1.turn.') && Array.isArray(value?.replies)) {
     const replies = value.replies.map(reply => {
       if (reply?.status !== 'running' && !reply?.relayJob) return reply;

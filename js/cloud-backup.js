@@ -1,7 +1,9 @@
 import { backupDatabase } from './db.js';
 import { DB_NAME } from './personal.js';
+import { vaultProfile, isVaultUnlocked, uploadVaultBackup, clearVaultSession } from './vault-backup.js';
 
 const CONFIG_EVENT = DB_NAME + '.cloudBackupChanged';
+const VAULT_LOCK_EVENT = DB_NAME + '.cloudBackupVaultLocked';
 const STATUS_EVENT = 'moyu:cloud-backup-status';
 let timer;
 let running;
@@ -9,6 +11,7 @@ let controller;
 let requested = false;
 let lastError = '';
 let epoch = 0;
+let lastVaultBackup = null;
 
 function announce() {
   if (typeof window !== 'undefined' && typeof window.Event === 'function') window.dispatchEvent(new window.Event(STATUS_EVENT));
@@ -23,17 +26,20 @@ function cancelRequests() {
 }
 
 export async function cloudBackupStatus() {
-  const [config, pending, lastBackup] = await Promise.all([
-    backupDatabase.config(), backupDatabase.pending(), backupDatabase.lastBackup(),
+  const [config, pending, lastBackup, vault] = await Promise.all([
+    backupDatabase.config(), backupDatabase.pending(), backupDatabase.lastBackup(), vaultProfile(),
   ]);
-  return { config, pending, lastBackup, lastError, running: !!running };
+  const encrypted = !!vault?.enabled;
+  const unlocked = encrypted && isVaultUnlocked(config, vault);
+  return { config, pending: encrypted ? 0 : pending, lastBackup: encrypted ? lastVaultBackup : lastBackup,
+    lastError, running: !!running, encrypted, unlocked };
 }
 
 export async function setCloudBackup(input) {
   const current = await backupDatabase.config();
   let url = current?.url || '';
   let token = current?.token || '';
-  if (input.enabled) {
+  if (input.enabled || input.saveOnly) {
     let parsed;
     try { parsed = new URL((input.url || url).trim()); } catch {}
     if (!parsed || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
@@ -69,11 +75,19 @@ async function request(config, path, options = {}) {
 }
 
 async function upload(signal) {
+  const [profile, config] = await Promise.all([vaultProfile(), backupDatabase.config()]);
+  if (!config?.enabled || signal.aborted) return;
+  if (profile?.enabled) {
+    if (!isVaultUnlocked(config, profile)) return;
+    const result = await uploadVaultBackup(config, profile, signal);
+    if (result) lastVaultBackup = result.createdAt;
+    return;
+  }
   await backupDatabase.prepareChat();
   let consecutive = 0;
   while (!signal.aborted) {
-    const [config, batch] = await Promise.all([backupDatabase.config(), backupDatabase.batch()]);
-    if (signal.aborted || !config?.enabled || !batch.length) return;
+    const [config, batch, profile] = await Promise.all([backupDatabase.config(), backupDatabase.batch(), vaultProfile()]);
+    if (signal.aborted || !config?.enabled || profile?.enabled || !batch.length) return;
     const records = [];
     let bytes = 0;
     for (const record of batch) {
@@ -126,14 +140,24 @@ export function scheduleCloudBackup(delay = 1500) {
   timer = setTimeout(() => void syncCloudBackupNow(), delay);
 }
 
+export function refreshEncryptedBackup({ locked = false } = {}) {
+  cancelRequests();
+  try { localStorage.setItem(locked ? VAULT_LOCK_EVENT : CONFIG_EVENT, crypto.randomUUID()); } catch {}
+  if (!locked) scheduleCloudBackup(0);
+  announce();
+}
+
 export function startCloudBackup() {
-  window.addEventListener('moyu:backup-changed', () => scheduleCloudBackup());
+  window.addEventListener('moyu:backup-changed', () => {
+    void vaultProfile().then(profile => scheduleCloudBackup(profile?.enabled ? 12_000 : 1500));
+  });
   window.addEventListener('online', () => scheduleCloudBackup(0));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') scheduleCloudBackup(0);
   });
   window.addEventListener('storage', (event) => {
-    if (event.key !== CONFIG_EVENT) return;
+    if (event.key !== CONFIG_EVENT && event.key !== VAULT_LOCK_EVENT) return;
+    if (event.key === VAULT_LOCK_EVENT) clearVaultSession();
     cancelRequests();
     scheduleCloudBackup(0);
   });

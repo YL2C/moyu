@@ -1,5 +1,7 @@
 """Single-user Moyu backup service. Run behind the existing HTTPS reverse proxy."""
 import argparse
+from base64 import b64decode, b64encode
+from hashlib import sha256
 from contextlib import closing
 from datetime import datetime, timezone
 import gzip
@@ -12,6 +14,8 @@ import re
 import shutil
 import sqlite3
 from time import time
+from tempfile import TemporaryDirectory
+from threading import Lock
 from urllib.parse import parse_qs, urlsplit
 
 PREFIX = '/cloud-backup/v1/'
@@ -39,7 +43,9 @@ WHERE excluded.seq > records.seq
 
 
 def connect(path):
-    return sqlite3.connect(str(path), timeout=15)
+    db = sqlite3.connect(str(path), timeout=15)
+    db.execute("PRAGMA foreign_keys = ON")
+    return db
 
 
 def encode(value):
@@ -130,6 +136,210 @@ def read_chat(db, device):
     return dict(app='moyu-chat-backup', schema=1, entries=entries) if entries else None
 
 
+VAULT_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS vault_key (
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1), value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vault_object (
+  id TEXT PRIMARY KEY, bytes BLOB NOT NULL, added INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vault_snapshot (
+  id TEXT PRIMARY KEY, device TEXT NOT NULL, created INTEGER NOT NULL,
+  manifest TEXT NOT NULL REFERENCES vault_object(id)
+);
+CREATE INDEX IF NOT EXISTS vault_device ON vault_snapshot(device, created DESC);
+CREATE TABLE IF NOT EXISTS vault_ref (
+  snapshot TEXT NOT NULL REFERENCES vault_snapshot(id) ON DELETE CASCADE,
+  object TEXT NOT NULL REFERENCES vault_object(id), PRIMARY KEY(snapshot, object)
+);
+CREATE INDEX IF NOT EXISTS vault_object_ref ON vault_ref(object);
+'''
+HASH_ID = re.compile(r'[a-f0-9]{64}')
+VAULT_BATCH_BYTES = 8 * 1024 * 1024
+DAILY_SNAPSHOT = re.compile(r'moyu-[0-9]{8}T[0-9]{12}Z[.]sqlite3[.]gz|moyu-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{12}Z[.]sqlite3[.]gz')
+
+
+class LegacySnapshots:
+    def __init__(self, directory):
+        self.directory = directory
+        self.lock = Lock()
+        self.cache = None
+        self.source = None
+
+    def list(self):
+        return [path.name for path in sorted(self.directory.glob('moyu-*.sqlite3.gz'))
+                if DAILY_SNAPSHOT.fullmatch(path.name) and path.is_file() and not path.is_symlink()]
+
+    def open(self, name):
+        if name not in self.list():
+            raise ValueError('Unknown daily snapshot')
+        with self.lock:
+            if name != self.source:
+                if self.cache:
+                    self.cache.cleanup()
+                self.cache = TemporaryDirectory(prefix='moyu-legacy-')
+                self.source = None
+                target = Path(self.cache.name) / 'legacy.sqlite3'
+                with gzip.open(self.directory / name, 'rb') as original, target.open('wb') as output:
+                    while block := original.read(1024 * 1024):
+                        output.write(block)
+                        if output.tell() > 1024 ** 3:
+                            raise ValueError('Daily snapshot exceeds archive limit')
+                self.source = name
+            path = Path(self.cache.name) / 'legacy.sqlite3'
+            return sqlite3.connect(path.as_uri() + '?mode=ro&immutable=1', uri=True)
+
+    def close(self):
+        with self.lock:
+            if self.cache:
+                self.cache.cleanup()
+                self.cache = None
+                self.source = None
+
+
+def object_id(value):
+    return isinstance(value, str) and HASH_ID.fullmatch(value) is not None
+
+
+def decode_binary(value, max_size):
+    if not isinstance(value, str) or len(value) > ((max_size + 2) // 3) * 4:
+        raise ValueError('Invalid ciphertext')
+    data = b64decode(value, validate=True)
+    if not 0 < len(data) <= max_size:
+        raise ValueError('Invalid ciphertext length')
+    return data
+
+
+def current_envelope(db):
+    row = db.execute('SELECT value FROM vault_key WHERE singleton = 1').fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def vault_read(db, route, query):
+    if route == 'vault':
+        rows = db.execute(
+            'SELECT id, device, created, manifest FROM vault_snapshot ORDER BY created DESC, rowid DESC'
+        )
+        return {'envelope': current_envelope(db), 'snapshots': [
+            dict(id=key, device=device, createdAt=created, manifest=manifest)
+            for key, device, created, manifest in rows
+        ]}
+    if route == 'vault/object':
+        key = query.get('id', [''])[0]
+        row = db.execute('SELECT bytes FROM vault_object WHERE id = ?', (key,)).fetchone() if object_id(key) else None
+        return {'ciphertext': b64encode(row[0]).decode('ascii')} if row else None
+    if route == 'vault/objects':
+        ids = query.get('ids', [''])[0].split(',')
+        if not 1 <= len(ids) <= 7 or not all(map(object_id, ids)):
+            raise ValueError('Invalid chunk request')
+        sql = 'SELECT id, bytes FROM vault_object WHERE id IN (' + ','.join('?' for _ in ids) + ')'
+        rows = db.execute(sql, ids).fetchall()
+        if len(rows) != len(ids):
+            return None
+        return {'objects': [[key, b64encode(block).decode('ascii')] for key, block in rows]}
+    if route == 'vault/legacy':
+        after = query.get('after', ['0'])[0]
+        if not re.fullmatch(r'[0-9]{1,18}', after):
+            raise ValueError('Invalid cursor')
+        rows = db.execute('''SELECT rowid, device, kind, id, story_id, value, deleted
+                             FROM records WHERE rowid > ? ORDER BY rowid LIMIT 16''', (int(after),))
+        records = [dict(cursor=seq, device=device, kind=kind, id=key, storyId=story_id,
+                        value=json.loads(value) if value is not None else None, deleted=bool(deleted))
+                   for seq, device, kind, key, story_id, value, deleted in rows]
+        return {'records': records, 'next': records[-1]['cursor'] if records else None}
+    return None
+
+
+def vault_write(db, route, data):
+    if not isinstance(data, dict):
+        raise ValueError('Invalid vault batch')
+    db.execute('BEGIN IMMEDIATE')
+    envelope = current_envelope(db)
+    if route == 'vault/key':
+        expected = data.get('expected')
+        new = data.get('envelope')
+        if (not isinstance(new, dict) or set(new) != {'version', 'rev', 'keyId', 'salt', 'wrapped'} or new['version'] != 1
+                or not valid_id(new['rev']) or not valid_id(new['keyId']) or len(decode_binary(new['salt'], 16)) != 16
+                or len(decode_binary(new['wrapped'], 60)) != 60):
+            raise ValueError('Invalid key envelope')
+        if envelope == new:
+            return 200, {'envelope': envelope}
+        if ((envelope['rev'] if envelope else None) != expected
+                or envelope is not None and envelope['keyId'] != new['keyId']):
+            return 409, {'error': 'Key envelope changed'}
+        db.execute('INSERT OR REPLACE INTO vault_key VALUES (1, ?)', (encode(new),))
+        return 200, {'envelope': new}
+    if envelope is None:
+        return 409, {'error': 'Initialize backup encryption first'}
+
+    now = int(time() * 1000)
+    if route == 'vault/objects':
+        objects = data.get('objects')
+        if not isinstance(objects, list) or not 1 <= len(objects) <= 32:
+            raise ValueError('Invalid chunk batch')
+        rows = []
+        for item in objects:
+            if not isinstance(item, list) or len(item) != 2 or not object_id(item[0]):
+                raise ValueError('Invalid chunk')
+            key, packed = item
+            block = decode_binary(packed, VAULT_BATCH_BYTES)
+            if len(block) < 28 or sha256(block).hexdigest() != key:
+                raise ValueError('Invalid ciphertext digest')
+            rows.append((key, block, now))
+        db.executemany('''INSERT INTO vault_object VALUES (?, ?, ?)
+                          ON CONFLICT(id) DO UPDATE SET added = excluded.added''', rows)
+        return 200, {'ack': [row[0] for row in rows]}
+    if route == 'vault/commit':
+        key, device, manifest, parent, objects = (data.get(k) for k in ('id', 'device', 'manifest', 'parent', 'objects'))
+        if (not valid_id(key) or not valid_id(device) or not object_id(manifest)
+                or not (parent is None or valid_id(parent)) or not isinstance(objects, list)
+                or len(objects) > 100_000 or not all(map(object_id, objects))):
+            raise ValueError('Invalid encrypted snapshot')
+        row = db.execute('SELECT device, created, manifest FROM vault_snapshot WHERE id = ?', (key,)).fetchone()
+        if row:
+            if row[0] != device or row[2] != manifest:
+                return 409, {'error': 'Snapshot ID already used'}
+            return 200, {'id': key, 'createdAt': row[1]}
+        if data.get('keyRev') != envelope['rev']:
+            return 409, {'error': 'Key envelope changed'}
+        latest = db.execute(
+            'SELECT id FROM vault_snapshot WHERE device = ? ORDER BY created DESC, rowid DESC LIMIT 1', (device,)
+        ).fetchone()
+        if (latest[0] if latest else None) != parent:
+            return 409, {'error': 'Snapshot head changed'}
+
+        refs = set(objects) | {manifest}
+        sorted_refs = sorted(refs)
+        for group in range(0, len(sorted_refs), 500):
+            part = sorted_refs[group:group + 500]
+            sql = 'SELECT count(*) FROM vault_object WHERE id IN (' + ','.join('?' for _ in part) + ')'
+            if db.execute(sql, part).fetchone()[0] != len(part):
+                return 422, {'error': 'Snapshot chunks missing'}
+        db.execute('INSERT INTO vault_snapshot VALUES (?, ?, ?, ?)', (key, device, now, manifest))
+        db.executemany('INSERT INTO vault_ref VALUES (?, ?)', ((key, ref) for ref in refs))
+        # Keep recent revisions and one checkpoint per day for the previous 30 days.
+        db.execute('''DELETE FROM vault_snapshot WHERE device = ? AND id NOT IN (
+            SELECT id FROM (SELECT id FROM vault_snapshot WHERE device = ?
+                            ORDER BY created DESC, rowid DESC LIMIT 30)
+            UNION SELECT id FROM (
+                SELECT id, row_number() OVER (
+                    PARTITION BY created / 86400000 ORDER BY created DESC, rowid DESC
+                ) AS day_rank FROM vault_snapshot WHERE device = ? AND created >= ?
+            ) WHERE day_rank = 1
+        )''', (device, device, device, now - 30 * 86400000))
+        db.execute('''DELETE FROM vault_object WHERE added < ?
+                      AND NOT EXISTS (SELECT 1 FROM vault_ref WHERE object = vault_object.id)''',
+                   (now - 2 * 86400000,))
+        return 200, {'id': key, 'createdAt': now}
+    return 404, {'error': 'Route not found'}
+
+
+class BackupServer(ThreadingHTTPServer):
+    def server_close(self):
+        super().server_close()
+        self.legacy_snapshots.close()
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
@@ -169,10 +379,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         result = None
+        query = parse_qs(url.query)
         try:
-            with closing(connect(self.server.db_path)) as db, db:
+            history = query.get('history', [''])[0] if url.path == PREFIX + 'vault/legacy' else ''
+            database = self.server.legacy_snapshots.open(history) if history else connect(self.server.db_path)
+            with closing(database) as db, db:
                 db.execute('BEGIN')
-                if url.path == PREFIX + 'stories':
+                if url.path == PREFIX + 'vault/legacy-history':
+                    result = {'snapshots': self.server.legacy_snapshots.list()}
+                elif url.path == PREFIX + 'vault' or url.path.startswith(PREFIX + 'vault/'):
+                    result = vault_read(db, url.path[len(PREFIX):], query)
+                elif url.path == PREFIX + 'stories':
                     result = {'stories': story_list(db)}
                 elif url.path == PREFIX + 'chat/backups':
                     result = {'backups': chat_list(db)}
@@ -186,6 +403,9 @@ class Handler(BaseHTTPRequestHandler):
                     key = parts.get('id', [''])[0]
                     if valid_id(device) and valid_key(key):
                         result = read_story(db, device, key)
+        except (ValueError, OSError, EOFError):
+            self.reply(400, {'error': 'Invalid vault request'})
+            return
         except sqlite3.Error:
             self.reply(503, {'error': 'Database temporarily unavailable'})
             return
@@ -197,7 +417,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.authenticated():
             return
-        if urlsplit(self.path).path != PREFIX + 'records':
+        path = urlsplit(self.path).path
+        if path.startswith(PREFIX + 'vault/'):
+            self.post_vault(path[len(PREFIX):])
+            return
+        if path != PREFIX + 'records':
             self.reply(404, {'error': 'Route not found'})
             return
         try:
@@ -213,11 +437,32 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             with closing(connect(self.server.db_path)) as db, db:
+                db.execute('BEGIN IMMEDIATE')
+                if current_envelope(db):
+                    self.reply(409, {'error': 'Encrypted backup enabled'})
+                    return
                 db.executemany(UPSERT, rows)
         except sqlite3.Error:
             self.reply(503, {'error': 'Database temporarily unavailable'})
             return
         self.reply(200, {'ack': ack})
+
+    def post_vault(self, route):
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= VAULT_BATCH_BYTES:
+                self.reply(413, {'error': 'Encrypted batch too large'})
+                return
+            data = json.loads(self.rfile.read(length))
+            with closing(connect(self.server.db_path)) as db, db:
+                code, result = vault_write(db, route, data)
+        except (ValueError, RecursionError, TimeoutError):
+            self.reply(400, {'error': 'Invalid encrypted backup request'})
+            return
+        except sqlite3.Error:
+            self.reply(503, {'error': 'Database temporarily unavailable'})
+            return
+        self.reply(code, result)
 
     def setup(self):
         super().setup()
@@ -236,8 +481,9 @@ def init_server(db_path, host, port, token, origins):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with closing(connect(db_path)) as db, db:
         db.execute('PRAGMA journal_mode=WAL')
-        db.executescript(SCHEMA)
-    server = ThreadingHTTPServer((host, port), Handler)
+        db.executescript(SCHEMA + VAULT_SCHEMA)
+    server = BackupServer((host, port), Handler)
+    server.legacy_snapshots = LegacySnapshots(db_path.parent / 'snapshots')
     server.token = ('Bearer ' + token).encode('utf-8')
     server.origins = origins
     server.db_path = db_path

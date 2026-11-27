@@ -50,7 +50,7 @@ function run(store, mode, fn, key) {
     if (r && 'onsuccess' in r) r.onsuccess = () => { result = r.result; };
     tx.oncomplete = () => {
       resolve(result);
-      if (tracked) backupChanged();
+      if (mode === 'readwrite' && MIGRATION_STORES.includes(store)) backupChanged();
     };
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error || new Error('事务被中止'));
@@ -177,7 +177,7 @@ export const db = {
             } catch (e) { failure = e; tx.abort(); }
           };
         }
-        tx.oncomplete = () => { resolve(result); if (trackChat) backupChanged(); };
+        tx.oncomplete = () => { resolve(result); backupChanged(); };
         tx.onerror = () => reject(tx.error);
         tx.onabort = () => reject(failure || tx.error || new Error('事务被中止'));
       }));
@@ -504,3 +504,9 @@ export async function restoreChatBackup(archive, { replace = false } = {}) {
     throw error;
   }
 }
+
+
+export const vaultLocal = {
+  get: () => run(BACKUP_META, 'readonly', store => store.get('encryptedBackup')),
+  put: value => run(BACKUP_META, 'readwrite', store => store.put(value, 'encryptedBackup')),
+};
