@@ -3,7 +3,7 @@
 
 import { toast } from './util.js';
 import { DB_NAME } from './personal.js';
-import { BACKUP_STORES, BACKUP_META, BACKUP_QUEUE, upgradeBackup, backupChanged, queueChange, trackBackup } from './backup-store.js';
+import { BACKUP_STORES, BACKUP_META, BACKUP_QUEUE, upgradeBackup, backupChanged, queueChange, trackBackup, CHAT_THREAD, CHAT_TURN, isChatBackupKey, queueChatChange, portableChatValue } from './backup-store.js';
 
 const DB_VER = 3;
 export const SCHEMA = 1; // 存档格式版本，以后升级格式时据此迁移
@@ -40,9 +40,9 @@ function open() {
   return dbPromise;
 }
 
-function run(store, mode, fn) {
+function run(store, mode, fn, key) {
   return open().then((db) => new Promise((resolve, reject) => {
-    const tracked = mode === 'readwrite' && BACKUP_STORES.includes(store);
+    const tracked = mode === 'readwrite' && (BACKUP_STORES.includes(store) || (store === 'kv' && isChatBackupKey(key)));
     const tx = db.transaction(tracked ? [store, BACKUP_META, BACKUP_QUEUE] : store, mode);
     const os = tx.objectStore(store);
     let result;
@@ -80,8 +80,9 @@ export const db = {
         if (BACKUP_STORES.includes(store) && !(store === 'nodes' && value.status === 'streaming')) {
           trackBackup(tx, () => queueChange(tx, store, value.id, value));
         }
+        if (store === 'kv' && isChatBackupKey(key)) trackBackup(tx, () => queueChatChange(tx, key, value));
         return request;
-      });
+      }, key);
     } catch (e) { reportWriteError(e); throw e; }
     // 告诉其他还开着的页面（比如在后台继续生成的游玩页）：这条数据变了
     if (store !== 'kv') { try { window.dispatchEvent(new CustomEvent('moyu:put', { detail: { store, obj: value } })); } catch {} }
@@ -124,8 +125,9 @@ export const db = {
   async del(store, key) {
     try { return await run(store, 'readwrite', (os, tx) => {
       if (BACKUP_STORES.includes(store)) trackBackup(tx, () => queueChange(tx, store, key));
+      if (store === 'kv' && isChatBackupKey(key)) trackBackup(tx, () => queueChatChange(tx, key));
       return os.delete(key);
-    }); }
+    }, key); }
     catch (e) { reportWriteError(e); throw e; }
   },
   async delStory(storyId) {
@@ -155,7 +157,8 @@ export const db = {
   async kvUpdate(keys, update) {
     try {
       return await open().then((database) => new Promise((resolve, reject) => {
-        const tx = database.transaction('kv', 'readwrite');
+        const trackChat = keys.some(isChatBackupKey);
+        const tx = database.transaction(trackChat ? ['kv', BACKUP_META, BACKUP_QUEUE] : 'kv', 'readwrite');
         const os = tx.objectStore('kv');
         const values = {}; let pending = keys.length; let result; let failure;
         for (const key of keys) {
@@ -166,11 +169,15 @@ export const db = {
             try {
               const change = update(values);
               result = change.result;
-              for (const [k, v] of Object.entries(change.values)) os.put(v, k);
+              const entries = Object.entries(change.values);
+              for (const [k, v] of entries) os.put(v, k);
+              if (trackChat) trackBackup(tx, () => {
+                for (const [k, v] of entries) queueChatChange(tx, k, v, values[k]);
+              });
             } catch (e) { failure = e; tx.abort(); }
           };
         }
-        tx.oncomplete = () => resolve(result);
+        tx.oncomplete = () => { resolve(result); if (trackChat) backupChanged(); };
         tx.onerror = () => reject(tx.error);
         tx.onabort = () => reject(failure || tx.error || new Error('事务被中止'));
       }));
@@ -218,6 +225,10 @@ export async function replaceMigrationDatabase(stores) {
             }
             for (const value of stores[name]) queueChange(tx, name, value.id, value, { includeStreaming: true });
           });
+        }
+        if (name === 'kv') {
+          const previous = store.getAllKeys();
+          previous.onsuccess = () => queueChatReplacement(tx, previous.result, stores.kv);
         }
         store.clear();
         if (name === 'kv') {
@@ -326,13 +337,40 @@ export async function importData(data) {
   return { stories: stories.length, nodes: nodes.length, extras: extras.length, connections: addedConn };
 }
 
-function storyBackupTransaction(callback) {
+function storyBackupTransaction(callback, includeChat = false) {
   return open().then(database => new Promise((resolve, reject) => {
-    const tx = database.transaction([...BACKUP_STORES, BACKUP_META, BACKUP_QUEUE], 'readwrite');
+    const tx = database.transaction([...BACKUP_STORES, BACKUP_META, BACKUP_QUEUE, ...(includeChat ? ['kv'] : [])], 'readwrite');
     tx.oncomplete = () => { resolve(); backupChanged(); };
     tx.onabort = () => reject(tx.error || new Error('备份事务未完成'));
     callback(tx);
   }));
+}
+
+function queueChatReplacement(tx, previousKeys, entries) {
+  trackBackup(tx, () => {
+    const incoming = new Map(entries.filter(([key]) => isChatBackupKey(key)));
+    for (const key of previousKeys) {
+      if (isChatBackupKey(key) && !incoming.has(key)) queueChatChange(tx, key);
+    }
+    for (const [key, value] of incoming) queueChatChange(tx, key, value);
+  });
+}
+
+function seedChatBackup(tx, device) {
+  const metadata = tx.objectStore(BACKUP_META);
+  const seeded = metadata.get('chatSeedDevice');
+  seeded.onsuccess = () => {
+    if (seeded.result === device) return;
+    const store = tx.objectStore('kv');
+    const keys = store.getAllKeys();
+    keys.onsuccess = () => {
+      for (const key of keys.result.filter(isChatBackupKey)) {
+        const request = store.get(key);
+        request.onsuccess = () => queueChatChange(tx, key, request.result);
+      }
+      metadata.put(device, 'chatSeedDevice');
+    };
+  };
 }
 
 export const backupDatabase = {
@@ -350,6 +388,18 @@ export const backupDatabase = {
       tx.objectStore(BACKUP_META).put(time, 'lastBackup');
     });
   },
+  async prepareChat() {
+    const database = await open();
+    await new Promise((resolve, reject) => {
+      const tx = database.transaction(['kv', BACKUP_META, BACKUP_QUEUE], 'readwrite');
+      tx.oncomplete = resolve;
+      tx.onabort = () => reject(tx.error || new Error('扫描聊天记录失败'));
+      const current = tx.objectStore(BACKUP_META).get('config');
+      current.onsuccess = () => {
+        if (current.result?.enabled && current.result.device) seedChatBackup(tx, current.result.device);
+      };
+    });
+  },
   async configure({ enabled, url, token }) {
     await storyBackupTransaction(tx => {
       const meta = tx.objectStore(BACKUP_META);
@@ -359,7 +409,9 @@ export const backupDatabase = {
         const sameServer = current?.device && current.url === url;
         const device = sameServer ? current.device : (enabled ? crypto.randomUUID() : null);
         meta.put({ enabled, url, token, device }, 'config');
-        if (!enabled || sameServer) return;
+        if (!enabled) return;
+        seedChatBackup(tx, device);
+        if (sameServer) return;
         meta.delete('lastBackup');
         for (const name of BACKUP_STORES) {
           const records = tx.objectStore(name).openCursor();
@@ -371,7 +423,7 @@ export const backupDatabase = {
           };
         }
       };
-    });
+    }, true);
   },
   async restore({ story, nodes, extras }) {
     let exists = false;
@@ -398,3 +450,57 @@ export const backupDatabase = {
     }
   },
 };
+
+
+export async function readChatBackup() {
+  const database = await open();
+  const tx = database.transaction('kv', 'readonly');
+  const store = tx.objectStore('kv');
+  const entries = [];
+  return new Promise((resolve, reject) => {
+    const keys = store.getAllKeys();
+    keys.onsuccess = () => {
+      for (const key of keys.result.filter(isChatBackupKey)) {
+        const value = store.get(key);
+        value.onsuccess = () => entries.push([key, portableChatValue(key, value.result)]);
+      }
+    };
+    tx.oncomplete = () => resolve({ app: 'moyu-chat-backup', schema: 1, entries });
+    tx.onabort = () => reject(tx.error || new Error('读取本机聊天失败'));
+  });
+}
+
+export async function restoreChatBackup(archive, { replace = false } = {}) {
+  const entries = archive?.entries;
+  const valid = archive?.app === 'moyu-chat-backup' && archive.schema === 1 && Array.isArray(entries) && entries.length &&
+    entries.every(entry => Array.isArray(entry) && entry.length === 2 && isChatBackupKey(entry[0])) &&
+    new Set(entries.map(([key]) => key)).size === entries.length;
+  if (!valid) throw new Error('这不是有效的日常聊天备份。');
+  const rows = new Map(entries);
+  const thread = rows.get(CHAT_THREAD);
+  if (!Array.isArray(thread) || thread.some(id => typeof id !== 'string') ||
+      entries.some(([key, value]) => key.startsWith(CHAT_TURN) &&
+        (value?.id !== key.slice(CHAT_TURN.length) || !Array.isArray(value.replies) ||
+          value.replies.some(reply => !reply || typeof reply.id !== 'string')))) {
+    throw new Error('聊天备份格式有误。');
+  }
+  for (const [key, value] of rows) rows.set(key, portableChatValue(key, value));
+  rows.set(CHAT_THREAD, thread.filter(id => rows.has(CHAT_TURN + id)));
+  let exists = false;
+  try {
+    await storyBackupTransaction(tx => {
+      const store = tx.objectStore('kv');
+      const request = store.getAllKeys();
+      request.onsuccess = () => {
+        const previousKeys = request.result.filter(isChatBackupKey);
+        if (!replace && previousKeys.length) { exists = true; tx.abort(); return; }
+        for (const key of previousKeys) store.delete(key);
+        for (const [key, value] of rows) store.put(value, key);
+        queueChatReplacement(tx, previousKeys, [...rows]);
+      };
+    }, true);
+  } catch (error) {
+    if (exists) throw new Error('本机已有日常聊天。请先导出本机聊天，再选择替换恢复。');
+    throw error;
+  }
+}

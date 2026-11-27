@@ -15,7 +15,9 @@ from time import time
 from urllib.parse import parse_qs, urlsplit
 
 PREFIX = '/cloud-backup/v1/'
-STORES = ('stories', 'nodes', 'extras')
+STORES = ('stories', 'nodes', 'extras', 'chat')
+CHAT_THREAD = 'deeptalk.v1.thread'
+CHAT_TURN = 'deeptalk.v1.turn.'
 MAX_BODY = 64 * 1024 * 1024
 ID = re.compile(r'[A-Za-z0-9_-]{1,128}')
 SCHEMA = '''
@@ -67,11 +69,15 @@ def prepare_changes(data):
         value, deleted = record.get('value'), record.get('deleted')
         if kind not in STORES or not valid_key(key) or type(seq) is not int or not 0 < seq < 2**53 or type(deleted) is not bool:
             raise ValueError('Invalid record')
+        if kind == 'chat' and key != CHAT_THREAD and not (key.startswith(CHAT_TURN) and len(key) > len(CHAT_TURN)):
+            raise ValueError('Invalid chat record key')
         story_id = key if kind == 'stories' else None
         if value is not None:
             if not isinstance(value, dict) or value.get('id') != key:
                 raise ValueError('Invalid record data')
-            if kind != 'stories':
+            if kind == 'chat' and 'data' not in value:
+                raise ValueError('Missing chat record data')
+            if kind in ('nodes', 'extras'):
                 story_id = value.get('storyId')
                 if not valid_key(story_id):
                     raise ValueError('Invalid parent story')
@@ -107,6 +113,21 @@ def read_story(db, device, key):
         newest = max(nodes, key=lambda node: node.get('updatedAt') or node.get('createdAt') or 0, default=None)
         story['headId'] = newest['id'] if newest else None
     return result
+
+
+def chat_list(db):
+    rows = db.execute("""SELECT device, max(updated_at),
+        sum(CASE WHEN id LIKE 'deeptalk.v1.turn.%' THEN 1 ELSE 0 END)
+        FROM records WHERE kind = 'chat' AND deleted = 0
+        GROUP BY device ORDER BY max(updated_at) DESC""")
+    return [dict(device=device, updatedAt=updated, turns=turns) for device, updated, turns in rows]
+
+
+def read_chat(db, device):
+    rows = db.execute("""SELECT id, value FROM records WHERE device = ? AND kind = 'chat'
+        AND deleted = 0 AND value IS NOT NULL ORDER BY id""", (device,))
+    entries = [[key, json.loads(value)['data']] for key, value in rows]
+    return dict(app='moyu-chat-backup', schema=1, entries=entries) if entries else None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -153,6 +174,12 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute('BEGIN')
                 if url.path == PREFIX + 'stories':
                     result = {'stories': story_list(db)}
+                elif url.path == PREFIX + 'chat/backups':
+                    result = {'backups': chat_list(db)}
+                elif url.path == PREFIX + 'chat/archive':
+                    device = parse_qs(url.query).get('device', [''])[0]
+                    if valid_id(device):
+                        result = read_chat(db, device)
                 elif url.path == PREFIX + 'story':
                     parts = parse_qs(url.query)
                     device = parts.get('device', [''])[0]
@@ -256,6 +283,8 @@ def main():
     export = commands.add_parser('export-story')
     export.add_argument('device')
     export.add_argument('story')
+    chat_export = commands.add_parser('export-chat')
+    chat_export.add_argument('device')
     args = parser.parse_args()
     if args.command == 'serve':
         origins = set(os.environ.get('MOYU_BACKUP_ORIGINS', 'https://yl2c.github.io').split())
@@ -265,6 +294,12 @@ def main():
         if args.keep < 1:
             parser.error('--keep must be at least 1')
         print(snapshot(args.db, args.directory, args.keep))
+    elif args.command == 'export-chat':
+        with closing(sqlite3.connect(args.db.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            data = read_chat(db, args.device)
+        if data is None:
+            parser.error('chat backup not found')
+        print(encode(data))
     else:
         with closing(sqlite3.connect(args.db.resolve().as_uri() + '?mode=ro', uri=True)) as db:
             data = read_story(db, args.device, args.story)

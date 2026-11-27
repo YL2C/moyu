@@ -1,6 +1,6 @@
-import { backupDatabase, SCHEMA } from '../db.js';
-import { cloudBackupStatus, setCloudBackup, syncCloudBackupNow, watchCloudBackup, listCloudStories, downloadCloudStory } from '../cloud-backup.js';
-import { el, sheet, toast, saveFile } from '../util.js';
+import { backupDatabase, SCHEMA, readChatBackup, restoreChatBackup } from '../db.js';
+import { cloudBackupStatus, setCloudBackup, syncCloudBackupNow, watchCloudBackup, listCloudStories, downloadCloudStory, listCloudChats, downloadCloudChat } from '../cloud-backup.js';
+import { el, sheet, toast, saveFile, pickRawFile } from '../util.js';
 
 export function cloudBackupControls(signal) {
   const toggle = el('input', { type: 'checkbox', role: 'switch' });
@@ -55,9 +55,10 @@ export function cloudBackupControls(signal) {
   return el('div', { class: 'card' },
     el('label', { class: 'row', style: { fontWeight: '600' } }, toggle, '开启/关闭云端同步'),
     el('div', { class: 'field' }, url, token),
-    el('div', { class: 'row' }, save, now, recover),
+    el('div', { class: 'row' }, save, now, recover,
+      el('button', { class: 'btn small', onclick: () => void openChatRecovery() }, '聊天备份与恢复')),
     status,
-    el('div', { class: 'hint' }, '自动备份跑团故事、章节与番外。关闭后暂停上传，重新开启后补传。API 密钥和独立聊天记录不会上传。')
+    el('div', { class: 'hint' }, '自动备份跑团故事、章节、番外和日常聊天记录。关闭后暂停全部上传，重新开启后补传。')
   );
 }
 
@@ -97,5 +98,67 @@ async function openRecovery() {
     }
   } catch (error) {
     s.body.replaceChildren(el('div', { class: 'hint', text: error.message }));
+  }
+}
+
+
+async function openChatRecovery() {
+  const dialog = sheet({ title: '日常聊天备份与恢复' });
+  const local = el('div', { class: 'row' });
+  const cloud = el('div');
+  dialog.body.append(local, cloud);
+  let busy = false;
+  const action = task => async () => {
+    if (busy) return;
+    busy = true;
+    try { await task(); }
+    catch (error) { toast(error.message, 5000); }
+    finally { busy = false; }
+  };
+  const download = archive => saveFile('墨游_日常聊天_' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(archive));
+  async function restore(archive) {
+    if (!window.dispatchEvent(new Event('moyu:before-migration', { cancelable: true }))) {
+      throw new Error('请等生成完成后再恢复聊天。');
+    }
+    const existing = await readChatBackup();
+    const replace = existing.entries.length > 0;
+    if (replace && !confirm('这会替换本机日常聊天记录。建议先导出本机聊天。确认恢复？')) return;
+    await restoreChatBackup(archive, { replace });
+    toast('日常聊天记录已恢复');
+    dialog.close();
+  }
+  local.append(
+    el('button', { class: 'btn small', onclick: action(async () => {
+      const archive = await readChatBackup();
+      if (!archive.entries.length) throw new Error('本机暂无聊天记录。');
+      await download(archive);
+    }) }, '导出本机聊天'),
+    el('button', { class: 'btn small', onclick: action(async () => {
+      const file = await pickRawFile(null);
+      if (file) await restore(JSON.parse(await file.text()));
+    }) }, '导入聊天备份')
+  );
+  try {
+    const { config } = await cloudBackupStatus();
+    if (!config?.url) {
+      cloud.append(el('div', { class: 'hint' }, '连接云端备份服务器后，可在这里查看云端聊天。'));
+      return;
+    }
+    cloud.append(el('div', { class: 'hint' }, '正在加载云端聊天…'));
+    const entries = await listCloudChats();
+    cloud.replaceChildren();
+    if (!entries.length) cloud.append(el('div', { class: 'hint' }, '云端还没有聊天备份。'));
+    for (const entry of entries) {
+      cloud.append(el('div', { class: 'card' },
+        el('strong', { text: '日常聊天' }),
+        el('div', { class: 'hint' }, entry.turns + ' 轮 · 设备 ' + entry.device.slice(0, 8) + ' · ' + new Date(entry.updatedAt).toLocaleString()),
+        el('div', { class: 'row' },
+          el('button', { class: 'btn small primary', onclick: action(async () => restore(await downloadCloudChat(entry.device))) }, '恢复到本机'),
+          el('button', { class: 'btn small', onclick: action(async () => download(await downloadCloudChat(entry.device))) }, '下载聊天 JSON')
+        )
+      ));
+    }
+  } catch (error) {
+    cloud.replaceChildren(el('div', { class: 'hint', text: error.message }));
   }
 }

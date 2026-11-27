@@ -69,6 +69,7 @@ async function request(config, path, options = {}) {
 }
 
 async function upload(signal) {
+  await backupDatabase.prepareChat();
   let consecutive = 0;
   while (!signal.aborted) {
     const [config, batch] = await Promise.all([backupDatabase.config(), backupDatabase.batch()]);
@@ -153,4 +154,15 @@ export async function listCloudStories() {
 export async function downloadCloudStory(device, id) {
   const config = await backupDatabase.config();
   return request(config, 'story?' + new URLSearchParams({ device, id }));
+}
+
+
+export async function listCloudChats() {
+  const config = await backupDatabase.config();
+  return (await request(config, 'chat/backups')).backups;
+}
+
+export async function downloadCloudChat(device) {
+  const config = await backupDatabase.config();
+  return request(config, 'chat/archive?' + new URLSearchParams({ device }));
 }

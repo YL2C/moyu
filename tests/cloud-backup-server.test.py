@@ -50,8 +50,17 @@ class BackupTest(unittest.TestCase):
                              'value': {'id': 's1', 'title': '原版', 'headId': 'n1'}}
                     node = {'store': 'nodes', 'id': 'n1', 'seq': 2, 'deleted': False,
                             'value': {'id': 'n1', 'storyId': 's1', 'text': 'before edit'}}
-                    self.assertEqual(upload([story, node]), {'ack': [1, 2]})
-                    self.assertEqual(upload([story, node]), {'ack': [1, 2]})
+                    thread_key = 'deeptalk.v1.thread'
+                    turn_key = 'deeptalk.v1.turn.chat1'
+                    thread = dict(store='chat', id=thread_key, seq=9, deleted=False,
+                                  value=dict(id=thread_key, data=['chat1']))
+                    chat = dict(store='chat', id=turn_key, seq=10, deleted=False,
+                                value=dict(id=turn_key, data=dict(id='chat1', text='日常聊天', replies=[])))
+                    self.assertEqual(upload([story, node, thread, chat]), {'ack': [1, 2, 9, 10]})
+                    self.assertEqual(upload([story, node, chat]), {'ack': [1, 2, 10]})
+                    self.assertEqual(call('chat/backups')['backups'][0]['turns'], 1)
+                    self.assertEqual(dict(call('chat/archive?device=phone')['entries'])[turn_key]['text'], '日常聊天')
+                    self.assertEqual(len(call('stories')['stories']), 1)
                     snapshot = backup.snapshot(db_path, root / 'snapshots', 2)
                     self.assertTrue(snapshot.is_file())
 
@@ -73,6 +82,7 @@ class BackupTest(unittest.TestCase):
                     copy.write_bytes(gzip.decompress(snapshot.read_bytes()))
                     with closing(sqlite3.connect(copy)) as db:
                         archived = backup.read_story(db, 'phone', 's1')
+                        self.assertEqual(dict(backup.read_chat(db, 'phone')['entries'])[turn_key]['text'], '日常聊天')
                     self.assertEqual(archived['nodes'][0]['text'], 'before edit')
                     backup.snapshot(db_path, root / 'snapshots', 2)
                     backup.snapshot(db_path, root / 'snapshots', 2)

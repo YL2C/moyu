@@ -480,7 +480,7 @@ export async function render(root, { section }) {
     wrap.append(el('div', { class: 'section-title', text: '关于' }));
     wrap.append(el('div', { class: 'card hint', style: { marginTop: 0 } },
       `墨游 ${APP_VERSION}`, el('br'),
-      '存档默认在本机浏览器保存。开启云端同步后，跑团存档会备份到你设置的服务器。',
+      '存档默认在本机浏览器保存。开启云端同步后，跑团存档和日常聊天记录会备份到你设置的服务器。',
       el('br'),
       'iPhone 上，Safari 里打开和主屏图标打开是两份不同的数据。加到主屏后，请一直从图标进入。',
       el('div', { class: 'row', style: { marginTop: '10px' } },

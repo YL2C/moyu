@@ -2,6 +2,10 @@
 export const BACKUP_STORES = ['stories', 'nodes', 'extras'];
 export const BACKUP_META = 'cloudBackupMeta';
 export const BACKUP_QUEUE = 'cloudBackupQueue';
+export const CHAT_THREAD = 'deeptalk.v1.thread';
+export const CHAT_TURN = 'deeptalk.v1.turn.';
+export const isChatBackupKey = key => typeof key === 'string' &&
+  (key === CHAT_THREAD || (key.startsWith(CHAT_TURN) && key.length > CHAT_TURN.length));
 
 export function upgradeBackup(database) {
   if (!database.objectStoreNames.contains(BACKUP_META)) database.createObjectStore(BACKUP_META);
@@ -37,6 +41,28 @@ export function queueChange(tx, store, id, value, { includeStreaming = false } =
     }
     queue.add(record);
   };
+}
+
+export function portableChatValue(key, value) {
+  if (!key.startsWith(CHAT_TURN) || !Array.isArray(value?.replies)) return value;
+  return { ...value, replies: value.replies.map(({ relayJob, relayServer, ...reply }) => {
+    if (reply.status === 'running' || relayJob) {
+      reply.status = reply.text?.trim() ? 'partial' : 'error';
+      reply.error = '备份时回复尚未完成，可以重试。';
+    }
+    return reply;
+  }) };
+}
+
+export function queueChatChange(tx, key, value, previous) {
+  if (!isChatBackupKey(key)) return;
+  if (value === undefined) { queueChange(tx, 'chat', key); return; }
+  if (key.startsWith(CHAT_TURN) && Array.isArray(value?.replies)) {
+    const reply = value.replies.find(item => item.id === value.selectedId);
+    const earlier = previous?.replies?.find(item => item.id === value.selectedId);
+    if (reply?.status === 'running' && earlier?.status === 'running') return;
+  }
+  queueChange(tx, 'chat', key, { id: key, data: portableChatValue(key, value) });
 }
 
 export function trackBackup(tx, callback) {
