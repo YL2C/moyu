@@ -1,6 +1,6 @@
 import { db } from './db.js';
 import { parseReply } from './parse.js';
-import { applyCardState, latestCheckpoint, splitNames } from './prompt.js';
+import { applyCardState, latestCheckpoint, splitNames, worldEntries, worldEntryTriggers } from './prompt.js';
 
 const SOFT_LIMIT = 600;
 const EXCERPT_LIMIT = 800;
@@ -58,9 +58,9 @@ function indexStory(story, nodes) {
   const title = String(story.title || '未命名故事').trim();
   const path = pathOf(story, nodes);
   const entries = [];
-  const add = (id, kind, label, body, chapter = 0, person = '') => {
+  const add = (id, kind, label, body, chapter = 0, person = '', searchLabel = label) => {
     const passages = windows(body);
-    if (passages.length) entries.push({ id, kind, label, search: normalize(label), chapter, person, passages });
+    if (passages.length) entries.push({ id, kind, label, search: normalize(searchLabel), chapter, person, passages });
   };
 
   let chapter = 0;
@@ -82,6 +82,9 @@ function indexStory(story, nodes) {
   add('summary/threads', 'summary', '前情档案 · 未决事项', (memory?.threads || []).join('\n'));
 
   add('world', 'setting', '世界设定', story.world);
+  for (const entry of worldEntries(story).filter(entry => entry.enabled !== false)) {
+    add('world/' + entry.id, 'setting', '按需设定 · ' + entry.name, entry.text, 0, '', worldEntryTriggers(entry).join(' '));
+  }
   const protagonist = story.protagonist;
   const cards = [];
   const addCard = (id, label, card, fields) => {

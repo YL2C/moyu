@@ -1,9 +1,9 @@
 // 墨游 · 故事设定：世界设定 / 规则（角色在底部菜单的“角色”里）
 
 import { db } from '../db.js';
-import { el, toast } from '../util.js';
+import { el, sheet, toast, uid } from '../util.js';
 import { getConnections, connLabel, getModules, go, setCurrentStory, watchStory, PLAY_KEYS } from '../state.js';
-import { DEFAULT_RULES } from '../prompt.js';
+import { DEFAULT_RULES, worldEntries, worldEntryTriggers } from '../prompt.js';
 import { getPacks, deleteStoryPack, KIND_LABEL } from '../tavern.js';
 import { packToggle, importFlow } from './packs-ui.js';
 import { rulePanel, editRuleModule } from './rules-ui.js';
@@ -23,10 +23,19 @@ export async function render(root, { id, tab = 'setting' }) {
   story.modules = story.modules || {};
 
   let saveTimer = 0;
+  let entryEditor;
   const savedHint = el('span', { class: 'muted', style: { fontSize: '12px' } });
   const saveNow = async () => {
     story.updatedAt = Date.now();
-    try { await db.put('stories', story); savedHint.textContent = '已保存'; setTimeout(() => { savedHint.textContent = ''; }, 1500); } catch {}
+    try {
+      await db.updateStory(id, current => {
+        if (!current) throw new Error('故事已删除');
+        return { ...story, ...Object.fromEntries(PLAY_KEYS.filter(key => key !== 'updatedAt' && Object.hasOwn(current, key))
+          .map(key => [key, current[key]])), worldEntries: current.worldEntries };
+      });
+      savedHint.textContent = '已保存';
+      setTimeout(() => { savedHint.textContent = ''; }, 1500);
+    } catch {}
   };
   const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 500); };
 
@@ -63,13 +72,82 @@ export async function render(root, { id, tab = 'setting' }) {
     body.append(
       el('div', { class: 'field' }, el('label', { text: '故事名' }), title),
       el('div', { class: 'field' }, el('label', { text: '使用的连接' }), connSel),
-      el('div', { class: 'field' }, el('label', { text: '世界设定' }), world),
+      el('div', { class: 'field' }, el('label', { text: '世界设定' }), world,
+        el('div', { class: 'hint' }, '这里的设定每轮发送。按话题调用的内容可以放进下方的「按需设定」。')),
+      drawWorldEntries(),
       el('div', { class: 'field' }, el('label', { text: '开场（可选）' }), opening),
       el('div', { class: 'card' },
         el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '弹幕', el('small', { text: '读者实况评论，显示在正文下面' })), sw(story.danmu !== false, (v) => { story.danmu = v; saveSoon(); })),
         el('div', { class: 'switch-row' }, el('div', { class: 'lbl' }, '参考选项', el('small', { text: '每轮给 A/B/C/D 四个方向不同的行动建议' })), sw(story.options !== false, (v) => { story.options = v; saveSoon(); }))),
       el('div', { class: 'hint', text: '改动会自动保存，下一轮生效。' })
     );
+  }
+
+  function drawWorldEntries() {
+    const list = el('div');
+    const section = el('section', { class: 'card', 'aria-label': '按需设定' },
+      el('div', { class: 'row' }, el('strong', {}, '按需设定'), el('div', { class: 'spacer' }),
+        el('button', { type: 'button', class: 'btn small', onclick: () => edit() }, '添加按需设定')),
+      el('p', { class: 'hint' }, '本轮发言、导演指令或最近两次回复提到条目名称或关键词时，才把它发给主持模型。'),
+      list);
+    function refresh() {
+      list.replaceChildren(...worldEntries(story).map(entry => {
+        const label = entry.name || '未命名设定';
+        return el('div', { class: 'switch-row' },
+          el('div', { class: 'lbl', style: { minWidth: 0, overflowWrap: 'anywhere' } }, label,
+            el('small', {}, entry.enabled === false ? '已停用' : worldEntryTriggers(entry).join('、'))),
+          el('button', { type: 'button', class: 'btn small', 'aria-label': '编辑 ' + label, onclick: () => edit(entry) }, '编辑'));
+      }));
+      if (!list.firstChild) list.append(el('p', { class: 'hint' }, '可以添加赫林顿、某条 AU 或其他需要时再读的设定。'));
+    }
+
+    async function save(change) {
+      const latest = await db.updateStory(id, current => {
+        if (!current) throw new Error('故事已删除');
+        return { ...current, worldEntries: change(worldEntries(current)), updatedAt: Date.now() };
+      });
+      story.worldEntries = latest.worldEntries;
+      refresh();
+    }
+
+    function edit(entry) {
+      if (entryEditor) return;
+      const dialog = sheet({ title: entry ? '编辑按需设定' : '添加按需设定', onClose: () => { entryEditor = null; } });
+      entryEditor = dialog;
+      const name = el('input', { type: 'text', 'aria-label': '条目名称', placeholder: '例如赫林顿' });
+      const keywords = el('input', { type: 'text', 'aria-label': '补充关键词', placeholder: '例如赫林顿学院、Herrington' });
+      const text = el('textarea', { class: 'tall', 'aria-label': '设定正文' });
+      const enabled = el('input', { type: 'checkbox', checked: entry?.enabled !== false });
+      name.value = entry?.name || '';
+      keywords.value = entry?.keywords || '';
+      text.value = entry?.text || '';
+      let busy = false;
+      const commit = work => async () => {
+        if (busy) return;
+        busy = true;
+        try { await work(); dialog.close(); }
+        catch (error) { toast(error.message, 4000); }
+        finally { busy = false; }
+      };
+      const field = (label, input) => el('label', { class: 'field', style: { display: 'block' } }, label, input);
+      dialog.body.append(field('条目名称', name), field('补充关键词（可选）', keywords),
+        el('p', { class: 'hint' }, '条目名称也会触发。多个关键词可以用顿号或逗号隔开。'),
+        field('设定正文', text), el('label', { class: 'row' }, enabled, '启用这条设定'));
+      dialog.foot.append(
+        entry ? el('button', { type: 'button', class: 'btn danger', onclick: () => {
+          if (confirm('删除「' + entry.name + '」？')) void commit(() => save(items => items.filter(item => item.id !== entry.id)))();
+        } }, '删除') : null,
+        el('button', { type: 'button', class: 'btn', onclick: dialog.close }, '取消'),
+        el('button', { type: 'button', class: 'btn primary', onclick: commit(() => {
+          if (!name.value.trim() || !text.value.trim()) throw new Error('请填写条目名称和设定正文');
+          const next = { id: entry?.id || uid(), name: name.value.trim(), keywords: keywords.value.trim(),
+            text: text.value.trim(), enabled: enabled.checked };
+          return save(items => entry ? items.map(item => item.id === entry.id ? next : item) : [...items, next]);
+        }) }, '保存条目'));
+    }
+
+    refresh();
+    return section;
   }
 
   // ───── 规则 ─────
@@ -150,5 +228,5 @@ export async function render(root, { id, tab = 'setting' }) {
   }
   redraw();
   const unwatch = watchStory(story, null, PLAY_KEYS);
-  return () => { unwatch(); clearTimeout(saveTimer); saveNow(); };
+  return () => { entryEditor?.close(); unwatch(); clearTimeout(saveTimer); saveNow(); };
 }

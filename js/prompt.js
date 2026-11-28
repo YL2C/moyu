@@ -120,6 +120,18 @@ export function scanText(path, extra = '') {
   return [u?.text || '', u?.director || '', ...replies.slice(-2).map((n) => stripReasoning(n.text)), extra].join('\n');
 }
 
+export function worldEntries(story) {
+  return Array.isArray(story?.worldEntries) ? story.worldEntries.filter(entry =>
+    entry && typeof entry.id === 'string' && typeof entry.name === 'string' && typeof entry.text === 'string') : [];
+}
+
+const normalizedMention = text => text.normalize('NFKC').toLowerCase().replace(/\s+/gu, ' ').trim();
+
+export function worldEntryTriggers(entry) {
+  const terms = String(entry?.keywords || '').split(/[,，、;；\n]+/u);
+  return [...new Set([entry?.name, ...terms].map(term => String(term || '').trim()).filter(Boolean))];
+}
+
 /**
  * 选出这一轮要发的角色卡和模块。
  * modules：全局模块库；story.modules：这个故事启用的模块；story.manualOn：手动开着的情境模块
@@ -137,7 +149,10 @@ export function selectExtras(story, path, modules = [], extra = '') {
     if (m.mode === 'keyword') return String(m.keywords || '').split(/[,，、;；\s]+/).filter(Boolean).some((k) => scan.includes(k));
     return true;
   });
-  return { sentCards, present, sentModules };
+  const normalizedScan = normalizedMention(scan);
+  const sentWorldEntries = worldEntries(story).filter(entry => entry.enabled !== false && entry.text.trim() &&
+    worldEntryTriggers(entry).some(term => normalizedScan.includes(normalizedMention(term))));
+  return { sentCards, present, sentModules, sentWorldEntries };
 }
 
 /** 末尾提醒：在场角色的禁止清单，放在最后一条玩家消息里（离模型“下笔”最近） */
@@ -197,7 +212,7 @@ export function memoryText(mem) {
 export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2, modules = [], extra = '', globalMemo = '' } = {}) {
   const ooc = path.findLast(n => n.role === 'user')?.kind === 'ooc';
   const relevantPath = ooc ? path : path.filter(n => n.kind !== 'ooc');
-  const { sentCards, present, sentModules } = selectExtras(story, relevantPath, modules, extra);
+  const { sentCards, present, sentModules, sentWorldEntries } = selectExtras(story, relevantPath, modules, extra);
   const cp = latestCheckpoint(path);
   const parts = [];
   const add = (label, text, kind) => { if (text?.trim()) parts.push({ label, text: text.trim(), kind }); };
@@ -229,6 +244,8 @@ export function buildContext(story, path, { budgetChars = 60000, keepRawLast = 2
     coreFirst.filter(c => !c.core).forEach(addCard);
     sentModules.filter(dynamicModule).forEach(addModule);
   }
+  for (const entry of sentWorldEntries)
+    add('按需设定 · ' + entry.name, '【按需设定·' + entry.name + '】\n' + entry.text.trim(), 'world');
   const system = parts.map((p) => p.text).join('\n\n');
 
   // 有存档时：对话原文只从存档那一章开始（那一章本身留作衔接），更早的由前情档案代替

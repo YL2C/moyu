@@ -7,7 +7,7 @@ import { openExportDialog } from '../exporter.js';
 import { openStoryEditor } from './story-edit.js';
 
 const COPY_SETTINGS = [
-  'world', 'opening', 'rules', 'protagonist', 'cards', 'localModules', 'packs',
+  'world', 'worldEntries', 'opening', 'rules', 'protagonist', 'cards', 'localModules', 'packs',
   'modules', 'manualOn', 'stylePreset', 'styleSelections', 'options', 'danmu',
   'connectionId', 'memConnId', 'memEvery', 'schema',
 ];

@@ -59,6 +59,46 @@ beforeEach(async () => {
     return new Response(JSON.stringify({choices:[{message:{content:answer},finish_reason:'stop'}],usage:{prompt_tokens:20,completion_tokens:20}}),{headers:{'Content-Type':'application/json'}}); };
 });
 
+test('故事设定可新增按需条目，正文只在名称、关键词或最近回复命中时发送', async () => {
+  const { story } = await seedStory();
+  await db.put('stories', { ...story, world: '赫林顿的名字可以出现在固定设定中。' });
+  const dispose = await storyView.render(root, { id: story.id });
+  try {
+    await wait(() => button('添加按需设定', root));
+    button('添加按需设定', root).click();
+    const dialog = document.querySelector('[role="dialog"]');
+    dialog.querySelector('[aria-label="条目名称"]').value = '赫林顿';
+    dialog.querySelector('[aria-label="补充关键词"]').value = 'Herrington Academy、赫院';
+    dialog.querySelector('[aria-label="设定正文"]').value = '校方把联谊选址定在北侧礼堂。';
+    button('保存条目', dialog).click();
+    await wait(() => !dialog.isConnected);
+
+    const saved = await db.get('stories', story.id);
+    assert.equal(saved.worldEntries.length, 1);
+    const user = (text, director) => ({ role: 'user', kind: 'play', text, director });
+    const reply = text => ({ role: 'assistant', kind: 'play', text });
+    const payload = path => buildContext(saved, path);
+    const quiet = payload([user('继续。')]);
+    assert.match(quiet.system, /赫林顿的名字可以出现在固定设定中/);
+    assert.doesNotMatch(quiet.system, /北侧礼堂/);
+    for (const path of [[user('去赫林顿。')], [user('去 herrington academy。')],
+      [user('继续。', '请安排赫院。')], [reply('赫林顿来了。'), reply('请入场。'), user('继续。')]]) {
+      const context = payload(path);
+      assert.match(context.system, /北侧礼堂/);
+      assert.doesNotMatch(context.cachePrefix, /北侧礼堂/);
+      assert.ok(context.info.parts.some(part => part.label === '按需设定 · 赫林顿'));
+    }
+    assert.doesNotMatch(payload([reply('提到赫林顿。'), reply('先入席。'), reply('上菜。'), user('继续。')]).system, /北侧礼堂/);
+
+    root.querySelector('[aria-label="编辑 赫林顿"]').click();
+    const edit = document.querySelector('[role="dialog"]');
+    edit.querySelector('input[type="checkbox"]').checked = false;
+    button('保存条目', edit).click();
+    await wait(() => !edit.isConnected);
+    assert.doesNotMatch(buildContext(await db.get('stories', story.id), [user('去赫林顿。')]).system, /北侧礼堂/);
+  } finally { dispose(); }
+});
+
 test('游玩页在弹幕昵称后显示半角冒号，无昵称的弹幕保留原样', async () => {
   const { story, nodes } = await seedStory();
   story.danmu = true;
