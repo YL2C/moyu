@@ -321,6 +321,7 @@ export async function render(root) {
           partial: '部分存档内容读取失败，其余资料未找到匹配', declined: '小助手未选中跑团资料',
           timeout: '检索超时，未取得可用资料', timed_partial: '部分检索完成，已使用找到的资料',
           failed: '本轮检索或小助手请求失败', invalid: '小助手返回的选段无法读取',
+          invalid_card: '选段结果无法读取，已带上本机唯一命中的角色卡',
           filtered: '候选被本轮的资料筛选规则排除', changed: '候选资料在发送前已更新，请重发',
           no_helper: '有候选资料，但尚未配置辅助选段模型', candidates: '本机预查已完成，尚未调用模型' };
         const notes = [labels[lookupStatus],

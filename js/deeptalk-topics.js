@@ -81,18 +81,54 @@ export function topicSelectionInput({ text, materials, recent = '', storyRows = 
     messages: [{ role: 'user', content }] } };
 }
 
-export function readTopicChoices(keys, text) {
-  const clean = text.normalize('NFKC').trim().replace(/^```(?:text)?\s*|\s*```$/gi, '').replace(/^`|`$/g, '').trim();
-  if (!/^\d{1,2}(?:\+[ABC]){0,2}(?:\s*[,、]\s*\d{1,2}(?:\+[ABC]){0,2}){0,2}$/i.test(clean)) return null;
-  if (clean === '0') return [];
+const CHOICE_CUES = [
+  /(?:选择|选中|选取|选|推荐|采用|建议用|首选|最合适的是|\b(?:selected|selection|choose)\b)/giu,
+  /(?:结果|答案|编号|\b(?:choices?|ids?)\b)/giu,
+];
+const AFTER_CUE = /^[ \t]*[”"']?[ \t]*(?:(?:的)?(?:编号|片段|条目|选项|资料)[ \t]*)?[:为是]?[ \t]*/u;
+const NON_SELECTION_CUE = /(?:不|别|勿|未|备|候|待|可|不要|不用|不建议|不应|无需|忽略|排除|放弃)[ \t]*$/u;
+const CHOICE_ITEM = /^(?:第\s*)?(\d+)((?:[ \t]*\+[ \t]*[ABC])*)(?:[ \t]*[号项段条])?(?![.:/\-]\d|[ \t]*[章节年月日页])(?=$|[^\p{L}\p{N}]|[和与及](?=\s*(?:第\s*)?\d))/iu;
+const CHOICE_SEPARATOR = /^[ \t]*(?:[,、;|]|和|与|及|\band\b)[ \t]*/iu;
+const CHOICE_WRAPPER = /^[\s[【(「『“"']+/u;
+const CHOICE_NOTE = /^[ \t]*\([^()\r\n]{0,160}\)/u;
+
+function parseChoiceList(keys, value) {
+  let rest = value.trimStart().replace(CHOICE_WRAPPER, '');
+  let none = false;
   const output = new Map();
-  for (const item of clean.split(/[,、]/u)) {
-    const [number, ...cards] = item.trim().toUpperCase().split('+');
-    const key = keys[Number(number) - 1];
-    if (!key) return null;
-    if (!output.has(key)) output.set(key, { key, cards: [...new Set(cards)] });
+  while (output.size < 3) {
+    const item = rest.match(CHOICE_ITEM);
+    if (!item) break;
+    const number = Number(item[1]);
+    const key = keys[number - 1];
+    if (number === 0 && !item[2]) none = true;
+    if (key && !output.has(key)) {
+      const cards = [...new Set(item[2].toUpperCase().match(/[ABC]/g) || [])].slice(0, 2);
+      output.set(key, { key, cards });
+    }
+    const tail = rest.slice(item[0].length).replace(CHOICE_NOTE, '');
+    const separator = tail.match(CHOICE_SEPARATOR);
+    if (!separator) break;
+    rest = tail.slice(separator[0].length).replace(CHOICE_WRAPPER, '');
   }
-  return [...output.values()];
+  return output.size || none ? [...output.values()] : null;
+}
+
+export function readTopicChoices(keys, text) {
+  const clean = text.normalize('NFKC').trim().replace(/^```(?:text|json|plaintext)?\s*|\s*```$/gi, '').replace(/[`*]/g, '');
+  for (const pattern of CHOICE_CUES) {
+    for (const cue of clean.matchAll(pattern)) {
+      if (NON_SELECTION_CUE.test(clean.slice(0, cue.index))) continue;
+      const choices = parseChoiceList(keys, clean.slice(cue.index + cue[0].length).replace(AFTER_CUE, ''));
+      if (choices) return choices;
+    }
+  }
+  // A bare result may be on its own line after a short explanation. Numbers inside prose are not candidate IDs.
+  for (const line of clean.split('\n')) {
+    const choices = parseChoiceList(keys, line.replace(/^\s*[-•]\s+/u, ''));
+    if (choices) return choices;
+  }
+  return /^(?:无匹配|无合适结果|没有合适的片段|不选)[\s。.!！]*$/u.test(clean) ? [] : null;
 }
 
 export function storyKeywordExpansionInput(keyword) {

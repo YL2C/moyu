@@ -456,6 +456,7 @@ async function matchStory(index, query, storyId, stamp, signal, yieldScan) {
       title: index.title.slice(0, MAX_STORY_TITLE) + ' · ' + label,
       label: ('跑团／' + index.title.slice(0, 36) + '／' + label).replace(/[\r\n]/g, ' '),
       hint: clue, text: best.raw, snippetTerms: [...best.terms, ...aliases], kind, mentioned, exactEntity, canPin,
+      directCard: !!person && exactEntity && !historical,
       literal: best.literal, related: best.related,
       reliable: exactEntity || best.literal || !!best.related ||
         (explicit && (exactChapter || best.terms.some(term => term.length >= 4)) && (titled || best.total >= 35)),
@@ -478,7 +479,8 @@ async function matchStory(index, query, storyId, stamp, signal, yieldScan) {
     if (row !== first && !diverse.has(row.kind)) diverse.set(row.kind, row);
   }
   const candidates = first ? [...new Set([first, ...diverse.values(), ...eligible])].slice(0, MAX_CANDIDATES) : [];
-  return { storyId, title: index.title, titled, previouslyTitled, roles, candidates, pin, cards: index.cards };
+  return { storyId, title: index.title, titled, previouslyTitled, roles, candidates, pin, cards: index.cards,
+    directCards: rank.filter(row => row.directCard) };
 }
 
 export async function findChatStoryReferences({ text, recent, settings, signal, variants = [], onProgress = () => {} }) {
@@ -603,7 +605,10 @@ function storySearchResult(matches, query, text, details) {
     const titles = [...new Set([best, ...ambiguous].map(match => match.title.slice(0, MAX_STORY_TITLE)))].slice(0, 4);
     return result({ rows: [], ...(query.explicit || best.pin ? { clarify: titles } : { ambiguous: true }) });
   }
-  return result({ rows: best.candidates.map(row => attach(row, best)) });
+  const directMatches = scoped.flatMap(match => match.directCards.map(row => ({ row, match })));
+  const unique = directMatches.length === 1 ? directMatches[0] : null;
+  return result({ rows: best.candidates.map(row => attach(row, best)),
+    ...(unique ? { fallbackCard: attach(unique.row, unique.match) } : {}) });
 }
 
 const evidenceSize = part => JSON.stringify({ 出处: part.title, 原文: part.text,

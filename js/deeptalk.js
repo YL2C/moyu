@@ -422,11 +422,15 @@ async function recallDeepTalkMaterials({ prompt, recent, settings, selector, mat
     if (limit.aborted) return signal?.aborted ? finish('skipped') : timedResult();
     const storyChoices = choices.filter(choice => choice.key.startsWith('story/'));
     const topicChoice = choices.find(choice => !choice.key.startsWith('story/'));
-    if (hasPinned || fallback || (storyChoices.length && choices[0] === storyChoices[0])) {
-      const picks = storyChoices.length || !fallback ? storyChoices : [{ key: fallback.key, cards: [] }];
-      const stories = await wait(() => chatStoryReferences(rows, picks, prompt, recent).catch(() => null));
+    const localCard = status === 'invalid' && !hasPinned && !fallback && lookup.fallbackCard && !blocked.has(lookup.fallbackCard.key)
+      ? lookup.fallbackCard : null;
+    if (localCard || hasPinned || fallback || (storyChoices.length && choices[0] === storyChoices[0])) {
+      const backup = fallback || localCard;
+      const picks = storyChoices.length || !backup ? storyChoices : [{ key: backup.key, cards: [] }];
+      const stories = await wait(() => chatStoryReferences(localCard ? [localCard] : rows, picks, prompt, recent).catch(() => null));
       if (limit.aborted) return signal?.aborted ? finish('skipped') : timedResult();
-      return finish(stories?.length ? status : stories ? 'changed' : 'failed', stories || []);
+      if (!stories?.length) return finish(stories ? 'changed' : 'failed');
+      return finish(localCard ? 'invalid_card' : status, stories);
     }
     return finish(topicChoice && rows.length ? 'declined' : status, [], topicChoice?.key);
   } finally {
@@ -467,6 +471,8 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
     });
     if (storyLookupStatus === 'timed_partial') {
       if (!context?.used.some(ref => ref.story || ref.topic === 'automatic')) storyLookupStatus = 'timeout';
+    } else if (storyLookupStatus === 'invalid_card') {
+      if (!context?.used.some(ref => ref.story)) storyLookupStatus = 'invalid';
     } else if (context?.used.some(ref => ref.story)) storyLookupStatus = 'sent';
     else if (storyLookupStatus === 'selected') storyLookupStatus = 'filtered';
     const storedEffort = settings.efforts[conn.id];

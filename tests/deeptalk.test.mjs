@@ -12,9 +12,25 @@ import { deepTalkMaterials, deepTalkMemory, deepTalkRequestPreview, generateDeep
   selectedReply, setTurnExcluded, deepTalkReplyTokens, getDeepTalkSpend, deepTalkSettings } from '../js/deeptalk.js';
 import { organizeDeepTalk } from '../js/deeptalk-memory.js';
 import { findChatStoryReferences } from '../js/deeptalk-story-recall.js';
+import { readTopicChoices } from '../js/deeptalk-topics.js';
 import { normalizeUsage, computeCost } from '../js/cost.js';
 
 globalThis.indexedDB = new IDBFactory();
+
+test('选段解析接受标点和解释，识别有效编号，并排除理由里的章号', () => {
+  const read = text => readTopicChoices(['one', 'two', 'three'], text);
+  assert.deepEqual(read('选择 1。'), [{ key: 'one', cards: [] }]);
+  assert.deepEqual(read('选择片段：2。'), [{ key: 'two', cards: [] }]);
+  assert.deepEqual(read('我建议选择 2＋A（剧情） 、 99、1（补充）。参考第 3 章。'),
+    [{ key: 'two', cards: ['A'] }, { key: 'one', cards: [] }]);
+  assert.deepEqual(read('候选编号 1 和 2，最终选择第 3 段。'), [{ key: 'three', cards: [] }]);
+  assert.deepEqual(read('不选 2，推荐 1。'), [{ key: 'one', cards: [] }]);
+  assert.deepEqual(read('```json\n{"choices": [2,1]}\n```'), [{ key: 'two', cards: [] }, { key: 'one', cards: [] }]);
+  assert.deepEqual(read('我没有找到合适的片段。\n0。'), []);
+  for (const text of ['参考第 2 章就好。', '选择第 2 章的相关剧情。', '选择 1.5。', '选择 99。', '忽略编号 2。']) {
+    assert.equal(read(text), null, text);
+  }
+});
 
 function source(slot, rows) {
   let text = '';
@@ -892,4 +908,69 @@ test('检索共用时间上限，到点用已找到的资料并且同阶段不�
   } finally {
     dbPause.resolve([]);
   }
+});
+
+test('望舒朔原句允许自然选段，解析失败仅带唯一角色卡，多段剧情可同时入选', async t => {
+  const id = 'choice-regression';
+  const card = { name: '望舒朔', initial: '山城旧档的照看人。' };
+  await db.put('stories', { id, title: '纸灯密信', headId: 'choice-2', cards: [card] });
+  await db.putMany('nodes', [
+    { id: 'choice-1', storyId: id, role: 'assistant', text: '# 古桥边\n\n望舒朔把纸灯密信交给守桥人。' },
+    { id: 'choice-2', storyId: id, parentId: 'choice-1', role: 'assistant', text: '# 白石台阶\n\n守桥人把纸灯密信塞进墙缝。' },
+  ]);
+  await db.kvSet('deeptalk.v1.thread', []);
+  await saveDeepTalkSettings({ connectionId: 'standard', memoryConnectionId: 'archivist', autoStoryRecall: true,
+    autoTopics: false, storyRecallScope: 'selected', storyRecallIds: [id] });
+  const requests = [];
+  let mode = 'natural';
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    requests.push(body);
+    let content = '测试回复';
+    let finish = 'stop';
+    if (body.model === 'example-archivist') {
+      const directory = body.messages.at(-1).content;
+      const number = directory.match(/^(\d+) .*角色卡 · 望舒朔/mu)?.[1];
+      if (mode === 'natural') content = `选择 ${number}。`;
+      else if (mode === 'invalid') content = '这一段要参考第一章。';
+      else if (mode === 'truncated') { content = number; finish = 'length'; }
+      else if (mode === 'declined') content = '选择 0。';
+      else {
+        const first = directory.match(/^(\d+) .*古桥边/mu)?.[1];
+        const second = directory.match(/^(\d+) .*白石台阶/mu)?.[1];
+        content = `候选编号 ${second}，最终选择 ${first}（前因） 、 ${second}（后果）。第 3 章只用于解释。`;
+      }
+    }
+    return Response.json({ choices: [{ message: { content }, finish_reason: finish }] });
+  });
+  const text = '测试测试装修，让我们来说说望舒朔';
+  for (const [next, status] of [['natural', 'sent'], ['invalid', 'invalid_card'], ['truncated', 'invalid_card']]) {
+    mode = next;
+    const count = requests.length;
+    const reply = selectedReply(await generateDeepTalk({ text }));
+    assert.equal(requests.length - count, 2, next);
+    assert.equal(reply.storyLookupStatus, status, next);
+    assert.match(requests.at(-1).messages.at(-1).content, /角色卡 · 望舒朔.*山城旧档的照看人/u);
+    assert.equal(reply.refs.filter(ref => ref.story).length, 1);
+  }
+
+  mode = 'declined';
+  const none = selectedReply(await generateDeepTalk({ text }));
+  assert.equal(none.storyLookupStatus, 'declined');
+  assert.ok(!none.refs.some(ref => ref.story));
+
+  mode = 'plot';
+  const plot = selectedReply(await generateDeepTalk({ text: '纸灯密信的剧情原文，古桥边和白石台阶都有发生什么？' }));
+  assert.equal(plot.storyLookupStatus, 'sent');
+  assert.equal(plot.refs.filter(ref => ref.story).length, 2);
+  const input = requests.at(-1).messages.at(-1).content;
+  assert.match(input, /把纸灯密信交给守桥人/u);
+  assert.match(input, /把纸灯密信塞进墙缝/u);
+
+  const second = { ...card, id: 'second-card', initial: '这里有另一份同名角色卡。' };
+  await db.put('stories', { ...(await db.get('stories', id)), cards: [card, second] });
+  mode = 'invalid';
+  const ambiguous = selectedReply(await generateDeepTalk({ text }));
+  assert.equal(ambiguous.storyLookupStatus, 'invalid');
+  assert.ok(!ambiguous.refs.some(ref => ref.story));
 });
