@@ -76,7 +76,8 @@ export function topicSelectionInput({ text, materials, recent = '', storyRows = 
     if (keys.length === 10) break;
   }
   const content = `本轮：${query}${preceding ? `\n上一句用户发言：${preceding}` : ''}\n目录：\n${lines.join('\n')}`;
-  return { keys, context: { system: [SELECTOR, storyRows.length ? EVIDENCE_SELECTOR : '', hasCards ? CARD_SELECTOR : ''].filter(Boolean).join('\n'),
+  const fallbackTopic = matched.find(row => keys.includes(row.key) && score(`${row.part.title} ${row.part.hint}`) >= 6)?.key;
+  return { keys, fallbackTopic, context: { system: [SELECTOR, storyRows.length ? EVIDENCE_SELECTOR : '', hasCards ? CARD_SELECTOR : ''].filter(Boolean).join('\n'),
     messages: [{ role: 'user', content }] } };
 }
 

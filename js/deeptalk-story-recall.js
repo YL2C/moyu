@@ -49,6 +49,17 @@ const sentence = /[。！？…!?；;]+[」』”’）)】]?|\n+/gu;
 const cutEnd = (text, end) => /[\uD800-\uDBFF]/u.test(text[end - 1] || '') ? end - 1 : end;
 const cache = new Map();
 
+function makeScanYield() {
+  let start = performance.now();
+  return () => {
+    if (performance.now() - start < 25) return;
+    return new Promise(resolve => setTimeout(() => {
+      start = performance.now();
+      resolve();
+    }, 0));
+  };
+}
+
 function windows(text, limit = EXCERPT_LIMIT) {
   if (typeof text !== 'string' || !text.trim()) return [];
   const parts = [];
@@ -141,7 +152,7 @@ function addCharacterCards(index, story, path = [], memory) {
   index.names = [...new Set([protagonist?.name, ...castOf(story).flatMap(splitNames)].map(normalize).filter(name => name.length >= 2))];
 }
 
-function indexStory(story, nodes, extras, discussions, shared) {
+async function indexStory(story, nodes, extras, discussions, shared, signal, yieldScan) {
   const index = makeStoryIndex(story);
   const { add, title } = index;
   const path = pathOf(story, nodes);
@@ -165,6 +176,9 @@ function indexStory(story, nodes, extras, discussions, shared) {
   }
 
   for (const node of nodes) {
+    const pause = yieldScan();
+    if (pause) await pause;
+    if (signal?.aborted) return index;
     const historical = !current.has(node.id);
     const chapter = chapterOf(node);
     const branch = historical ? '旧分支 #' + String(node.id).slice(-8) + ' · ' : '';
@@ -204,7 +218,12 @@ function indexStory(story, nodes, extras, discussions, shared) {
         prefix + ' · ' + label, values.map(value => typeof value === 'string' ? value : JSON.stringify(value)).join('\n'), archived);
     }
   };
-  for (const node of nodes) if (node.checkpoint) addArchive(node, checkpoint?.node.id === node.id);
+  for (const node of nodes) {
+    const pause = yieldScan();
+    if (pause) await pause;
+    if (signal?.aborted) return index;
+    if (node.checkpoint) addArchive(node, checkpoint?.node.id === node.id);
+  }
 
   const overview = [story.world, story.opening].find(value => typeof value === 'string' && value.trim());
   add('story-title', 'overview', '故事简介', [title, overview?.slice(0, 500)].filter(Boolean).join('\n'));
@@ -374,7 +393,7 @@ function matchingSnippet(raw, words) {
   return best;
 }
 
-function matchStory(index, query, storyId, stamp) {
+async function matchStory(index, query, storyId, stamp, signal, yieldScan) {
   const { current, last, explicit, wording, setting, chapters, score, identity, focus, keyword, keywordVariants, source } = query;
   const titled = index.name.length >= 2 && current.includes(index.name);
   const previouslyTitled = !titled && index.name.length >= 2 && last.includes(index.name);
@@ -390,6 +409,9 @@ function matchStory(index, query, storyId, stamp) {
   const titleMatch = score(index.name).value;
   const rank = [];
   for (const entry of index.entries) {
+    const pause = yieldScan();
+    if (pause) await pause;
+    if (signal?.aborted) break;
     const { kind, search, chapter, version, person, triggers, name, historical, entity } = entry;
     if (kind === 'overview' && (!keyword || !index.name.includes(keyword))) continue;
     const direct = name.length >= 2 && current.includes(name);
@@ -435,6 +457,8 @@ function matchStory(index, query, storyId, stamp) {
       label: ('跑团／' + index.title.slice(0, 36) + '／' + label).replace(/[\r\n]/g, ' '),
       hint: clue, text: best.raw, snippetTerms: [...best.terms, ...aliases], kind, mentioned, exactEntity, canPin,
       literal: best.literal, related: best.related,
+      reliable: exactEntity || best.literal || !!best.related ||
+        (explicit && (exactChapter || best.terms.some(term => term.length >= 4)) && (titled || best.total >= 35)),
       historical, linked: best.linked,
       rank: best.total + (titled ? 30 : previouslyTitled ? 18 : 0) + Math.min(titleMatch, 15),
       score: explicit ? 35 : 16, story: true, topic: true });
@@ -457,7 +481,7 @@ function matchStory(index, query, storyId, stamp) {
   return { storyId, title: index.title, titled, previouslyTitled, roles, candidates, pin, cards: index.cards };
 }
 
-export async function findChatStoryReferences({ text, recent, settings, signal, variants = [] }) {
+export async function findChatStoryReferences({ text, recent, settings, signal, variants = [], onProgress = () => {} }) {
   const query = makeQuery(text, recent, variants);
   if (query.current.length < 2) return { rows: [] };
   const selected = settings.storyRecallScope === 'selected' ? new Set(list(settings.storyRecallIds)) : null;
@@ -465,14 +489,18 @@ export async function findChatStoryReferences({ text, recent, settings, signal, 
   const inScope = selected ? catalog.filter(({ story }) => selected.has(story.id)) : catalog;
   const terms = new Set([query.focus, query.keyword].filter(term => term.length >= 2));
   const details = { scope: selected ? 'selected' : 'all', total: catalog.length, searched: inScope.length,
-    partial: 0, outsideCardCount: 0 };
-  const result = value => ({ ...value, details });
+    partial: 0, outsideCardCount: 0, scanned: 0 };
+  const matches = [];
+  const snapshot = () => storySearchResult(matches, query, text, details);
+  const extended = query.historical || query.wording || variants.length > 1 || /(?:旧|历史|早期)(?:剧情|章节)/u.test(text) ||
+    (!selected && /全局|全部故事|所有故事|跨(?:故事|存档)|有哪些(?:故事|存档)/u.test(text));
   if (selected && terms.size) {
     details.outsideCardCount = catalog.filter(({ story }) => !selected.has(story.id) &&
       (terms.has(normalize(story.protagonist?.name)) || castOf(story).some(card =>
         splitNames(card).some(name => terms.has(normalize(name)))))).length;
   }
-  if (!inScope.length) return result({ rows: [] });
+  if (!inScope.length) return snapshot();
+  onProgress({ snapshot, extended: extended || (!selected && inScope.length >= 8) });
   const [modules, packs, memo, discussionList] = await Promise.all([
     getModules().catch(() => []), getPacks().catch(() => []), getGlobalMemo().catch(() => ''), db.kvGet('disc.index', []).catch(() => []),
   ]);
@@ -487,22 +515,28 @@ export async function findChatStoryReferences({ text, recent, settings, signal, 
   }
   const live = new Set(catalog.map(({ story }) => story.id));
   for (const id of cache.keys()) if (!live.has(id)) cache.delete(id);
-  const matches = [];
+  const yieldScan = makeScanYield();
   for (const { story, stamp } of inScope) {
-    if (signal?.aborted) return { rows: [] };
+    const pause = yieldScan();
+    if (pause) await pause;
+    if (signal?.aborted) return snapshot();
     const metadata = discussions.get(story.id) || [];
     const discussionStamp = JSON.stringify(metadata);
     let saved = cache.get(story.id);
     if (saved?.stamp !== stamp || saved.sharedStamp !== sharedStamp || saved.discussionStamp !== discussionStamp) {
       const reads = await Promise.allSettled([db.byStory(story.id), db.extrasOf(story.id),
         Promise.all(metadata.map(item => db.kvGet('disc.' + item.id, null)))]);
+      if (signal?.aborted) return snapshot();
       const [nodeRead, extraRead, discussionRead] = reads;
       const nodes = records(nodeRead.value);
+      if (nodes.length >= 150) onProgress({ snapshot, extended: true });
       try {
         const failed = reads.find(read => read.status === 'rejected');
         if (failed) throw failed.reason;
-        saved = { stamp, sharedStamp, discussionStamp, index: indexStory(story, nodes, records(extraRead.value),
-          discussionRead.value.filter(item => item?.storyId === story.id), shared) };
+        const index = await indexStory(story, nodes, records(extraRead.value),
+          discussionRead.value.filter(item => item?.storyId === story.id), shared, signal, yieldScan);
+        if (signal?.aborted) return snapshot();
+        saved = { stamp, sharedStamp, discussionStamp, index };
         cache.set(story.id, saved);
       } catch {
         // A story with unreadable chapters or supplemental data can still supply its directly stored character cards.
@@ -513,10 +547,19 @@ export async function findChatStoryReferences({ text, recent, settings, signal, 
         saved = { index };
       }
     }
-    const match = matchStory(saved.index, query, story.id, stamp);
+    if (saved.index.entries.length >= 400) onProgress({ snapshot, extended: true });
+    const match = await matchStory(saved.index, query, story.id, stamp, signal, yieldScan);
     if (match.candidates.length || match.titled || match.previouslyTitled) matches.push(match);
+    if (signal?.aborted) return snapshot();
+    details.scanned++;
   }
 
+  onProgress({ snapshot, extended });
+  return snapshot();
+}
+
+function storySearchResult(matches, query, text, details) {
+  const result = value => ({ ...value, details: { ...details } });
   const named = matches.filter(match => match.titled);
   const previous = matches.filter(match => match.previouslyTitled);
   const currentMatch = matches.some(match => match.pin || match.candidates.some(row => row.exactEntity || row.literal));
@@ -543,7 +586,7 @@ export async function findChatStoryReferences({ text, recent, settings, signal, 
       rows.push(...group.rows.slice(1, 1 + MAX_CANDIDATES - rows.length).map(row => attach(row, group.match)));
     }
     if (rows.length) return result({ rows, fallback: query.keywordExplicit ? rows.find(row => row.literal)?.key : undefined });
-    if (query.keywordExplicit && !named.length) return result({ rows: [], expansionKeyword: variants.length ? '' : query.keyword });
+    if (query.keywordExplicit && !named.length) return result({ rows: [], expansionKeyword: query.keywordVariants.length ? '' : query.keyword });
   }
   scoped.sort((a, b) => Number(!!b.pin) - Number(!!a.pin) || b.candidates[0].rank - a.candidates[0].rank);
   const best = scoped[0];
@@ -581,13 +624,21 @@ function cropEvidence(text, limit, query, snippet) {
   }).sort((a, b) => score(b) - score(a))[0] || '';
 }
 
-export async function chatStoryReferences(rows, choices, text, recent, { keepPinned = true } = {}) {
-  const keyChoices = new Map(choices.map(choice => [choice.key, choice.cards]));
-  const picked = rows.filter(row => keyChoices.has(row.key) || (keepPinned && row.pinned))
-    .sort((a, b) => Number(b.pinned) - Number(a.pinned));
+function selectedStoryRows(rows, choices) {
+  const keys = new Set(choices.map(choice => choice.key));
+  return rows.filter(row => keys.has(row.key) || row.pinned).sort((a, b) => Number(b.pinned) - Number(a.pinned));
+}
+
+export async function chatStoryReferences(rows, choices, text, recent) {
+  const picked = selectedStoryRows(rows, choices);
   const revisions = new Map(await Promise.all([...new Set(picked.map(row => row.storyId))]
     .map(async id => [id, await db.storyLookupStamp(id)])));
-  const selected = picked.filter(row => revisions.get(row.storyId) === row.stamp);
+  return packChatStoryReferences(picked.filter(row => revisions.get(row.storyId) === row.stamp), choices, text, recent);
+}
+
+export function packChatStoryReferences(rows, choices, text, recent) {
+  const keyChoices = new Map(choices.map(choice => [choice.key, choice.cards]));
+  const selected = selectedStoryRows(rows, choices);
   const query = makeQuery(text, recent);
   const usedCards = new Set();
   const relevant = [];

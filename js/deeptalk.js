@@ -8,7 +8,7 @@ import { buildDeepTalkContext, isRecallFeedback, recallContextKey, sensitiveTopi
 import { editMaterial, mergeMaterials } from './deeptalk-materials.js';
 import { TOPIC_RECALL_KIND, canSelectTopic, readStoryKeywordVariants, readTopicChoices, storyKeywordExpansionInput,
   topicSelectionInput } from './deeptalk-topics.js';
-import { chatStoryReferences, findChatStoryReferences } from './deeptalk-story-recall.js';
+import { chatStoryReferences, findChatStoryReferences, packChatStoryReferences } from './deeptalk-story-recall.js';
 
 const PREFIX = 'deeptalk.v1.';
 const SETTINGS_KEY = PREFIX + 'settings';
@@ -31,6 +31,10 @@ const REQUEST_LABELS = {
   [RESUME_KIND]: '接回回复', ...AUXILIARY_LABELS,
 };
 export const MAX_USER_CHARS = 24_000;
+const RECALL_NOTICE = 3_000;
+const RECALL_TARGET = 20_000;
+const RECALL_SOFT_LIMIT = 30_000;
+const RECALL_HARD_LIMIT = 45_000;
 const turnKey = id => PREFIX + 'turn.' + id;
 const defaultSettings = { connectionId: '', efforts: {}, memoryConnectionId: '', autoMemory: false, autoTopics: false,
   autoStoryRecall: false, storyRecallScope: 'all', storyRecallIds: [] };
@@ -285,27 +289,19 @@ async function recordDeepTalkUsage(conn, result, context, replyId, elapsed, kind
 }
 
 async function askTopicAssistant(connection, context, signal) {
-  const controller = new AbortController();
-  const abort = () => controller.abort(signal?.reason);
-  if (signal?.aborted) return { status: 'skipped' };
-  signal?.addEventListener('abort', abort, { once: true });
-  const timeout = setTimeout(() => controller.abort('timeout'), 4500);
+  if (signal.aborted) return { status: 'skipped' };
   const requestId = uid();
   const started = Date.now();
   let response;
   try {
     response = await streamWithRetry({ ...connection, stream: false }, { ...context,
-      signal: controller.signal, maxTokens: 128, reasoningEffort: supportsReasoningEffort(connection) ? 'low' : undefined,
+      signal, maxTokens: 128, reasoningEffort: supportsReasoningEffort(connection) ? 'low' : undefined,
       retainErrorUsage: true,
     }, { retries: 0, requestKind: TOPIC_RECALL_KIND });
   } catch (error) {
     response = { failed: true, usage: error.usage };
-  } finally {
-    clearTimeout(timeout);
-    signal?.removeEventListener('abort', abort);
   }
   await recordDeepTalkUsage(connection, response, context, requestId, Date.now() - started, TOPIC_RECALL_KIND);
-  if (controller.signal.reason === 'timeout') return { status: 'timeout' };
   if (response.failed) return { status: 'failed' };
   return response.text && !response.flagged && !response.truncated ? { text: response.text } : { status: 'invalid' };
 }
@@ -333,6 +329,112 @@ function emptyStoryLookupStatus(lookup) {
   return 'no_match';
 }
 
+async function recallDeepTalkMaterials({ prompt, recent, settings, selector, materials, memory, signal, onSearching }) {
+  const started = Date.now();
+  const controller = new AbortController();
+  const limit = controller.signal;
+  let stopWaiting;
+  const stopped = new Promise(resolve => { stopWaiting = resolve; });
+  const stop = reason => {
+    if (limit.aborted) return;
+    controller.abort(reason);
+    stopWaiting();
+  };
+  const abort = () => stop(signal.reason);
+  signal?.addEventListener('abort', abort, { once: true });
+  const wait = task => limit.aborted ? undefined : Promise.race([task(), stopped]);
+  let extended = false;
+  let enough = false;
+  let usefulFallback = false;
+  let lookup = { rows: [] };
+  let snapshot;
+  let selection;
+  let choices = [];
+  const blocked = new Set((memory.mutedContexts || []).filter(item => item.context === recallContextKey(prompt)).flatMap(item => item.keys));
+  const available = found => found.rows.filter(row => !blocked.has(row.key));
+  const lookupStories = async variants => {
+    snapshot = undefined;
+    const found = await wait(() => findChatStoryReferences({ text: prompt, recent, settings, signal: limit, variants,
+      onProgress: progress => { if (!limit.aborted) ({ snapshot, extended } = progress); },
+    }).catch(() => ({ rows: [], failed: true })));
+    lookup = found || snapshot?.() || lookup;
+  };
+  const makeSelection = rows => topicSelectionInput({ text: prompt, materials: settings.autoTopics ? materials : {}, recent, storyRows: rows });
+  const finish = (storyLookupStatus, automaticStories = [], automaticTopic = '') => ({
+    storyLookupStatus, automaticStories, automaticTopic, storyClarification: lookup.clarify,
+    storyLookupDetails: lookup.details, storyRecallMs: Date.now() - started,
+  });
+  function timedResult() {
+    const rows = available(lookup);
+    const selected = choices.filter(choice => choice.key.startsWith('story/'));
+    const fallback = rows.filter(row => row.reliable || row.key === lookup.fallback).slice(0, 3)
+      .map(row => ({ key: row.key, cards: [] }));
+    const stories = packChatStoryReferences(rows, selected.length ? selected : fallback, prompt, recent);
+    const firstTopic = choices[0]?.key;
+    const topic = stories.length ? '' : firstTopic && !firstTopic.startsWith('story/') && !blocked.has(firstTopic) ? firstTopic
+      : (selection || makeSelection(rows))?.fallbackTopic;
+    return finish(stories.length || (topic && !blocked.has(topic)) ? 'timed_partial' : 'timeout', stories, topic);
+  }
+
+  const timers = [
+    setTimeout(() => onSearching('long'), RECALL_NOTICE),
+    setTimeout(() => { if (enough || (!extended && usefulFallback)) stop('timeout'); }, RECALL_TARGET),
+    setTimeout(() => {
+      const local = extended && !enough ? snapshot?.() : null;
+      if (!extended || enough || (local && available(local).some(row => row.pinned || row.key === local.fallback))) stop('timeout');
+      else onSearching('extended');
+    }, RECALL_SOFT_LIMIT),
+    setTimeout(() => stop('timeout'), RECALL_HARD_LIMIT),
+  ];
+
+  try {
+    if (signal?.aborted) return finish('skipped');
+    if (settings.autoStoryRecall) {
+      onSearching('start');
+      await lookupStories();
+    }
+    let expansionStatus;
+    if (selector && lookup.expansionKeyword && !lookup.details?.outsideCardCount && !limit.aborted) {
+      extended = true;
+      const answer = await wait(() => askTopicAssistant(selector, storyKeywordExpansionInput(lookup.expansionKeyword), limit)
+        .catch(() => ({ status: 'failed' })));
+      expansionStatus = answer?.status;
+      const variants = answer?.text ? readStoryKeywordVariants(answer.text) : [];
+      if (variants.length) await lookupStories(variants);
+    }
+    if (limit.aborted) return signal?.aborted ? finish('skipped') : timedResult();
+    const rows = available(lookup);
+    let status = settings.autoStoryRecall ? rows.length ? selector ? 'skipped' : 'no_helper'
+      : lookup.rows.length ? 'filtered' : expansionStatus || emptyStoryLookupStatus(lookup) : 'off';
+    const fallback = rows.find(row => row.key === lookup.fallback);
+    const hasPinned = rows.some(row => row.pinned);
+    const pinnedOnly = rows.length === 1 && hasPinned;
+    enough = hasPinned || !!fallback;
+    if (!lookup.clarify && !pinnedOnly && selector) selection = makeSelection(rows);
+    if (selection) {
+      if (!settings.autoStoryRecall) onSearching('start');
+      usefulFallback = rows.some(row => row.reliable) || !!selection.fallbackTopic;
+      if (Date.now() - started >= RECALL_SOFT_LIMIT && (!extended || enough)) stop('timeout');
+      const decision = await wait(() => selectTopics(selector, selection, limit).catch(() => ({ choices: [], status: 'failed' })));
+      choices = decision?.choices || [];
+      if (rows.length && decision) status = decision.status;
+    }
+    if (limit.aborted) return signal?.aborted ? finish('skipped') : timedResult();
+    const storyChoices = choices.filter(choice => choice.key.startsWith('story/'));
+    const topicChoice = choices.find(choice => !choice.key.startsWith('story/'));
+    if (hasPinned || fallback || (storyChoices.length && choices[0] === storyChoices[0])) {
+      const picks = storyChoices.length || !fallback ? storyChoices : [{ key: fallback.key, cards: [] }];
+      const stories = await wait(() => chatStoryReferences(rows, picks, prompt, recent).catch(() => null));
+      if (limit.aborted) return signal?.aborted ? finish('skipped') : timedResult();
+      return finish(stories?.length ? status : stories ? 'changed' : 'failed', stories || []);
+    }
+    return finish(topicChoice && rows.length ? 'declined' : status, [], topicChoice?.key);
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
 export async function generateDeepTalk({ text, turnId = '', resume = false, deeper = false, manualKeys = [], signal,
   onSearching = () => {}, onStart = () => {}, onText = () => {}, onThinking = () => {} }) {
   return generationLock(async () => {
@@ -352,65 +454,20 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
     const history = previousTurn ? thread.turns.slice(0, -1) : thread.turns;
     const selector = (settings.autoTopics || settings.autoStoryRecall) && connections.find(conn => conn.id === settings.memoryConnectionId);
     const previous = history.at(-1);
-    let automaticTopic = '';
-    let automaticStories = [];
-    let storyClarification;
-    let storyLookupDetails;
     const skipped = storyRecallSkip(prompt, previous, manualKeys);
-    let storyLookupStatus = settings.autoStoryRecall ? skipped || 'skipped' : 'off';
-    if (!pending && !skipped) {
+    let recall = { storyLookupStatus: settings.autoStoryRecall ? skipped || 'skipped' : 'off' };
+    if (!pending && !skipped && !signal?.aborted && (settings.autoStoryRecall || selector)) {
       const recent = previous && !previous.excludeContext && !previous.sensitiveTopics?.length ? previous.text : '';
-      if (settings.autoStoryRecall) onSearching();
-      const lookup = variants => findChatStoryReferences({ text: prompt, recent, settings, signal, variants })
-        .catch(() => ({ rows: [], failed: true }));
-      let storyLookup = settings.autoStoryRecall ? await lookup()
-        : { rows: [] };
-      let expansionStatus;
-      if (selector && storyLookup.expansionKeyword && !storyLookup.details?.outsideCardCount && !signal?.aborted) {
-        const answer = await askTopicAssistant(selector, storyKeywordExpansionInput(storyLookup.expansionKeyword), signal)
-          .catch(() => ({ status: 'failed' }));
-        expansionStatus = answer.status;
-        const variants = answer.text ? readStoryKeywordVariants(answer.text) : [];
-        if (variants.length && !signal?.aborted) storyLookup = await lookup(variants);
-      }
-      if (signal?.aborted) return null;
-      const blocked = new Set((memory.mutedContexts || []).filter(item => item.context === recallContextKey(prompt)).flatMap(item => item.keys));
-      const rows = storyLookup.rows.filter(row => !blocked.has(row.key));
-      storyClarification = storyLookup.clarify;
-      storyLookupDetails = storyLookup.details;
-      if (settings.autoStoryRecall) storyLookupStatus = rows.length ? selector ? 'skipped' : 'no_helper'
-        : storyLookup.rows.length ? 'filtered' : expansionStatus || emptyStoryLookupStatus(storyLookup);
-      const pinnedOnly = rows.length === 1 && rows[0].pinned;
-      const selection = storyClarification || pinnedOnly || !selector ? null
-        : topicSelectionInput({ text: prompt, materials: settings.autoTopics ? materials : {}, recent, storyRows: rows });
-      let choices = [];
-      if (selection) {
-        if (!settings.autoStoryRecall) onSearching();
-        const decision = await selectTopics(selector, selection, signal).catch(() => ({ choices: [], status: 'failed' }));
-        if (signal?.aborted) return null;
-        choices = decision.choices;
-        if (rows.length) storyLookupStatus = decision.status;
-      }
-      const storyChoices = choices.filter(choice => choice.key.startsWith('story/'));
-      const topicChoice = choices.find(choice => !choice.key.startsWith('story/'));
-      const fallback = rows.find(row => row.key === storyLookup.fallback);
-      if (rows.some(row => row.pinned) || fallback || (storyChoices.length && choices[0] === storyChoices[0])) {
-        const picks = storyChoices.length || !fallback ? storyChoices : [{ key: fallback.key, cards: [] }];
-        try {
-          automaticStories = await chatStoryReferences(rows, picks, prompt, recent);
-          if (!automaticStories.length) storyLookupStatus = 'changed';
-        } catch { storyLookupStatus = 'failed'; }
-      } else if (topicChoice) {
-        automaticTopic = topicChoice.key;
-        if (rows.length) storyLookupStatus = 'declined';
-      }
+      recall = await recallDeepTalkMaterials({ prompt, recent, settings, selector, materials, memory, signal, onSearching });
     }
+    let { storyLookupStatus } = recall;
     if (signal?.aborted) return null;
     const context = pending ? null : buildDeepTalkContext({
-      text: prompt, turns: history, materials, memory, manualKeys, automaticTopic, automaticStories, storyClarification,
-      storyLookupStatus,
+      text: prompt, turns: history, materials, memory, manualKeys, ...recall,
     });
-    if (context?.used.some(ref => ref.story)) storyLookupStatus = 'sent';
+    if (storyLookupStatus === 'timed_partial') {
+      if (!context?.used.some(ref => ref.story || ref.topic === 'automatic')) storyLookupStatus = 'timeout';
+    } else if (context?.used.some(ref => ref.story)) storyLookupStatus = 'sent';
     else if (storyLookupStatus === 'selected') storyLookupStatus = 'filtered';
     const storedEffort = settings.efforts[conn.id];
     const effort = supportsReasoningEffort(conn) ? (deeper ? 'high' : Object.hasOwn(EFFORT_LABELS, storedEffort) ? storedEffort : 'medium') : null;
@@ -418,7 +475,7 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
     const reply = pending || { id: uid(), kind, connectionId: conn.id, model: conn.model, format: guessFormat(conn), stream: conn.stream !== false,
       effort, status: 'running', text: '', at: Date.now(), inputChars: contextLength(context),
       refs: context.used, always: context.always, contextKey: context.contextKey, storyLookupStatus,
-      storyLookupDetails, appVersion: APP_VERSION };
+      storyLookupDetails: recall.storyLookupDetails, storyRecallMs: recall.storyRecallMs, appVersion: APP_VERSION };
     const draft = pending ? null : { id: turnId || uid(), at: Date.now(), text: prompt, sensitiveTopics: context.activeSensitive };
     let turn = pending ? await putReply(turnId, reply.id, { status: 'running', error: '' }) : await startTurn(draft, reply, !!turnId);
     onStart(turn);

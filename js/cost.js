@@ -26,7 +26,9 @@ export function normalizeUsage(raw, { inChars = 0, outChars = 0 } = {}) {
   }
   if (raw && (raw.prompt_tokens != null || raw.completion_tokens != null)) {
     const cached = raw.prompt_tokens_details?.cached_tokens ?? raw.prompt_cache_hit_tokens;
-    return { input: raw.prompt_tokens || 0, cached: cached ?? 0, cacheReported: cached != null, output: raw.completion_tokens || 0, est: false };
+    const written = raw.prompt_tokens_details?.cache_write_tokens;
+    return { input: raw.prompt_tokens || 0, cached: cached ?? 0, ...(written != null ? { written } : {}),
+      cacheReported: cached != null || written != null, output: raw.completion_tokens || 0, est: false };
   }
   if (raw?.promptTokenCount != null) return { input: raw.promptTokenCount, cached: raw.cachedContentTokenCount || 0,
     cacheReported: raw.cachedContentTokenCount != null, output: (raw.candidatesTokenCount || 0) + (raw.thoughtsTokenCount || 0), est: false };

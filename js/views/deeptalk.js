@@ -319,14 +319,17 @@ export async function render(root) {
           ambiguous: '匹配到多个存档，请在提问里写明故事名', no_match: '检索范围内没有找到相关资料',
           empty_scope: '检索范围内没有故事', outside_scope: '有匹配的角色卡在本轮检索范围外',
           partial: '部分存档内容读取失败，其余资料未找到匹配', declined: '小助手未选中跑团资料',
-          timeout: '小助手超时', failed: '本轮检索或小助手请求失败', invalid: '小助手返回的选段无法读取',
+          timeout: '检索超时，未取得可用资料', timed_partial: '部分检索完成，已使用找到的资料',
+          failed: '本轮检索或小助手请求失败', invalid: '小助手返回的选段无法读取',
           filtered: '候选被本轮的资料筛选规则排除', changed: '候选资料在发送前已更新，请重发',
           no_helper: '有候选资料，但尚未配置辅助选段模型', candidates: '本机预查已完成，尚未调用模型' };
         const notes = [labels[lookupStatus],
           details && `${details.scope === 'all' ? '全部故事' : '仅所选故事'} · 范围内 ${details.searched}/${details.total} 个故事`,
+          details?.scanned != null && details.scanned < details.searched && `已扫描 ${details.scanned}/${details.searched} 个故事`,
           details?.outsideCardCount && lookupStatus !== 'outside_scope' && `范围外也有 ${details.outsideCardCount} 个故事含同名或同别名角色卡`,
           details?.partial && `有 ${details.partial} 个故事仅查了角色卡`,
           preview.storyClarification?.join('、'), preview.storyMayExpand && '发送后，小助手可尝试用相关词补查。',
+          Number.isFinite(preview.storyRecallMs) && `本轮检索 ${(preview.storyRecallMs / 1000).toFixed(1)} 秒`,
           preview.appVersion && `${text ? '当前版本' : '该回复使用的版本'} ${preview.appVersion}`];
         panel.body.append(...notes.filter(Boolean).map(note => el('p', { class: 'deeptalk-subtle' }, note)));
         if (['off', 'outside_scope', 'empty_scope', 'no_helper'].includes(lookupStatus))
@@ -365,7 +368,11 @@ export async function render(root) {
     let completed = false;
     try {
       const result = await generateDeepTalk({ text, turnId, resume, deeper: oneShot, manualKeys: [...carry.keys()], signal: controller.signal,
-        onSearching: () => { running.message = '正在查找相关资料…'; sync(); },
+        onSearching: stage => {
+          running.message = stage === 'extended' ? '正在继续查找旧剧情或相关存档…'
+            : stage === 'long' ? '正在翻找记忆…' : '正在查找相关资料…';
+          sync();
+        },
         onStart: turn => {
           replaceTurn(turn); running.id = turn.id; running.text = selectedReply(turn).text;
           running.message = '正在连接…';

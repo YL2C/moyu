@@ -12,6 +12,7 @@ import { deepTalkMaterials, deepTalkMemory, deepTalkRequestPreview, generateDeep
   selectedReply, setTurnExcluded, deepTalkReplyTokens, getDeepTalkSpend, deepTalkSettings } from '../js/deeptalk.js';
 import { organizeDeepTalk } from '../js/deeptalk-memory.js';
 import { findChatStoryReferences } from '../js/deeptalk-story-recall.js';
+import { normalizeUsage, computeCost } from '../js/cost.js';
 
 globalThis.indexedDB = new IDBFactory();
 
@@ -74,21 +75,46 @@ test('旧关系章节和敏感历史只在对应话题被召回', async () => {
     replies: [{ id: 'reply', status: 'done', text: '测试版敏感历史回复' }] };
   const context = text => buildDeepTalkContext({ text, materials, turns: [old] });
   const normal = context('今天好开心，买了一条鱼');
-  assert.doesNotMatch(normal.system, /测试用分手|私密旧事|家庭片段|鱼的暗号/);
+  assert.doesNotMatch(normal.messages.at(-1).content, /测试用分手|私密旧事|家庭片段|鱼的暗号/);
   assert.equal(normal.messages.length, 1);
-  assert.match(context('这么久了你还记得我的鱼吗').system, /鱼的暗号/);
-  assert.doesNotMatch(context('我朋友的前任分手了').system, /测试用分手|私密旧事/);
-  assert.doesNotMatch(context('今天不聊前任').system, /测试用分手|私密旧事/);
+  assert.match(context('这么久了你还记得我的鱼吗').messages.at(-1).content, /鱼的暗号/);
+  assert.doesNotMatch(context('我朋友的前任分手了').messages.at(-1).content, /测试用分手|私密旧事/);
+  assert.doesNotMatch(context('今天不聊前任').messages.at(-1).content, /测试用分手|私密旧事/);
   const explicit = context('我和前任当初为什么分手？');
-  assert.match(explicit.system, /测试用分手片段/);
-  assert.doesNotMatch(explicit.system, /测试用金钱片段|家庭片段/);
+  assert.match(explicit.messages.at(-1).content, /测试用分手片段/);
+  assert.doesNotMatch(explicit.messages.at(-1).content, /测试用金钱片段|家庭片段/);
   assert.equal(explicit.messages[1].content, old.replies[0].text);
   assert.ok(explicit.used.length <= 3);
   const following = context('那她为什么当时不愿意复合');
-  assert.match(following.system, /测试用分手片段/);
+  assert.match(following.messages.at(-1).content, /测试用分手片段/);
   const manual = buildDeepTalkContext({ text: '说说这一条', materials, manualKeys: ['sensitive_memory/REL-BRK-08-family'] });
-  assert.match(manual.system, /家庭片段/);
+  assert.match(manual.messages.at(-1).content, /家庭片段/);
   assert.deepEqual(manual.activeSensitive, ['family_history']);
+});
+
+test('近期脉络和按需资料只附于最新发言，常驻内容与旧消息保持相同', async () => {
+  const materials = await deepTalkMaterials();
+  const turns = [{ text: '已经保存的用户原话', selectedId: 'r', replies: [{ id: 'r', status: 'done', text: '已经保存的回答' }] }];
+  const one = buildDeepTalkContext({ text: '第一句新发言', materials, turns,
+    memory: { snapshot: [{ label: '今天', quote: '旧版近期脉络' }] }, manualKeys: ['sensitive_memory/REL-BRK-08-family'] });
+  const two = buildDeepTalkContext({ text: '第二句新发言', materials, turns,
+    memory: { snapshot: [{ label: '今天', quote: '新版近期脉络' }] }, storyClarification: ['测试故事'] });
+  assert.equal(one.system, two.system);
+  assert.equal(one.cachePrefix, two.system);
+  assert.match(one.system, /先听她说/u);
+  assert.deepEqual(one.messages.slice(0, -1), two.messages.slice(0, -1));
+  assert.equal(two.messages[0].content, turns[0].text);
+  assert.doesNotMatch(one.system, /近期脉络|家庭片段/u);
+  assert.match(one.messages.at(-1).content, /旧版近期脉络[\s\S]*家庭片段[\s\S]*<\/turn_references>\n\n第一句新发言$/u);
+  assert.match(two.messages.at(-1).content, /新版近期脉络[\s\S]*跑团检索待确认[\s\S]*<\/turn_references>\n\n第二句新发言$/u);
+});
+
+test('OpenAI 兼容用量计入缓存读取和写入，写入不重复计入总输入', () => {
+  const usage = normalizeUsage({ prompt_tokens: 14_000, completion_tokens: 200,
+    prompt_tokens_details: { cached_tokens: 9_000, cache_write_tokens: 3_000 } });
+  assert.deepEqual(usage, { input: 14_000, cached: 9_000, written: 3_000, cacheReported: true, output: 200, est: false });
+  const price = computeCost(usage, { priceIn: 2, priceOut: 8, priceCache: 0.2, priceCacheWrite: 2.5 });
+  assert.equal(price.amount, (2_000 * 2 + 9_000 * 0.2 + 3_000 * 2.5 + 200 * 8) / 1e6);
 });
 
 test('切换 Sol / Flex、单条深入和重写使用同一线程与各自参数', async t => {
@@ -371,9 +397,9 @@ test('专题筛选只看短目录与普通发言，选一段并记账，失败�
   assert.equal(selector.model, 'example-archivist');
   assert.equal(main.model, 'openai/gpt-5.6-sol');
   assert.doesNotMatch(JSON.stringify(selector), /前任|测试友情原文|测试健身原文|测试名片/);
-  assert.match(main.messages[0].content, /测试友情原文/);
-  assert.doesNotMatch(main.messages[0].content, /测试健身原文|测试完全不同的章节/);
-  assert.ok(main.messages[0].content.length < storyText.length);
+  assert.match(main.messages.at(-1).content, /测试友情原文/);
+  assert.doesNotMatch(main.messages.at(-1).content, /测试健身原文|测试完全不同的章节/);
+  assert.ok(main.messages.at(-1).content.length < storyText.length);
   assert.deepEqual(first.refs.filter(ref => ref.topic).map(ref => [ref.key, ref.topic]), [['shengweian/shengweian-1', 'automatic']]);
   const none = selectedReply(await generateDeepTalk({ text: '我今天见了几位朋友。' }));
   assert.ok(!none.refs.some(ref => ref.topic));
@@ -430,8 +456,8 @@ test('聊天和专题共用一个选段请求，跑团只引用有出处的当�
   const beforeClarification = calls.length;
   const ambiguous = await replyOf(chat);
   assert.equal(calls.length - beforeClarification, 1);
-  assert.match(calls.at(-1).messages[0].content, /跑团检索待确认/);
-  assert.match(calls.at(-1).messages[0].content, /圣维安正史测试.*星际AU测试|星际AU测试.*圣维安正史测试/);
+  assert.match(calls.at(-1).messages.at(-1).content, /跑团检索待确认/);
+  assert.match(calls.at(-1).messages.at(-1).content, /圣维安正史测试.*星际AU测试|星际AU测试.*圣维安正史测试/);
   assert.ok(!ambiguous.refs.some(ref => ref.story));
 
   await saveDeepTalkSettings({ storyRecallScope: 'selected', storyRecallIds: [canon.id] });
@@ -443,7 +469,7 @@ test('聊天和专题共用一个选段请求，跑团只引用有出处的当�
   assert.match(directory, /兰瓷×颜令／|健身与运动／/);
   assert.match(directory, /摘句：.*桌上/);
   assert.doesNotMatch(directory, /星际AU测试|分支专有内容/);
-  const input = calls.at(-1).messages[0].content;
+  const input = calls.at(-1).messages.at(-1).content;
   const excerpt = JSON.parse(input.split('【跑团存档引文】\n')[1].split('\n', 1)[0]);
   assert.match(excerpt.出处, /圣维安正史测试.*第1章/);
   assert.ok(excerpt.原文.includes(marker));
@@ -458,7 +484,7 @@ test('聊天和专题共用一个选段请求，跑团只引用有出处的当�
   const cardDirectory = calls.at(-2).messages.at(-1).content;
   assert.match(cardDirectory, /可附角色 [AB]=/);
   assert.doesNotMatch(cardDirectory, /舰队指挥|不在场角色/);
-  const bundled = JSON.parse(calls.at(-1).messages[0].content.split('【跑团存档引文】\n')[1].split('\n', 1)[0]);
+  const bundled = JSON.parse(calls.at(-1).messages.at(-1).content.split('【跑团存档引文】\n')[1].split('\n', 1)[0]);
   assert.deepEqual(bundled.角色梗概.map(card => card.角色).sort(), ['兰瓷', '颜令'].sort());
   assert.match(bundled.角色梗概.find(card => card.角色 === '颜令').梗概, /白川会负责人/);
   assert.ok(bundled.原文.includes(marker));
@@ -468,17 +494,17 @@ test('聊天和专题共用一个选段请求，跑团只引用有出处的当�
   await db.put('nodes', { id: canon.headId, storyId: canon.id, role: 'assistant', status: 'done',
     text: '# 灯塔误报\n\n灯塔误报以后，颜令将兰瓷的银色通行证收进保险柜。更新后的原文。' });
   await replyOf(chat);
-  assert.match(calls.at(-1).messages[0].content, /更新后的原文/);
-  assert.doesNotMatch(calls.at(-1).messages[0].content, /分支专有内容/);
+  assert.match(calls.at(-1).messages.at(-1).content, /更新后的原文/);
+  assert.doesNotMatch(calls.at(-1).messages.at(-1).content, /分支专有内容/);
 
   await db.updateStory(canon.id, story => ({ ...story, headId: 'side-branch' }));
   await replyOf(chat);
-  assert.match(calls.at(-1).messages[0].content, /分支专有内容/);
-  assert.doesNotMatch(calls.at(-1).messages[0].content, /更新后的原文|星际分支专有内容/);
+  assert.match(calls.at(-1).messages.at(-1).content, /分支专有内容/);
+  assert.doesNotMatch(calls.at(-1).messages.at(-1).content, /更新后的原文|星际分支专有内容/);
 
   await saveDeepTalkSettings({ storyRecallScope: 'all', autoTopics: false });
   await replyOf('星际AU测试的第一章原文。');
-  assert.match(calls.at(-1).messages[0].content, /星际分支专有内容/);
+  assert.match(calls.at(-1).messages.at(-1).content, /星际分支专有内容/);
   assert.doesNotMatch(calls.at(-2).messages.at(-1).content, /兰瓷×颜令／|健身与运动／/);
 
   await saveDeepTalkSettings({ storyRecallScope: 'selected', storyRecallIds: [] });
@@ -510,14 +536,14 @@ test('日常聊天可找到尚未在剧情出现的按需设定，并省略停�
     const reply = selectedReply(await generateDeepTalk({ text }));
     assert.equal(calls.length - before, 2);
     assert.match(calls.at(-2).messages.at(-1).content, /摘句：.*蓝色联谊请帖/);
-    assert.match(calls.at(-1).messages[0].content, /蓝色联谊请帖/);
+    assert.match(calls.at(-1).messages.at(-1).content, /蓝色联谊请帖/);
     assert.equal(reply.refs.find(ref => ref.story)?.title, '跨校联谊 · 按需设定 · 赫林顿');
   }
   await db.updateStory(id, story => ({ ...story, worldEntries: [{ ...entry, enabled: false }] }));
   const before = calls.length;
   await generateDeepTalk({ text: '赫林顿有什么校规？' });
   assert.equal(calls.length - before, 1);
-  assert.doesNotMatch(calls.at(-1).messages[0].content, /蓝色联谊请帖/);
+  assert.doesNotMatch(calls.at(-1).messages.at(-1).content, /蓝色联谊请帖/);
 });
 
 test('同名条目不会被交叉关键词挤掉，助手可补选只提到别名的剧情和关联设定', async t => {
@@ -554,7 +580,7 @@ test('同名条目不会被交叉关键词挤掉，助手可补选只提到别�
   assert.match(directory, /^1 跑团／三校联谊测试／按需设定 · 诺登海姆.*已锁定/mu);
   assert.match(directory, /第1章 · 晚宴延迟.*北境学院/u);
   assert.match(directory, /按需设定 · 三校关系/u);
-  const sent = [...calls[1].messages[0].content.matchAll(/【跑团存档引文】\n([^\n]+)/gu)];
+  const sent = [...calls[1].messages.at(-1).content.matchAll(/【跑团存档引文】\n([^\n]+)/gu)];
   assert.equal(sent.length, 3);
   assert.match(sent[0][1], /校徽画着一枝雪松/u);
   assert.ok(sent.some(([, data]) => data.includes('带来了银杯')));
@@ -565,8 +591,8 @@ test('同名条目不会被交叉关键词挤掉，助手可补选只提到别�
 
   decline = true;
   await generateDeepTalk({ text: prompt });
-  assert.match(calls.at(-1).messages[0].content, /校徽画着一枝雪松/u);
-  assert.doesNotMatch(calls.at(-1).messages[0].content, /带来了银杯/u);
+  assert.match(calls.at(-1).messages.at(-1).content, /校徽画着一枝雪松/u);
+  assert.doesNotMatch(calls.at(-1).messages.at(-1).content, /带来了银杯/u);
 
   await db.put('stories', { ...story, id: 'other-au', title: '另一个三校AU', headId: null });
   await saveDeepTalkSettings({ storyRecallScope: 'all' });
@@ -575,7 +601,7 @@ test('同名条目不会被交叉关键词挤掉，助手可补选只提到别�
   const ambiguous = selectedReply(await generateDeepTalk({ text: prompt }));
   assert.equal(calls.length - before, 1);
   assert.equal(ambiguous.storyLookupStatus, 'ambiguous');
-  assert.match(calls.at(-1).messages[0].content, /跑团检索待确认/u);
+  assert.match(calls.at(-1).messages.at(-1).content, /跑团检索待确认/u);
 });
 
 test('跑团检索覆盖番外版本、分支、开场、角色原话、前情、世界书与关联讨论', async () => {
@@ -659,7 +685,7 @@ test('随口追问人名仍能跨故事找到角色卡，小助手未选时保�
   await generateDeepTalk({ text: '聊聊古堡测试的守卫。' });
   for (const text of ['我明白了，那瓦里克斯（笑）', '好，让我们再看看，瓦里克斯', '那虚冥之裔呢？']) {
     const reply = selectedReply(await generateDeepTalk({ text }));
-    assert.match(calls.at(-1).messages[0].content, /角色卡 · 瓦里克斯.*寂冥星的主人/u);
+    assert.match(calls.at(-1).messages.at(-1).content, /角色卡 · 瓦里克斯.*寂冥星的主人/u);
     assert.equal(reply.storyLookupStatus, 'sent');
     assert.match(reply.refs.find(ref => ref.story)?.title, /寂冥星饲养日志/u);
   }
@@ -705,7 +731,7 @@ test('全局检索不会因旧档案格式丢失另一故事的角色卡，预�
   assert.equal(request.mock.callCount(), 0);
   const missed = selectedReply(await generateDeepTalk({ text }));
   assert.equal(missed.storyLookupStatus, 'outside_scope');
-  assert.doesNotMatch(JSON.parse(request.mock.calls[0].arguments[1].body).messages[0].content, /寂冥星的主人/u);
+  assert.doesNotMatch(JSON.parse(request.mock.calls[0].arguments[1].body).messages.at(-1).content, /寂冥星的主人/u);
 
   await saveDeepTalkSettings({ storyRecallScope: 'all' });
   const candidates = await deepTalkRequestPreview(text);
@@ -716,7 +742,7 @@ test('全局检索不会因旧档案格式丢失另一故事的角色卡，预�
   assert.equal(reply.storyLookupStatus, 'sent');
   assert.equal(reply.storyLookupDetails.partial, 1);
   assert.equal(reply.appVersion, candidates.appVersion);
-  assert.match(JSON.parse(request.mock.calls[1].arguments[1].body).messages[0].content, /角色卡 · 瓦里克斯.*寂冥星的主人/u);
+  assert.match(JSON.parse(request.mock.calls[1].arguments[1].body).messages.at(-1).content, /角色卡 · 瓦里克斯.*寂冥星的主人/u);
 });
 
 test('全局短词查正文和番外，跨故事保留出处，并尊重手选故事范围', async () => {
@@ -761,7 +787,109 @@ test('明确查询无原词时用小助手扩词，最后只带本地命中的�
   assert.equal(calls.length, 3);
   assert.equal(calls[0].messages.at(-1).content, '"邪神"');
   assert.match(calls[1].messages.at(-1).content, /外神之一/u);
-  assert.match(calls[2].messages[0].content, /角色卡 · 瓦里克斯.*外神之一/u);
-  assert.doesNotMatch(calls[2].messages[0].content, /不存在的词|邪神的小新娘/u);
+  assert.match(calls[2].messages.at(-1).content, /角色卡 · 瓦里克斯.*外神之一/u);
+  assert.doesNotMatch(calls[2].messages.at(-1).content, /不存在的词|邪神的小新娘/u);
   assert.equal(reply.storyLookupStatus, 'sent');
+});
+
+test('检索共用时间上限，到点用已找到的资料并且同阶段不重试', async t => {
+  await db.put('stories', { id: 'budget-case', title: '遗迹测试', cards: [
+    { name: '望舒朔', initial: '统领守夜队，守护封印的外神。' },
+  ] });
+  await db.kvSet('deeptalk.v1.thread', []);
+  await saveDeepTalkSettings({ connectionId: 'standard', memoryConnectionId: 'archivist', autoStoryRecall: true,
+    autoTopics: false, storyRecallScope: 'selected', storyRecallIds: ['budget-case'] });
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  const main = [];
+  function answer(content) {
+    return Response.json({ choices: [{ message: { content }, finish_reason: 'stop' }] });
+  }
+  let pending;
+  let assistantCalls = 0;
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (body.model !== 'example-archivist') { main.push(body); return answer('测试回复'); }
+    assistantCalls++;
+    return new Promise((resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      pending.resolve({ signal: init.signal, finish: content => resolve(answer(content)) });
+    });
+  });
+
+  const stages = [];
+  pending = Promise.withResolvers();
+  const normal = generateDeepTalk({ text: '那我们来聊聊望舒朔吧，他后来成了主角之一', onSearching: stage => stages.push(stage) });
+  const first = await pending.promise;
+  t.mock.timers.tick(19_999);
+  assert.equal(first.signal.aborted, false);
+  assert.deepEqual(stages, ['start', 'long']);
+  t.mock.timers.tick(1);
+  assert.equal(first.signal.aborted, true);
+  const local = selectedReply(await normal);
+  assert.equal(local.storyLookupStatus, 'timed_partial');
+  assert.match(main[0].messages.at(-1).content, /统领守夜队/u);
+  assert.equal(assistantCalls, 1);
+
+  await saveDeepTalkSettings({ autoTopics: true });
+  pending = Promise.withResolvers();
+  const ordinary = generateDeepTalk({ text: '明天再试一遍这个做法。' });
+  const optional = await pending.promise;
+  t.mock.timers.tick(29_999);
+  assert.equal(optional.signal.aborted, false);
+  t.mock.timers.tick(1);
+  assert.equal(optional.signal.aborted, true);
+  const empty = selectedReply(await ordinary);
+  assert.equal(empty.storyLookupStatus, 'timeout');
+  assert.equal(empty.storyRecallMs, 30_000);
+  assert.equal(assistantCalls, 2);
+  await saveDeepTalkSettings({ autoTopics: false });
+
+  pending = Promise.withResolvers();
+  stages.length = 0;
+  const complex = generateDeepTalk({ text: '帮我查一下跑团里的邪神', onSearching: stage => stages.push(stage) });
+  const expansion = await pending.promise;
+  t.mock.timers.tick(22_000);
+  assert.equal(expansion.signal.aborted, false);
+  pending = Promise.withResolvers();
+  expansion.finish('["外神", "邪祇"]');
+  const selector = await pending.promise;
+  t.mock.timers.tick(8_000);
+  assert.equal(selector.signal.aborted, false);
+  assert.deepEqual(stages, ['start', 'long', 'extended']);
+  t.mock.timers.tick(14_999);
+  assert.equal(selector.signal.aborted, false);
+  t.mock.timers.tick(1);
+  assert.equal(selector.signal.aborted, true);
+  const fallback = selectedReply(await complex);
+  assert.equal(fallback.storyLookupStatus, 'timed_partial');
+  assert.equal(fallback.storyRecallMs, 45_000);
+  assert.equal(assistantCalls, 4);
+  assert.match(main[2].messages.at(-1).content, /外神/u);
+  assert.equal(main[2].messages[1].content, '那我们来聊聊望舒朔吧，他后来成了主角之一');
+  assert.doesNotMatch(main[2].messages[0].content, /统领守夜队/u);
+
+  await db.put('stories', { id: 'zz-budget-stall', title: '尚未扫完的存档' });
+  await db.put('nodes', { id: 'budget-old-chapter', storyId: 'budget-case', role: 'assistant',
+    text: '# 雪灯号角\n\n最后，雪灯号角被藏进北边的守夜塔。' });
+  await saveDeepTalkSettings({ storyRecallScope: 'all' });
+  const dbReady = Promise.withResolvers();
+  const dbPause = Promise.withResolvers();
+  const byStory = db.byStory;
+  t.mock.method(db, 'byStory', id => {
+    if (id !== 'zz-budget-stall') return byStory(id);
+    dbReady.resolve();
+    return dbPause.promise;
+  });
+  const scan = generateDeepTalk({ text: '全局找一下旧分支原文：雪灯号角在哪里？' });
+  await dbReady.promise;
+  t.mock.timers.tick(45_000);
+  try {
+    const scanned = selectedReply(await scan);
+    assert.equal(scanned.storyLookupStatus, 'timed_partial');
+    assert.ok(scanned.storyLookupDetails.scanned < scanned.storyLookupDetails.searched);
+    assert.match(main[3].messages.at(-1).content, /雪灯号角被藏进北边的守夜塔/u);
+    assert.equal(assistantCalls, 4);
+  } finally {
+    dbPause.resolve([]);
+  }
 });
