@@ -389,8 +389,14 @@ test('专题筛选只看短目录与普通发言，选一段并记账，失败�
 });
 
 test('聊天和专题共用一个选段请求，跑团只引用有出处的当前分支原文', async t => {
-  const canon = { id: 'canon', title: '圣维安正史测试', headId: 'canon-head', cards: [{ name: '颜令' }, { name: '兰瓷' }] };
-  const au = { id: 'au', title: '星际AU测试', headId: 'au-head', cards: canon.cards };
+  const canon = { id: 'canon', title: '圣维安正史测试', headId: 'canon-head', cards: [
+    { name: '颜令', initial: '正史测试身份：白川会负责人。', relation: '和兰瓷合作调查灯塔误报。' },
+    { name: '兰瓷', initial: '担任灯塔技术顾问，负责通行证。' },
+    { name: '不在场角色', initial: '未参与本案。' },
+  ] };
+  const au = { id: 'au', title: '星际AU测试', headId: 'au-head', cards: [
+    { name: '颜令', initial: '星际独有人设：舰队指挥。' }, { name: '兰瓷', initial: '星港调查员。' },
+  ] };
   const marker = '灯塔误报以后，颜令把兰瓷的银色通行证压在桌上。';
   const longChapter = marker + '灯塔依然亮着，窗外海浪轻轻拍打石阶。'.repeat(36);
   await db.putMany('stories', [canon, au]);
@@ -402,12 +408,14 @@ test('聊天和专题共用一个选段请求，跑团只引用有出处的当�
   await db.kvSet('deeptalk.v1.thread', []);
   const chat = '颜令在灯塔误报后当时说了什么？找银色通行证的章节原文。';
   const calls = [];
+  let includeCards = false;
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     const body = JSON.parse(init.body);
     calls.push(body);
     const directory = body.messages.at(-1).content;
     const selecting = body.model === 'example-archivist';
-    const content = selecting ? directory.match(/^(\d+) 跑团／/m)?.[1] || '0' : '测试聊天回复';
+    const number = directory.match(/^(\d+) 跑团／/m)?.[1];
+    const content = selecting ? (number ? number + (includeCards ? '+A+B' : '') : '0') : '测试聊天回复';
     return Response.json({ choices: [{ message: { content }, finish_reason: 'stop' }] });
   });
   const replyOf = async text => selectedReply(await generateDeepTalk({ text }));
@@ -440,6 +448,20 @@ test('聊天和专题共用一个选段请求，跑团只引用有出处的当�
   assert.ok(excerpt.原文.length > 460 && excerpt.原文.length <= 800);
   assert.ok(longChapter.includes(excerpt.原文));
   assert.deepEqual(exact.refs.filter(ref => ref.story).map(ref => ref.title), [excerpt.出处]);
+  assert.equal(excerpt.角色梗概, undefined);
+
+  includeCards = true;
+  const backed = await replyOf('颜令和兰瓷各是什么身份？他们在灯塔误报后怎么处理银色通行证？找原文。');
+  includeCards = false;
+  const cardDirectory = calls.at(-2).messages.at(-1).content;
+  assert.match(cardDirectory, /可附角色 [AB]=/);
+  assert.doesNotMatch(cardDirectory, /白川会负责人|舰队指挥|不在场角色/);
+  const bundled = JSON.parse(calls.at(-1).messages[0].content.split('【跑团存档引文】\n')[1].split('\n', 1)[0]);
+  assert.deepEqual(bundled.角色梗概.map(card => card.角色).sort(), ['兰瓷', '颜令'].sort());
+  assert.match(bundled.角色梗概.find(card => card.角色 === '颜令').梗概, /白川会负责人/);
+  assert.ok(bundled.原文.includes(marker));
+  assert.ok(JSON.stringify(bundled.原文).length - 2 + JSON.stringify({ 角色梗概: bundled.角色梗概 }).length <= 800);
+  assert.deepEqual(backed.refs.find(ref => ref.story).characters.sort(), ['兰瓷', '颜令'].sort());
 
   await db.put('nodes', { id: canon.headId, storyId: canon.id, role: 'assistant', status: 'done',
     text: '# 灯塔误报\n\n灯塔误报以后，颜令将兰瓷的银色通行证收进保险柜。更新后的原文。' });

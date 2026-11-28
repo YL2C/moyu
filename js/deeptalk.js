@@ -287,7 +287,7 @@ async function selectTopic(connection, selection, signal) {
   const { context, keys } = selection;
   const controller = new AbortController();
   const abort = () => controller.abort(signal?.reason);
-  if (signal?.aborted) return '';
+  if (signal?.aborted) return null;
   signal?.addEventListener('abort', abort, { once: true });
   const timeout = setTimeout(() => controller.abort('timeout'), 4500);
   const requestId = uid();
@@ -305,7 +305,7 @@ async function selectTopic(connection, selection, signal) {
     signal?.removeEventListener('abort', abort);
   }
   await recordDeepTalkUsage(connection, response, context, requestId, Date.now() - started, TOPIC_RECALL_KIND);
-  return response.text && !response.flagged && !response.truncated ? readTopicChoice(keys, response.text) : '';
+  return response.text && !response.flagged && !response.truncated ? readTopicChoice(keys, response.text) : null;
 }
 
 export async function generateDeepTalk({ text, turnId = '', resume = false, deeper = false, manualKeys = [], signal,
@@ -343,10 +343,11 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
         : topicSelectionInput({ text: prompt, materials: settings.autoTopics ? materials : {}, recent, storyRows: storyLookup.rows });
       if (selection) {
         if (!settings.autoStoryRecall) onSearching();
-        const choice = await selectTopic(selector, selection, signal).catch(() => '');
+        const choice = await selectTopic(selector, selection, signal).catch(() => null);
         if (signal?.aborted) return null;
-        if (choice.startsWith('story/')) automaticStory = await chatStoryReference(storyLookup.rows, choice).catch(() => null);
-        else automaticTopic = choice;
+        if (choice?.key.startsWith('story/'))
+          automaticStory = await chatStoryReference(storyLookup.rows, choice, prompt, recent).catch(() => null);
+        else if (choice) automaticTopic = choice.key;
       }
     }
     if (signal?.aborted) return null;

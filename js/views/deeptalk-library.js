@@ -205,7 +205,7 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
     if (!stories.length) storyList.append(el('p', { class: 'deeptalk-subtle' }, '本机暂无跑团故事。'));
     const storyControls = el('div', {},
       el('label', { class: 'deeptalk-field' }, '跑团检索范围', scope), storyList,
-      el('p', { class: 'deeptalk-subtle' }, '仅查询所选范围内各故事的当前分支。联想命中后，聊天模型最多收到一段 800 字的摘录。'));
+      el('p', { class: 'deeptalk-subtle' }, '仅查询所选范围内各故事的当前分支。联想命中后，剧情摘录和需要的角色梗概共用 800 字预算。'));
     const updateStoryControls = () => {
       storyRecall.disabled = !select.value;
       storyControls.hidden = !storyRecall.checked || storyRecall.disabled;

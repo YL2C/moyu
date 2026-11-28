@@ -305,7 +305,7 @@ export async function render(root) {
         if (settings.autoStoryRecall || used.some(part => part.story)) groups.push(['跑团联想', used.filter(part => part.story)]);
       }
       for (const [label, parts] of groups) {
-        panel.body.append(el('h3', {}, label), el('p', { class: 'deeptalk-quote' }, parts?.length ? parts.map(part => part.title).join('\n') : '无'));
+        panel.body.append(el('h3', {}, label), el('p', { class: 'deeptalk-quote' }, parts?.length ? parts.map(part => part.characters?.length ? part.title + ' · 角色梗概：' + part.characters.join('、') : part.title).join('\n') : '无'));
       }
       if (draft.value.trim() && (settings.autoTopics || settings.autoStoryRecall))
         panel.body.append(el('p', { class: 'deeptalk-subtle' }, '联想资料在发送时挑选，回复后可在这里查看出处。'));

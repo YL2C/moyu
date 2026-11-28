@@ -4,6 +4,8 @@ import { applyCardState, latestCheckpoint, splitNames } from './prompt.js';
 
 const SOFT_LIMIT = 600;
 const EXCERPT_LIMIT = 800;
+const CARD_LIMIT = 80;
+const CARD_CHOICES = 'ABC';
 const MAX_CANDIDATES = 3;
 const CHAPTER_NUMBER = /第\s*([0-9一二两三四五六七八九十百千]+)\s*章/gu;
 const LOOKUP = /原文|原话|剧情|跑团|存档|设定|前情|哪一章|哪章|(?:当时|那次|以前|之前|后来|第一次).{0,24}(?:怎么|说了|说过|发生|知道|反应|答应|有没有|送了)|(?:翻|查|回忆).{0,12}(?:那段|旧章|那幕|那一段)/u;
@@ -17,19 +19,19 @@ const sentence = /[。！？…!?；;]+[」』”’）)】]?|\n+/gu;
 const cutEnd = (text, end) => /[\uD800-\uDBFF]/u.test(text[end - 1] || '') ? end - 1 : end;
 const cache = new Map();
 
-function windows(text) {
+function windows(text, limit = EXCERPT_LIMIT) {
   if (typeof text !== 'string' || !text.trim()) return [];
   const parts = [];
   for (let start = 0; start < text.length;) {
-    if (text.length - start <= SOFT_LIMIT) {
+    if (text.length - start <= Math.min(SOFT_LIMIT, limit)) {
       parts.push(text.slice(start).trim());
       break;
     }
-    const slice = text.slice(start, start + EXCERPT_LIMIT);
+    const slice = text.slice(start, start + limit);
     const stops = [...slice.matchAll(sentence)].map(match => match.index + match[0].length);
     const before = stops.findLast(end => end <= SOFT_LIMIT && end >= SOFT_LIMIT / 2);
     const after = stops.find(end => end > SOFT_LIMIT);
-    const end = cutEnd(text, start + (before ?? after ?? SOFT_LIMIT));
+    const end = cutEnd(text, start + (before ?? after ?? Math.min(SOFT_LIMIT, limit)));
     parts.push(text.slice(start, end).trim());
     if (end >= text.length) break;
     // Keep enough overlap to catch an exchange crossing the boundary.
@@ -80,15 +82,24 @@ function indexStory(story, nodes) {
   add('summary/threads', 'summary', '前情档案 · 未决事项', (memory?.threads || []).join('\n'));
 
   add('world', 'setting', '世界设定', story.world);
-  add('protagonist', 'setting', '主角卡 · ' + (story.protagonist?.name || '主角'), story.protagonist?.note, 0, normalize(story.protagonist?.name));
+  const protagonist = story.protagonist;
+  const cards = [];
+  const addCard = (id, label, card, fields) => {
+    const details = fields.filter(([, value]) => typeof value === 'string' && value.trim());
+    add(id, 'setting', label + ' · ' + (card.name || '未命名角色'),
+      details.map(([, value]) => value).join('\n\n'), 0, normalize(card.name));
+    if (card.name && details.length)
+      cards.push({ name: card.name, names: splitNames(card).map(normalize).filter(name => name.length >= 2), details });
+  };
+  if (protagonist) addCard('protagonist', '主角卡', protagonist, [['设定', protagonist.note]]);
   for (const [index, base] of (story.cards || []).entries()) {
     const card = applyCardState(base, memory);
-    add('card/' + (card.id || index), 'setting', '角色卡 · ' + (card.name || '未命名角色'),
-      [card.initial, card.base, card.now, card.arc, card.relation].filter(Boolean).join('\n\n'), 0, normalize(card.name));
+    addCard('card/' + (card.id || index), '角色卡', card, [
+      ['身份', card.initial], ['关系档案', card.relation], ['性格', card.base], ['当前状态', card.now], ['经历', card.arc],
+    ]);
   }
-
-  const names = [story.protagonist?.name, ...(story.cards || []).flatMap(splitNames)].map(normalize);
-  return { title, name: normalize(title), names: [...new Set(names.filter(name => name.length >= 2))], entries };
+  const names = [protagonist?.name, ...(story.cards || []).flatMap(splitNames)].map(normalize);
+  return { title, name: normalize(title), names: [...new Set(names.filter(name => name.length >= 2))], entries, cards };
 }
 
 function chapterNumber(value) {
@@ -138,6 +149,38 @@ function makeQuery(text, recent) {
     wording: !!chapters.length || WORDING.test(input), setting: SETTING.test(input), chapters, score };
 }
 
+function trimCardDetail(text, limit) {
+  const raw = text.trim();
+  if (raw.length <= limit) return raw;
+  const within = raw.slice(0, limit);
+  const ends = [...within.matchAll(sentence)];
+  const last = ends.at(-1);
+  const end = last ? last.index + last[0].length : 0;
+  if (end >= limit / 2) return raw.slice(0, end).trim();
+  return raw.slice(0, cutEnd(raw, limit - 1)).trimEnd() + '…';
+}
+
+function cardChoices(cards, query, passage) {
+  const local = normalize(passage);
+  const ranked = [];
+  for (const card of cards) {
+    const asked = card.names.some(name => query.current.includes(name));
+    const present = card.names.some(name => local.includes(name));
+    if (!asked && !present) continue;
+    const values = card.details.map(([label, value], index) => ({
+      value: label + '：' + value.trim(), score: query.score(normalize(value).slice(0, 1200)).value + (index ? 0 : 3),
+    })).sort((a, b) => b.score - a.score);
+    // Prefer a short paired identity and relationship when their sources fit.
+    const first = trimCardDetail(values[0].value, values.length > 1 ? 50 : CARD_LIMIT);
+    const remaining = CARD_LIMIT - first.length - 1;
+    const second = values[1] && remaining >= 14 ? trimCardDetail(values[1].value, remaining) : '';
+    ranked.push({ name: card.name.replace(/[\r\n]/g, ' ').trim().slice(0, 16),
+      text: [first, second].filter(Boolean).join('\n'), score: (asked ? 30 : 0) + (present ? 15 : 0) + values[0].score });
+  }
+  ranked.sort((a, b) => b.score - a.score);
+  return ranked.slice(0, CARD_CHOICES.length).map(({ name, text }, at) => ({ name, text, id: CARD_CHOICES[at] }));
+}
+
 function matchStory(index, query, storyId, stamp) {
   const { current, last, explicit, wording, setting, chapters, score } = query;
   const titled = index.name.length >= 2 && current.includes(index.name);
@@ -174,10 +217,10 @@ function matchStory(index, query, storyId, stamp) {
     const clue = [...new Set(best.terms)].filter(term => term.length >= 4 && !normalize(label + index.title).includes(term)).slice(0, 3).join('、');
     rank.push({ key: 'story/' + JSON.stringify([storyId, entry.id]), storyId, stamp, title: index.title.slice(0, MAX_STORY_TITLE) + ' · ' + label,
       label: ('跑团／' + index.title.slice(0, 36) + '／' + label).replace(/[\r\n]/g, ' '),
-      hint: clue, text: best.text, rank: best.total, score: explicit ? 35 : 16, story: true, topic: true });
+      hint: clue, text: best.text, kind, rank: best.total, score: explicit ? 35 : 16, story: true, topic: true });
   }
   rank.sort((a, b) => b.rank - a.rank);
-  return { storyId, title: index.title, titled, previouslyTitled, roles, candidates: rank.slice(0, MAX_CANDIDATES) };
+  return { storyId, title: index.title, titled, previouslyTitled, roles, candidates: rank.slice(0, MAX_CANDIDATES), cards: index.cards };
 }
 
 export async function findChatStoryReferences({ text, recent, settings, signal }) {
@@ -213,10 +256,28 @@ export async function findChatStoryReferences({ text, recent, settings, signal }
     const titles = [...new Set([best, ...ambiguous].map(match => match.title.slice(0, MAX_STORY_TITLE)))].slice(0, 3);
     return { rows: [], ...(query.explicit ? { clarify: titles } : {}) };
   }
-  return { rows: best.candidates };
+  return { rows: best.candidates.map(row => ({
+    ...row, cards: row.kind === 'setting' ? [] : cardChoices(best.cards, query, row.text),
+  })) };
 }
 
-export async function chatStoryReference(rows, choice) {
-  const found = rows.find(row => row.key === choice);
-  return found && await db.storyLookupStamp(found.storyId) === found.stamp ? found : null;
+export async function chatStoryReference(rows, choice, text, recent) {
+  const found = rows.find(row => row.key === choice.key);
+  if (!found || await db.storyLookupStamp(found.storyId) !== found.stamp) return null;
+  const cards = found.cards.filter(card => choice.cards.includes(card.id)).slice(0, 2)
+    .map(({ name, text }) => ({ 角色: name, 梗概: text }));
+  if (!cards.length) return { ...found, cards: [] };
+
+  // Reserve the new JSON field, including JSON escaping and its labels, from the shared budget.
+  const cardLength = JSON.stringify({ 角色梗概: cards }).length;
+  const limit = EXCERPT_LIMIT - cardLength;
+  if (JSON.stringify(found.text).length - 2 <= limit) return { ...found, cards };
+  const query = makeQuery(text, recent);
+  // Escaped newlines and quotation marks still count toward the input budget.
+  const parts = windows(found.text, limit).map(({ raw }) => {
+    let end = raw.length;
+    while (JSON.stringify(raw.slice(0, end)).length - 2 > limit) end--;
+    return raw.slice(0, cutEnd(raw, end)).trimEnd();
+  }).sort((a, b) => query.score(normalize(b)).value - query.score(normalize(a)).value);
+  return { ...found, text: parts[0], cards };
 }
