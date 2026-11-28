@@ -16,6 +16,11 @@ const MAX_EVIDENCE = 3;
 const HISTORY_QUERY = /旧版|历史版本|其他分支|旧分支|原分支|不同版本|被替换|废案|改写前|第\s*\d+\s*版|版本\s*\d+/u;
 const IDENTITY_QUERY = /(?:你知道|还记得|介绍一下).{2,30}(?:吗|么|[？?!！]|$)|是什么|是谁|叫什么/u;
 const IDENTITY_SUBJECT = /(?:你知道|还记得|介绍一下)\s*([^，。！？?!,]+?)\s*(?:吗|么)?[。！？?!]*$|(?:^|[，。！？?!,])\s*([^，。！？?!,]+?)(?:是什么|是谁|叫什么)[。！？?!]*$/u;
+const STORY_LOOKUP = /(?:跑团|存档|剧情|故事)(?:里|中)(?:面)?(?:有(?:一个|一位|一段)?|的|出现过)?\s*([^，。！？?!,]+)/u;
+const LOOKUP_TERM = /^(?:请|帮我|麻烦你)?(?:查(?:一下|找|看)?|搜(?:索|一下)?|找(?:找|一下)?)\s*(?:关键词\s*)?([^，。！？?!,]+)[。！？?!]*$/u;
+const ASIDE = /[（(](?:轻?笑|大笑|笑死|哈哈+|捂脸|摊手|狗头)[）)]\s*$/u;
+const FOCUS = /^(?:那(?:个|位)?\s*)?([\p{L}\p{N}][\p{L}\p{N} ·・-]{1,29}?)(?:[呢吗么啊呀])?[。！？?!]*$/u;
+const GENERAL_WORDS = /^(?:故事|跑团|剧情|存档|设定|角色|原文|世界观|番外|关键词|怎么样|是什么|有什么|还有呢|那后来|然后呢|还能呢)$/u;
 const SOURCE_QUERIES = [
   ['extra', /番外|同人|IF线|恋综|恋爱脑报告/u],
   ['discussion', /讨论|提案|草案|附件/u],
@@ -156,6 +161,7 @@ function indexStory(story, nodes, extras, discussions, shared) {
   };
   for (const node of nodes) if (node.checkpoint) addArchive(node, checkpoint?.node.id === node.id);
 
+  add('story-title', 'overview', '故事简介', [title, story.world?.slice(0, 500) || story.opening?.slice(0, 500)].filter(Boolean).join('\n'));
   add('world', 'setting', '世界设定', story.world);
   add('opening', 'opening', '故事开场', story.opening);
   add('rules', 'module', '故事规则', story.rules);
@@ -256,7 +262,7 @@ function queryPattern(text, limit) {
   return terms.length ? new RegExp(terms.join('|'), 'gu') : null;
 }
 
-function makeQuery(text, recent) {
+function makeQuery(text, recent, variants = []) {
   const input = text.normalize('NFKC');
   const current = normalize(input);
   const followUp = FOLLOW_UP.test(input);
@@ -278,11 +284,21 @@ function makeQuery(text, recent) {
   const identity = IDENTITY_QUERY.test(input);
   const [, asked, named] = identity ? input.match(IDENTITY_SUBJECT) || [] : [];
   const subject = normalize(asked || named);
+  const lookupTerm = input.match(STORY_LOOKUP)?.[1] || input.match(LOOKUP_TERM)?.[1] ||
+    input.match(/^([“"「『][^”"」』]+[”"」』])[。！？?!]*$/u)?.[1] || '';
+  const quoted = lookupTerm.match(/[“"「『]([^”"」』]+)[”"」』]/u)?.[1];
+  const explicitTerm = normalize(quoted || lookupTerm.replace(/(?:有没有|在哪里|有哪些|能找到吗|是谁|是什么|在哪一章)[？?]?$/u, ''));
+  const lastClause = input.split(/[，,。；;]/u).at(-1).trim().replace(ASIDE, '').trim();
+  const focus = normalize(lastClause.match(FOCUS)?.[1]);
+  const bare = !/[，,。；;]/u.test(input.replace(/[。！？?!]+$/u, ''));
+  const rawKeyword = explicitTerm || subject || (bare ? focus : '');
+  const keyword = rawKeyword.length >= 2 && rawKeyword.length <= 36 && !GENERAL_WORDS.test(rawKeyword) ? rawKeyword : '';
   const source = SOURCE_QUERIES.find(([, rule]) => rule.test(input))?.[0] ??
     (/其他分支|旧分支|原分支|改写前/u.test(input) ? 'chapter' : undefined);
   const versionMatch = input.match(/第\s*([0-9一二两三四五六七八九十百千]+)\s*版|版本\s*(\d+)/u);
   const version = versionMatch ? chapterNumber(versionMatch[1] || versionMatch[2]) : 0;
-  return { current, last, identity, subject: subject.length >= 3 && subject.length <= 44 ? subject : '',
+  return { current, last, identity, focus, keyword, keywordExplicit: !!keyword && !!(lookupTerm || subject),
+    keywordVariants: variants.map(normalize).filter(term => term.length >= 2 && term !== keyword && !GENERAL_WORDS.test(term)),
     source, version, historical: !!version || HISTORY_QUERY.test(input),
     explicit: identity || !!chapters.length || !!source || HISTORY_QUERY.test(input) || LOOKUP.test(input),
     wording: !!chapters.length || WORDING.test(input), setting: SETTING.test(input), chapters, score };
@@ -343,7 +359,7 @@ function matchingSnippet(raw, words) {
 }
 
 function matchStory(index, query, storyId, stamp) {
-  const { current, last, explicit, wording, setting, chapters, score, identity, subject, source } = query;
+  const { current, last, explicit, wording, setting, chapters, score, identity, focus, keyword, keywordVariants, source } = query;
   const titled = index.name.length >= 2 && current.includes(index.name);
   const previouslyTitled = !titled && index.name.length >= 2 && last.includes(index.name);
   const roles = index.names.filter(name => current.includes(name) || last.includes(name));
@@ -359,8 +375,14 @@ function matchStory(index, query, storyId, stamp) {
   const rank = [];
   for (const entry of index.entries) {
     const { kind, search, chapter, version, person, triggers, name, historical, entity } = entry;
+    if (kind === 'overview' && (!keyword || !index.name.includes(keyword))) continue;
     const direct = name.length >= 2 && current.includes(name);
     const mentioned = triggers.filter(term => current.includes(term) || last.includes(term));
+    const namedEntity = ['setting', 'module'].includes(kind) && (entity || !!person || !!name);
+    const exactAlias = [focus, keyword].some(term => term && !actualNames.has(term) && triggers.includes(term));
+    const exactEntity = namedEntity && (direct || exactAlias);
+    const canPin = exactEntity && (focus === name || exactAlias || identity || query.keywordExplicit) &&
+      !query.historical && !wording && !historical && (!source || source === 'module');
     const exactChapter = chapter > 0 && chapters.includes(chapter);
     const requestedType = kind === source;
     if (chapters.length && !exactChapter && !requestedType) continue;
@@ -372,21 +394,22 @@ function matchStory(index, query, storyId, stamp) {
     for (const passage of entry.passages) {
       const hit = score(passage.search);
       const linked = aliases.some(term => passage.search.includes(term));
-      const subjectMatch = subject && passage.search.includes(subject);
+      const literal = !!keyword && (passage.search.includes(keyword) || search.includes(keyword));
+      const related = keywordVariants.find(term => passage.search.includes(term) || search.includes(term));
       const evidence = heading.value + hit.value;
       const requestedTerms = requestedType && (titled || previouslyTitled ||
         (query.historical && hit.terms.some(term => term.length >= 4)));
-      if (!direct && !mentioned.length && !linked && !subjectMatch && !exactChapter && !requestedTerms &&
+      if (!direct && !mentioned.length && !linked && !literal && !related && !exactChapter && !requestedTerms &&
           evidence < (titled || previouslyTitled || roles.length || (requestedType && explicit) ? 4 : titleEvidence ? 9 : 14)) continue;
       const priority = (exactChapter ? 75 : 0) + (direct ? (requestedType || (!wording && (identity || setting)) ? 100 : wording ? 10 : 45) : 0) +
-        (linked ? 18 : 0) + (subjectMatch ? 28 : 0) + (mentioned.length ? 17 : 0) + (role ? 9 : 0) +
+        (linked ? 18 : 0) + (literal ? 32 : related ? 24 : 0) + (mentioned.length ? 17 : 0) + (role ? 9 : 0) +
         (requestedType ? 45 : 0) + (setting && kind === 'setting' ? 20 : 0) +
         (wording && !source && kind === 'chapter' ? 58 : 0) + (historical ? (query.historical ? 35 : -30) : 0) +
         (kind === 'correction' && !source && !wording ? 12 : 0) +
         (['option', 'danmu', 'discussion', 'ooc'].includes(kind) && !requestedType ? -14 : 0);
       const total = evidence + heading.value + priority;
-      if (!best || total > best.total) best = { total, raw: passage.raw,
-        terms: [...heading.terms, ...hit.terms], linked };
+      if (!best || total > best.total) best = { total, raw: passage.raw, literal,
+        terms: [...heading.terms, ...hit.terms, ...(literal ? [keyword] : related ? [related] : [])], linked, related };
     }
     if (!best) continue;
     const label = entry.label.slice(0, 65);
@@ -394,14 +417,14 @@ function matchStory(index, query, storyId, stamp) {
     rank.push({ key: 'story/' + JSON.stringify([storyId, entry.id]), storyId, stamp,
       title: index.title.slice(0, MAX_STORY_TITLE) + ' · ' + label,
       label: ('跑团／' + index.title.slice(0, 36) + '／' + label).replace(/[\r\n]/g, ' '),
-      hint: clue, text: best.raw, snippetTerms: [...best.terms, ...aliases], kind, mentioned, direct, entity,
+      hint: clue, text: best.raw, snippetTerms: [...best.terms, ...aliases], kind, mentioned, exactEntity, canPin,
+      literal: best.literal, related: best.related,
       historical, linked: best.linked,
       rank: best.total + (titled ? 30 : previouslyTitled ? 18 : 0) + Math.min(titleMatch, 15),
       score: explicit ? 35 : 16, story: true, topic: true });
   }
   rank.sort((a, b) => b.rank - a.rank);
-  const pin = identity && !chapters.length && (!source || source === 'module') ?
-    rank.find(row => row.direct && !row.historical && (row.entity || (!wording && ['setting', 'module'].includes(row.kind)))) : null;
+  const pin = rank.find(row => row.canPin);
   const currentKinds = new Set(rank.filter(row => !row.historical && row.rank >= 12).map(row => row.kind));
   const eligible = rank.filter(row => !row.historical || query.historical ||
     (!currentKinds.has(row.kind) && row.rank >= 18));
@@ -418,8 +441,8 @@ function matchStory(index, query, storyId, stamp) {
   return { storyId, title: index.title, titled, previouslyTitled, roles, candidates, pin, cards: index.cards };
 }
 
-export async function findChatStoryReferences({ text, recent, settings, signal }) {
-  const query = makeQuery(text, recent);
+export async function findChatStoryReferences({ text, recent, settings, signal, variants = [] }) {
+  const query = makeQuery(text, recent, variants);
   if (query.current.length < 2) return { rows: [] };
   const selected = settings.storyRecallScope === 'selected' ? new Set(settings.storyRecallIds || []) : null;
   if (selected && !selected.size) return { rows: [] };
@@ -457,7 +480,9 @@ export async function findChatStoryReferences({ text, recent, settings, signal }
 
   const named = matches.filter(match => match.titled);
   const previous = matches.filter(match => match.previouslyTitled);
-  const scoped = (named.length ? named : previous.length ? previous : matches).filter(match => match.candidates.length);
+  const currentMatch = matches.some(match => match.pin || match.candidates.some(row => row.exactEntity || row.literal));
+  const scoped = (named.length ? named : previous.length && !currentMatch && !query.keyword ? previous : matches)
+    .filter(match => match.candidates.length);
   const attach = (row, match) => {
     const { snippetTerms, ...candidate } = row;
     return { ...candidate, snippet: matchingSnippet(row.text, snippetTerms),
@@ -467,7 +492,21 @@ export async function findChatStoryReferences({ text, recent, settings, signal }
     const balanced = scoped.slice(0, 3).flatMap(match => match.candidates.slice(0, 3).map(row => attach(row, match)));
     return { rows: balanced };
   }
-  scoped.sort((a, b) => (b.pin?.rank ?? b.candidates[0].rank) - (a.pin?.rank ?? a.candidates[0].rank));
+  if (query.keyword && !query.wording && !query.historical && !query.source &&
+      !scoped.some(match => match.pin || match.candidates.some(row => row.exactEntity))) {
+    const groups = scoped.map(match => ({ match, rows: match.candidates.filter(row => row.literal || row.related) }))
+      .filter(group => group.rows.length).sort((a, b) => b.rows[0].rank - a.rows[0].rank);
+    // Give separate stories a chance to reach the selector before filling the remaining slots.
+    const first = groups.slice(0, MAX_CANDIDATES).map(group => attach(group.rows[0], group.match));
+    const rows = [...first];
+    for (const group of groups) {
+      if (rows.length >= MAX_CANDIDATES) break;
+      rows.push(...group.rows.slice(1, 1 + MAX_CANDIDATES - rows.length).map(row => attach(row, group.match)));
+    }
+    if (rows.length) return { rows, fallback: query.keywordExplicit ? rows.find(row => row.literal)?.key : undefined };
+    if (query.keywordExplicit && !named.length) return { rows: [], expansionKeyword: variants.length ? '' : query.keyword };
+  }
+  scoped.sort((a, b) => Number(!!b.pin) - Number(!!a.pin) || b.candidates[0].rank - a.candidates[0].rank);
   const best = scoped[0];
   if (!best) return { rows: [] };
   const head = best.candidates[0];
@@ -475,7 +514,7 @@ export async function findChatStoryReferences({ text, recent, settings, signal }
     const other = match.candidates[0];
     const sameEntity = head.mentioned.some(term => other.mentioned.includes(term));
     if (head.kind === 'module' && other.kind === 'module' && head.text === other.text) return false;
-    return (best.pin && match.pin && sameEntity) || (head.rank - other.rank < 9 &&
+    return (best.pin && match.pin && sameEntity) || (!best.pin && head.rank - other.rank < 9 &&
       (query.explicit || best.roles.some(name => match.roles.includes(name)) || sameEntity));
   });
   if (ambiguous.length) {

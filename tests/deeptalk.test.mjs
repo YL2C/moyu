@@ -641,3 +641,73 @@ test('跑团检索覆盖番外版本、分支、开场、角色原话、前情�
   await db.del('extras', 'extra-test');
   assert.ok(!(await get('月潮信件番外原文')).rows.some(row => row.kind === 'extra'));
 });
+
+test('随口追问人名仍能跨故事找到角色卡，小助手未选时保留原卡', async t => {
+  await db.putMany('stories', [
+    { id: 'valix-test', title: '寂冥星饲养日志', cards: [{ name: '瓦里克斯', aliases: '虚冥之裔、主厨、杀神',
+      initial: '虚冥之裔，族群中最古老的外神之一，也是寂冥星的主人。' }] },
+    { id: 'older-query-story', title: '古堡测试', world: '古堡测试的守卫换了新制服。' },
+  ]);
+  await saveDeepTalkSettings({ autoStoryRecall: true, storyRecallScope: 'all', autoTopics: false });
+  await db.kvSet('deeptalk.v1.thread', []);
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    return Response.json({ choices: [{ message: { content: body.model === 'example-archivist' ? '0' : '测试回复' }, finish_reason: 'stop' }] });
+  });
+  await generateDeepTalk({ text: '聊聊古堡测试的守卫。' });
+  for (const text of ['我明白了，那瓦里克斯（笑）', '那虚冥之裔呢？']) {
+    const reply = selectedReply(await generateDeepTalk({ text }));
+    assert.match(calls.at(-1).messages[0].content, /角色卡 · 瓦里克斯.*寂冥星的主人/u);
+    assert.equal(reply.storyLookupStatus, 'sent');
+    assert.match(reply.refs.find(ref => ref.story)?.title, /寂冥星饲养日志/u);
+  }
+});
+
+test('全局短词查正文和番外，跨故事保留出处，并尊重手选故事范围', async () => {
+  await db.putMany('stories', [
+    { id: 'keyword-prose', title: '小镇的影子', headId: 'keyword-chapter' },
+    { id: 'keyword-extra', title: '小教堂', headId: null },
+    { id: 'keyword-title', title: '邪神的小新娘', world: '小镇的仪式在雪夜进行。' },
+  ]);
+  await db.put('nodes', { id: 'keyword-chapter', storyId: 'keyword-prose', role: 'assistant', status: 'done',
+    text: '# 黑色壁炉\n\n雪停之后，那位邪神等在壁炉旁。' });
+  await db.put('extras', { id: 'keyword-extra-record', storyId: 'keyword-extra', versions: [
+    { text: '# 黑色烛台\n\n祭司目睹邪神穿过了钟楼。' },
+  ] });
+  for (const text of ['邪神', '跑团里有一个“邪神”，你能找到吗？', '帮我找一下跑团里的邪神']) {
+    const { rows } = await findChatStoryReferences({ text, recent: '刚刚还在聊古堡测试', settings: { storyRecallScope: 'all' } });
+    assert.ok(rows.some(row => /邪神等在壁炉旁/u.test(row.text)), text);
+    assert.ok(rows.some(row => /邪神穿过了钟楼/u.test(row.text)), text);
+    assert.ok(rows.some(row => row.storyId === 'keyword-title' && row.kind === 'overview'), text);
+  }
+  const { rows } = await findChatStoryReferences({ text: '邪神', recent: '',
+    settings: { storyRecallScope: 'selected', storyRecallIds: ['keyword-extra'] } });
+  assert.ok(rows.length > 0);
+  assert.ok(rows.every(row => row.storyId === 'keyword-extra'));
+});
+
+test('明确查询无原词时用小助手扩词，最后只带本地命中的出处', async t => {
+  await saveDeepTalkSettings({ autoStoryRecall: true, storyRecallScope: 'selected',
+    storyRecallIds: ['valix-test'], autoTopics: false });
+  await db.kvSet('deeptalk.v1.thread', []);
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    let content = '测试回复';
+    if (body.model === 'example-archivist') {
+      content = body.messages[0].content.startsWith('为用户在跑团存档中查找的关键词')
+        ? '["不存在的词", "外神"]' : body.messages.at(-1).content.match(/^(\d+) 跑团／.*瓦里克斯/mu)?.[1] || '0';
+    }
+    return Response.json({ choices: [{ message: { content }, finish_reason: 'stop' }] });
+  });
+  const reply = selectedReply(await generateDeepTalk({ text: '帮我查一下跑团里的邪神' }));
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].messages.at(-1).content, '"邪神"');
+  assert.match(calls[1].messages.at(-1).content, /外神之一/u);
+  assert.match(calls[2].messages[0].content, /角色卡 · 瓦里克斯.*外神之一/u);
+  assert.doesNotMatch(calls[2].messages[0].content, /不存在的词|邪神的小新娘/u);
+  assert.equal(reply.storyLookupStatus, 'sent');
+});
