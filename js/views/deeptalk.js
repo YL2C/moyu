@@ -307,6 +307,13 @@ export async function render(root) {
       for (const [label, parts] of groups) {
         panel.body.append(el('h3', {}, label), el('p', { class: 'deeptalk-quote' }, parts?.length ? parts.map(part => part.characters?.length ? part.title + ' · 角色梗概：' + part.characters.join('、') : part.title).join('\n') : '无'));
       }
+      if (!draft.value.trim() && preview?.storyLookupStatus && preview.storyLookupStatus !== 'off') {
+        const labels = { sent: '已把上方跑团资料交给聊天模型', skipped: '本轮跳过了跑团检索或辅助选段',
+          ambiguous: '匹配到多个存档，等待确认', no_match: '未找到相关跑团候选', declined: '小助手未选中跑团资料',
+          timeout: '小助手超时', failed: '检索或小助手请求失败', invalid: '小助手返回的选段无法读取',
+          filtered: '候选已过滤或存档已更新' };
+        panel.body.append(el('p', { class: 'deeptalk-subtle' }, labels[preview.storyLookupStatus] || ''));
+      }
       if (draft.value.trim() && (settings.autoTopics || settings.autoStoryRecall))
         panel.body.append(el('p', { class: 'deeptalk-subtle' }, '联想资料在发送时挑选，回复后可在这里查看出处。'));
       panel.foot.append(button('关闭', panel.close));

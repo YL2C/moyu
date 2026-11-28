@@ -109,7 +109,7 @@ export const db = {
     try {
       r = await run(store, 'readwrite', (os, tx) => {
         const request = key === undefined ? os.put(value) : os.put(value, key);
-        if (store === 'stories' || store === 'nodes') touchStoryLookup(tx, [store === 'stories' ? value.id : value.storyId]);
+        if (BACKUP_STORES.includes(store)) touchStoryLookup(tx, [store === 'stories' ? value.id : value.storyId]);
         if (BACKUP_STORES.includes(store) && !(store === 'nodes' && value.status === 'streaming')) {
           trackBackup(tx, () => queueChange(tx, store, value.id, value));
         }
@@ -150,7 +150,7 @@ export const db = {
     try {
       return await run(store, 'readwrite', (os, tx) => {
         for (const v of values) os.put(v);
-        if (store === 'stories' || store === 'nodes')
+        if (BACKUP_STORES.includes(store))
           touchStoryLookup(tx, values.map(value => store === 'stories' ? value.id : value.storyId));
         if (BACKUP_STORES.includes(store)) trackBackup(tx, () => {
           for (const v of new Map(values.map(value => [value.id, value])).values()) queueChange(tx, store, v.id, v);
@@ -161,9 +161,9 @@ export const db = {
   async del(store, key) {
     try { return await run(store, 'readwrite', (os, tx) => {
       if (store === 'stories') touchStoryLookup(tx, [key]);
-      if (store === 'nodes') {
-        const node = os.get(key);
-        node.onsuccess = () => touchStoryLookup(tx, [node.result?.storyId]);
+      if (store === 'nodes' || store === 'extras') {
+        const record = os.get(key);
+        record.onsuccess = () => touchStoryLookup(tx, [record.result?.storyId]);
       }
       if (BACKUP_STORES.includes(store)) trackBackup(tx, () => queueChange(tx, store, key));
       if (store === 'kv' && isChatBackupKey(key)) trackBackup(tx, () => queueChatChange(tx, key));

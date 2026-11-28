@@ -11,6 +11,7 @@ import { deepTalkMaterials, deepTalkMemory, generateDeepTalk, readDeepTalkThread
   restoreMaterialEdition, reviseDeepTalkMemory, saveDeepTalkMaterials, saveDeepTalkSettings, saveMaterialEdit,
   selectedReply, setTurnExcluded, deepTalkReplyTokens, getDeepTalkSpend, deepTalkSettings } from '../js/deeptalk.js';
 import { organizeDeepTalk } from '../js/deeptalk-memory.js';
+import { findChatStoryReferences } from '../js/deeptalk-story-recall.js';
 
 globalThis.indexedDB = new IDBFactory();
 
@@ -440,7 +441,8 @@ test('聊天和专题共用一个选段请求，跑团只引用有出处的当�
   const directory = calls.at(-2).messages.at(-1).content;
   assert.match(directory, /跑团／圣维安正史测试／第1章/);
   assert.match(directory, /兰瓷×颜令／|健身与运动／/);
-  assert.doesNotMatch(directory, /星际AU测试|桌上|分支专有内容/);
+  assert.match(directory, /摘句：.*桌上/);
+  assert.doesNotMatch(directory, /星际AU测试|分支专有内容/);
   const input = calls.at(-1).messages[0].content;
   const excerpt = JSON.parse(input.split('【跑团存档引文】\n')[1].split('\n', 1)[0]);
   assert.match(excerpt.出处, /圣维安正史测试.*第1章/);
@@ -455,7 +457,7 @@ test('聊天和专题共用一个选段请求，跑团只引用有出处的当�
   includeCards = false;
   const cardDirectory = calls.at(-2).messages.at(-1).content;
   assert.match(cardDirectory, /可附角色 [AB]=/);
-  assert.doesNotMatch(cardDirectory, /白川会负责人|舰队指挥|不在场角色/);
+  assert.doesNotMatch(cardDirectory, /舰队指挥|不在场角色/);
   const bundled = JSON.parse(calls.at(-1).messages[0].content.split('【跑团存档引文】\n')[1].split('\n', 1)[0]);
   assert.deepEqual(bundled.角色梗概.map(card => card.角色).sort(), ['兰瓷', '颜令'].sort());
   assert.match(bundled.角色梗概.find(card => card.角色 === '颜令').梗概, /白川会负责人/);
@@ -507,7 +509,7 @@ test('日常聊天可找到尚未在剧情出现的按需设定，并省略停�
     const before = calls.length;
     const reply = selectedReply(await generateDeepTalk({ text }));
     assert.equal(calls.length - before, 2);
-    assert.doesNotMatch(calls.at(-2).messages.at(-1).content, /蓝色联谊请帖/);
+    assert.match(calls.at(-2).messages.at(-1).content, /摘句：.*蓝色联谊请帖/);
     assert.match(calls.at(-1).messages[0].content, /蓝色联谊请帖/);
     assert.equal(reply.refs.find(ref => ref.story)?.title, '跨校联谊 · 按需设定 · 赫林顿');
   }
@@ -516,4 +518,126 @@ test('日常聊天可找到尚未在剧情出现的按需设定，并省略停�
   await generateDeepTalk({ text: '赫林顿有什么校规？' });
   assert.equal(calls.length - before, 1);
   assert.doesNotMatch(calls.at(-1).messages[0].content, /蓝色联谊请帖/);
+});
+
+test('同名条目不会被交叉关键词挤掉，助手可补选只提到别名的剧情和关联设定', async t => {
+  const id = 'schools';
+  const name = '诺登海姆';
+  const story = { id, title: '三校联谊测试', headId: 'dinner', worldEntries: [
+    ...['圣维安', '赫林顿', '三校关系'].map((label, i) => ({
+      id: 'related-' + i, name: label, keywords: name,
+      text: label + '与诺登海姆互派代表，三方轮流承办联谊。' + '会后共同更新名单。'.repeat(70),
+    })),
+    { id: 'school', name, keywords: '赫林顿、圣维安、北境学院', text: '校徽画着一枝雪松。' + '校规与风俗会另附手册。'.repeat(75) },
+  ] };
+  await db.put('stories', story);
+  await db.put('nodes', { id: story.headId, storyId: id, role: 'assistant', status: 'done',
+    text: '# 晚宴延迟\n\n北境学院在晚宴上带来了银杯。' + '主持人走到窗边开始宣读名单。'.repeat(75) });
+  await db.kvSet('deeptalk.v1.thread', []);
+  await saveDeepTalkSettings({ autoStoryRecall: true, storyRecallScope: 'selected', storyRecallIds: [id], autoTopics: false });
+  const calls = [];
+  let decline = false;
+  const selectionNumber = (directory, label) => directory.split('\n')
+    .find(line => /^\d+ 跑团／/u.test(line) && line.includes(label))?.match(/^\d+/u)?.[0];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    const directory = body.messages.at(-1).content;
+    const selection = ['按需设定 · 赫林顿', '第1章 · 晚宴延迟'].map(label => selectionNumber(directory, label)).filter(Boolean);
+    return Response.json({ choices: [{ message: { content: body.model === 'example-archivist'
+      ? decline ? '0' : selection.join(',') : '测试回复' }, finish_reason: 'stop' }] });
+  });
+  const prompt = '好的！让我们再看看，你知道诺登海姆吗！';
+  const reply = selectedReply(await generateDeepTalk({ text: prompt }));
+  assert.equal(calls.length, 2);
+  const directory = calls[0].messages.at(-1).content;
+  assert.match(directory, /^1 跑团／三校联谊测试／按需设定 · 诺登海姆.*已锁定/mu);
+  assert.match(directory, /第1章 · 晚宴延迟.*北境学院/u);
+  assert.match(directory, /按需设定 · 三校关系/u);
+  const sent = [...calls[1].messages[0].content.matchAll(/【跑团存档引文】\n([^\n]+)/gu)];
+  assert.equal(sent.length, 3);
+  assert.match(sent[0][1], /校徽画着一枝雪松/u);
+  assert.ok(sent.some(([, data]) => data.includes('带来了银杯')));
+  assert.ok(sent.some(([, data]) => data.includes('互派代表')));
+  assert.ok(sent.reduce((sum, [, data]) => sum + data.length, 0) <= 800);
+  assert.equal(reply.storyLookupStatus, 'sent');
+  assert.equal(reply.refs.filter(ref => ref.story).length, 3);
+
+  decline = true;
+  await generateDeepTalk({ text: prompt });
+  assert.match(calls.at(-1).messages[0].content, /校徽画着一枝雪松/u);
+  assert.doesNotMatch(calls.at(-1).messages[0].content, /带来了银杯/u);
+
+  await db.put('stories', { ...story, id: 'other-au', title: '另一个三校AU', headId: null });
+  await saveDeepTalkSettings({ storyRecallScope: 'all' });
+  await db.kvSet('deeptalk.v1.thread', []);
+  const before = calls.length;
+  const ambiguous = selectedReply(await generateDeepTalk({ text: prompt }));
+  assert.equal(calls.length - before, 1);
+  assert.equal(ambiguous.storyLookupStatus, 'ambiguous');
+  assert.match(calls.at(-1).messages[0].content, /跑团检索待确认/u);
+});
+
+test('跑团检索覆盖番外版本、分支、开场、角色原话、前情、世界书与关联讨论', async () => {
+  const id = 'source-coverage';
+  const story = {
+    id, title: '雪松学院测试', headId: 'latest-test', opening: '雾港换乘站的候车铃响了两声。',
+    world: '榆木校徽由高年级设计。', modules: { map: true },
+    localModules: [{ id:'map', name:'潮汐地图', text:'涨潮时走东侧连桥。', note:'仅本人看的私人备注' }],
+    protagonist: { name: '星渊', gender: '女', note: '刚到学院', stateEntries: [
+      { field: 'identity', value:'档案室代理馆长', sourceNodeId:'latest-test' },
+    ] },
+    cards: [{ id:'teacher', name:'洛教授', aliases:'老洛', voice:'深蓝时钟会记住每位迟到的人。', forbid:'禁止擅闯静音资料库。' }],
+  };
+  await db.put('stories', story);
+  await db.putMany('nodes', [
+    { id:'intro-test', storyId:id, role:'user', text:'我拿出了秋季通行证。', director:'本段不用夜视灯。' },
+    { id:'latest-test', storyId:id, role:'assistant', parentId:'intro-test', status:'done',
+      text:'# 银杯长廊\n\n他们归还了银杯。\n\n【弹幕】\n观察者｜白色信鸽落在舞台。\n\n【选项】\nA. 走进闭馆后的蓝室\nB. 在楼梯口等待',
+      checkpoint:{ upTo:1, knowledge:['金铃失踪一事只有岑老师知道。'], offscreen:['守门人在修理梅花锁。'] } },
+    { id:'retired-test', storyId:id, role:'assistant', parentId:'intro-test', status:'done',
+      text:'# 银杯长廊旧案\n\n他们把银杯埋在百年老榆树下。' },
+    { id:'ooc-test', storyId:id, role:'assistant', kind:'ooc', status:'done', text:'场外讨论安排下次再写松林风暴。' },
+  ]);
+  await db.put('extras', {id:'extra-test',storyId:id,tplName:'节庆番外',cur:1,versions:[
+    {id:'earlier',text:'# 月潮信件\n\n黑曜羽毛被夹在旧信封里。',status:'done'},
+    {id:'current',text:'# 月潮信件\n\n银杏叶被夹在新信封里。',status:'done'},
+  ]});
+  await db.kvSet('disc.index', [{id:'qa-note',storyId:id,title:'钟楼讨论',updatedAt:1,count:1}]);
+  await db.kvSet('disc.qa-note', {id:'qa-note',storyId:id,title:'钟楼讨论',messages:[
+    {role:'user',content:'保留修复青铜钟的提案。',attachments:[
+      {name:'材料表',sections:[{name:'榆木名单',text:'档案记载了三名木工。'}]},
+    ]},
+  ]});
+  const get = (text) => findChatStoryReferences({text,recent:'',settings:{storyRecallScope:'selected',storyRecallIds:[id]}});
+  const cases = [
+    ['月潮信件番外原文', /新信封/, /旧信封/],
+    ['查看月潮信件番外第一版', /旧信封/, /新信封/],
+    ['旧分支的百年老榆树', /埋在百年老榆树下/],
+    ['雪松学院测试的开场是什么？', /雾港换乘站/],
+    ['洛教授的深蓝时钟原话', /深蓝时钟会记住/],
+    ['档案室代理馆长是谁？', /档案室代理馆长/],
+    ['前情里谁知道金铃失踪？', /金铃失踪一事只有岑老师/],
+    ['潮汐地图的世界书规则', /东侧连桥/, /私人备注/],
+    ['钟楼讨论里提了什么？', /青铜钟/],
+    ['讨论里的榆木名单附件', /三名木工/],
+    ['场外说什么时候写松林风暴？', /下次再写松林风暴/],
+    ['第一章的白色信鸽弹幕', /白色信鸽落在舞台/],
+    ['第一章导演指令的夜视灯', /不用夜视灯/],
+    ['第一章秋季通行证的玩家输入', /拿出了秋季通行证/],
+    ['第一章有哪些候选选项？', /闭馆后的蓝室/],
+  ];
+  for (const [query, included, excluded] of cases) {
+    const {rows} = await get(query);
+    const body = rows.map(row => row.text).join('\n');
+    assert.match(body, included, query);
+    if (excluded) assert.doesNotMatch(body, excluded, query);
+  }
+  const extra = await db.get('extras', 'extra-test');
+  await db.put('extras', {...extra, versions: [extra.versions[0], {...extra.versions[1],text:'# 月潮信件\n\n更新后换成红色丝带。'}]});
+  const revised = (await get('月潮信件番外原文')).rows.map(row => row.text).join('\n');
+  assert.match(revised, /红色丝带/);
+  assert.doesNotMatch(revised, /新信封/);
+  await db.del('extras', 'extra-test');
+  assert.ok(!(await get('月潮信件番外原文')).rows.some(row => row.kind === 'extra'));
 });

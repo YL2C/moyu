@@ -205,7 +205,7 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
     if (!stories.length) storyList.append(el('p', { class: 'deeptalk-subtle' }, '本机暂无跑团故事。'));
     const storyControls = el('div', {},
       el('label', { class: 'deeptalk-field' }, '跑团检索范围', scope), storyList,
-      el('p', { class: 'deeptalk-subtle' }, '仅查询所选范围内各故事的当前分支。联想命中后，剧情摘录和需要的角色梗概共用 800 字预算。'));
+      el('p', { class: 'deeptalk-subtle' }, '会查所选故事的设定、剧情、番外与讨论，优先当前分支。选中的跑团摘录和角色梗概共用 800 字预算。'));
     const updateStoryControls = () => {
       storyRecall.disabled = !select.value;
       storyControls.hidden = !storyRecall.checked || storyRecall.disabled;
@@ -231,7 +231,7 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
       el('label', { class: 'deeptalk-check' }, topics, '专题自动联想'),
       el('label', { class: 'deeptalk-check' }, storyRecall, '跑团自动联想'),
       storyControls,
-      el('p', { class: 'deeptalk-subtle' }, '跑团和专题共用一次目录选段请求，在花费里记为「专题联想」。'),
+      el('p', { class: 'deeptalk-subtle' }, '跑团和专题共用一次辅助选段请求，在花费里记为「专题联想」。'),
       el('div', { class: 'deeptalk-panel-actions' },
         button('保存设置', async () => { try { await save(); toast('日常记忆设置已保存'); } catch (error) { toast(error.message); } }),
         button('整理记忆', async () => {
