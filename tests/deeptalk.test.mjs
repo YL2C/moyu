@@ -487,3 +487,33 @@ test('聊天和专题共用一个选段请求，跑团只引用有出处的当�
   assert.equal(state.storyRecallScope, 'selected');
   assert.ok(!(await deepTalkMemory()).entries.some(entry => entry.text.includes('分支专有内容')));
 });
+
+test('日常聊天可找到尚未在剧情出现的按需设定，并省略停用条目', async t => {
+  const id = 'world-recall';
+  const entry = { id: 'school', name: '赫林顿', keywords: '赫院',
+    text: '校规规定，来到北侧礼堂的访客需要出示蓝色联谊请帖。', enabled: true };
+  await db.put('stories', { id, title: '跨校联谊', headId: null, worldEntries: [entry] });
+  await db.kvSet('deeptalk.v1.thread', []);
+  await saveDeepTalkSettings({ autoStoryRecall: true, storyRecallScope: 'selected', storyRecallIds: [id], autoTopics: false });
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    const number = body.messages.at(-1).content.match(/^(\d+) 跑团／跨校联谊／按需设定 · 赫林顿/m)?.[1];
+    return Response.json({ choices: [{ message: { content: body.model === 'example-archivist' ? number || '0' : '测试回复' },
+      finish_reason: 'stop' }] });
+  });
+  for (const text of ['赫林顿有什么校规？', '赫院的校规原文是什么？']) {
+    const before = calls.length;
+    const reply = selectedReply(await generateDeepTalk({ text }));
+    assert.equal(calls.length - before, 2);
+    assert.doesNotMatch(calls.at(-2).messages.at(-1).content, /蓝色联谊请帖/);
+    assert.match(calls.at(-1).messages[0].content, /蓝色联谊请帖/);
+    assert.equal(reply.refs.find(ref => ref.story)?.title, '跨校联谊 · 按需设定 · 赫林顿');
+  }
+  await db.updateStory(id, story => ({ ...story, worldEntries: [{ ...entry, enabled: false }] }));
+  const before = calls.length;
+  await generateDeepTalk({ text: '赫林顿有什么校规？' });
+  assert.equal(calls.length - before, 1);
+  assert.doesNotMatch(calls.at(-1).messages[0].content, /蓝色联谊请帖/);
+});

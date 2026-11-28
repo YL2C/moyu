@@ -58,9 +58,10 @@ function indexStory(story, nodes) {
   const title = String(story.title || '未命名故事').trim();
   const path = pathOf(story, nodes);
   const entries = [];
-  const add = (id, kind, label, body, chapter = 0, person = '', searchLabel = label) => {
+  const add = (id, kind, label, body, chapter = 0, person = '', triggers = []) => {
     const passages = windows(body);
-    if (passages.length) entries.push({ id, kind, label, search: normalize(searchLabel), chapter, person, passages });
+    if (passages.length) entries.push({ id, kind, label, search: normalize([label, ...triggers].join(' ')),
+      chapter, person, passages, triggers: triggers.map(normalize).filter(term => term.length >= 2) });
   };
 
   let chapter = 0;
@@ -83,7 +84,7 @@ function indexStory(story, nodes) {
 
   add('world', 'setting', '世界设定', story.world);
   for (const entry of worldEntries(story).filter(entry => entry.enabled !== false)) {
-    add('world/' + entry.id, 'setting', '按需设定 · ' + entry.name, entry.text, 0, '', worldEntryTriggers(entry).join(' '));
+    add('world/' + entry.id, 'setting', '按需设定 · ' + entry.name, entry.text, 0, '', worldEntryTriggers(entry));
   }
   const protagonist = story.protagonist;
   const cards = [];
@@ -192,25 +193,26 @@ function matchStory(index, query, storyId, stamp) {
   const titleMatch = score(index.name).value;
   const rank = [];
   for (const entry of index.entries) {
-    const { kind, search, chapter, person } = entry;
+    const { kind, search, chapter, person, triggers } = entry;
+    const mentioned = triggers.filter(term => current.includes(term) || last.includes(term));
     const exactChapter = chapter > 0 && chapters.includes(chapter);
     if (chapters.length && !exactChapter) continue;
-    if (wording && kind !== 'chapter' && !setting) continue;
+    if (wording && kind !== 'chapter' && !setting && !mentioned.length) continue;
     const heading = score(search);
     const role = person && current.includes(person);
     const titleEvidence = titleMatch >= 7 || heading.value >= 7;
-    const anchored = titled || previouslyTitled || roles.length || exactChapter;
+    const anchored = titled || previouslyTitled || roles.length || exactChapter || mentioned.length;
     if (!anchored && !explicit && !titleEvidence) continue;
     let best;
     for (const passage of entry.passages) {
       const hit = score(passage.search);
       const evidence = heading.value + hit.value;
-      if (!titled && !previouslyTitled && !exactChapter && evidence < (roles.length ? 4 : titleEvidence ? 9 : 16)) continue;
+      if (!titled && !previouslyTitled && !exactChapter && !mentioned.length && evidence < (roles.length ? 4 : titleEvidence ? 9 : 16)) continue;
       if (!exactChapter && !role && kind !== 'setting' && !evidence) continue;
-      if (!exactChapter && !roles.length && !titleEvidence && !titled && !previouslyTitled &&
+      if (!exactChapter && !roles.length && !titleEvidence && !titled && !previouslyTitled && !mentioned.length &&
           !hit.terms.some(term => term.length >= 4)) continue;
       const priority = (exactChapter ? 65 : 0) + (titled ? 30 : previouslyTitled ? 18 : 0) + Math.min(titleMatch, 15) +
-        (role ? 9 : 0) + (setting && kind === 'setting' ? 15 : 0) + (wording && kind === 'chapter' ? 12 : 0) +
+        (role ? 9 : 0) + (mentioned.length ? 25 : 0) + (setting && kind === 'setting' ? 15 : 0) + (wording && kind === 'chapter' ? 12 : 0) +
         (kind === 'correction' ? 12 : kind === 'summary' && !wording ? 4 : 0);
       const total = evidence + heading.value + priority;
       if (!best || total > best.total) best = { total, text: passage.raw, terms: [...heading.terms, ...hit.terms] };
@@ -220,7 +222,7 @@ function matchStory(index, query, storyId, stamp) {
     const clue = [...new Set(best.terms)].filter(term => term.length >= 4 && !normalize(label + index.title).includes(term)).slice(0, 3).join('、');
     rank.push({ key: 'story/' + JSON.stringify([storyId, entry.id]), storyId, stamp, title: index.title.slice(0, MAX_STORY_TITLE) + ' · ' + label,
       label: ('跑团／' + index.title.slice(0, 36) + '／' + label).replace(/[\r\n]/g, ' '),
-      hint: clue, text: best.text, kind, rank: best.total, score: explicit ? 35 : 16, story: true, topic: true });
+      hint: clue, text: best.text, kind, mentioned, rank: best.total, score: explicit ? 35 : 16, story: true, topic: true });
   }
   rank.sort((a, b) => b.rank - a.rank);
   return { storyId, title: index.title, titled, previouslyTitled, roles, candidates: rank.slice(0, MAX_CANDIDATES), cards: index.cards };
@@ -254,7 +256,8 @@ export async function findChatStoryReferences({ text, recent, settings, signal }
   const best = scoped[0];
   if (!best) return { rows: [] };
   const ambiguous = scoped.slice(1).filter(match => best.candidates[0].rank - match.candidates[0].rank < 9 &&
-    (query.explicit || best.roles.some(name => match.roles.includes(name))));
+    (query.explicit || best.roles.some(name => match.roles.includes(name)) ||
+      best.candidates[0].mentioned.some(term => match.candidates[0].mentioned.includes(term))));
   if (ambiguous.length) {
     const titles = [...new Set([best, ...ambiguous].map(match => match.title.slice(0, MAX_STORY_TITLE)))].slice(0, 3);
     return { rows: [], ...(query.explicit ? { clarify: titles } : {}) };
