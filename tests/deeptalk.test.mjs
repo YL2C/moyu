@@ -7,7 +7,7 @@ import { db, exportAll, readMigrationDatabase } from '../js/db.js';
 import { exportMigration, openMigration, restoreMigration } from '../js/migration.js';
 import { parseMaterialPackage, parseTopicDocument, currentMaterial, MATERIAL_FORMAT, TOPIC_FORMAT } from '../js/deeptalk-materials.js';
 import { buildDeepTalkContext } from '../js/deeptalk-context.js';
-import { deepTalkMaterials, deepTalkMemory, generateDeepTalk, readDeepTalkThread, rememberDeepTalkTurn,
+import { deepTalkMaterials, deepTalkMemory, deepTalkRequestPreview, generateDeepTalk, readDeepTalkThread, rememberDeepTalkTurn,
   restoreMaterialEdition, reviseDeepTalkMemory, saveDeepTalkMaterials, saveDeepTalkSettings, saveMaterialEdit,
   selectedReply, setTurnExcluded, deepTalkReplyTokens, getDeepTalkSpend, deepTalkSettings } from '../js/deeptalk.js';
 import { organizeDeepTalk } from '../js/deeptalk-memory.js';
@@ -657,12 +657,66 @@ test('随口追问人名仍能跨故事找到角色卡，小助手未选时保�
     return Response.json({ choices: [{ message: { content: body.model === 'example-archivist' ? '0' : '测试回复' }, finish_reason: 'stop' }] });
   });
   await generateDeepTalk({ text: '聊聊古堡测试的守卫。' });
-  for (const text of ['我明白了，那瓦里克斯（笑）', '那虚冥之裔呢？']) {
+  for (const text of ['我明白了，那瓦里克斯（笑）', '好，让我们再看看，瓦里克斯', '那虚冥之裔呢？']) {
     const reply = selectedReply(await generateDeepTalk({ text }));
     assert.match(calls.at(-1).messages[0].content, /角色卡 · 瓦里克斯.*寂冥星的主人/u);
     assert.equal(reply.storyLookupStatus, 'sent');
     assert.match(reply.refs.find(ref => ref.story)?.title, /寂冥星饲养日志/u);
   }
+});
+
+test('全局检索不会因旧档案格式丢失另一故事的角色卡，预查能显示范围外的同名卡', async t => {
+  const id = '000-legacy-archive';
+  await db.put('stories', { id, title: '旧版存档', headId: 'legacy-broken-summary',
+    cards: [{ name: '卡西安', initial: '灯塔的看守人。' }] });
+  await db.put('nodes', { id: 'legacy-broken-summary', storyId: id, role: 'assistant', text: '他写下了名字。',
+    checkpoint: { summaries: [null], cards: { 卡西安: { now: '目前守夜。' } } } });
+  t.after(async () => { await db.del('stories', id); await db.del('nodes', 'legacy-broken-summary'); });
+  const text = '好，让我们再看看，瓦里克斯';
+  const find = (settings, query = text) => findChatStoryReferences({ text: query, recent: '', settings });
+  const globalHits = await find({ storyRecallScope: 'all' });
+  assert.match(globalHits.rows[0]?.text, /寂冥星的主人/u);
+  assert.match((await find({ storyRecallScope: 'all' }, '卡西安')).rows[0]?.text, /灯塔的看守人/u);
+  const scoped = await find({ storyRecallScope: 'selected', storyRecallIds: [id] });
+  assert.equal(scoped.details.outsideCardCount, 1);
+  assert.ok(!scoped.rows.some(row => row.storyId === 'valix-test'));
+
+  const extrasOf = db.extrasOf;
+  t.mock.method(db, 'extrasOf', storyId => storyId === 'valix-test'
+    ? Promise.reject(new Error('测试番外读取失败')) : extrasOf(storyId));
+  // Force a fresh lookup of the existing, directly stored character card.
+  await db.put('stories', await db.get('stories', 'valix-test'));
+  const partial = await find({ storyRecallScope: 'all' });
+  assert.equal(partial.details.partial, 1);
+  assert.ok(partial.rows[0]?.pinned);
+  assert.match(partial.rows[0].text, /寂冥星的主人/u);
+
+  const settings = await deepTalkSettings();
+  await db.kvSet('deeptalk.v1.thread', []);
+  t.after(() => saveDeepTalkSettings(settings));
+  const request = t.mock.method(globalThis, 'fetch', async () => Response.json({
+    choices: [{ message: { content: '测试回复' }, finish_reason: 'stop' }],
+  }));
+  await saveDeepTalkSettings({ autoStoryRecall: true, autoTopics: false, memoryConnectionId: '',
+    storyRecallScope: 'selected', storyRecallIds: [id] });
+  const excluded = await deepTalkRequestPreview(text);
+  assert.equal(excluded.storyLookupStatus, 'outside_scope');
+  assert.equal(excluded.storyLookupDetails.searched, 1);
+  assert.equal(request.mock.callCount(), 0);
+  const missed = selectedReply(await generateDeepTalk({ text }));
+  assert.equal(missed.storyLookupStatus, 'outside_scope');
+  assert.doesNotMatch(JSON.parse(request.mock.calls[0].arguments[1].body).messages[0].content, /寂冥星的主人/u);
+
+  await saveDeepTalkSettings({ storyRecallScope: 'all' });
+  const candidates = await deepTalkRequestPreview(text);
+  assert.equal(candidates.storyLookupStatus, 'candidates');
+  assert.ok(candidates.storyPreview.some(row => row.pinned && row.title.includes('角色卡 · 瓦里克斯')));
+  assert.equal(request.mock.callCount(), 1);
+  const reply = selectedReply(await generateDeepTalk({ text }));
+  assert.equal(reply.storyLookupStatus, 'sent');
+  assert.equal(reply.storyLookupDetails.partial, 1);
+  assert.equal(reply.appVersion, candidates.appVersion);
+  assert.match(JSON.parse(request.mock.calls[1].arguments[1].body).messages[0].content, /角色卡 · 瓦里克斯.*寂冥星的主人/u);
 });
 
 test('全局短词查正文和番外，跨故事保留出处，并尊重手选故事范围', async () => {

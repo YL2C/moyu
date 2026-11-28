@@ -107,9 +107,10 @@ export async function render(root) {
     el('div', { class: 'deeptalk-composer-tools' }, deepen, button('本轮资料', () => void openPreview())),
     el('div', { class: 'inrow' }, draft, send));
 
-  function showLibrary() {
+  function showLibrary(initialTab) {
     drawer?.close();
     drawer = openDeepTalkLibrary({
+      initialTab,
       onCarry: (key, title) => {
         if (!carry.has(key) && carry.size >= 3) { toast('一次最多带入三条资料'); return; }
         carry.set(key, title); sync();
@@ -121,7 +122,7 @@ export async function render(root) {
 
   root.append(el('section', { class: 'view deeptalk-view' },
     el('div', { class: 'topbar' }, el('div', { class: 'title' }, '日常聊天'),
-      button('花费', openSpend, { 'aria-haspopup': 'dialog' }), button('资料与记忆', showLibrary)),
+      button('花费', openSpend, { 'aria-haspopup': 'dialog' }), button('资料与记忆', () => showLibrary())),
     playModeSwitch('chat', getCurrentStory()),
     el('div', { class: 'deeptalk-controls' }, el('label', { class: 'deeptalk-field deeptalk-model' }, '模型', models), effortField, addConnection),
     status, viewport, composer));
@@ -295,27 +296,42 @@ export async function render(root) {
   async function openPreview() {
     try {
       const previous = selectedReply(turns.at(-1));
-      const preview = draft.value.trim() ? await deepTalkRequestPreview(draft.value, [...carry.keys()]) : previous;
-      const panel = sheet({ title: draft.value.trim() ? '下一条会读取的资料' : '上一条使用的资料', onClose: () => { drawer = null; } });
+      const text = draft.value.trim();
+      const preview = text ? await deepTalkRequestPreview(text, [...carry.keys()]) : previous;
+      const panel = sheet({ title: text ? '下一条会读取的资料' : '上一条使用的资料', onClose: () => { drawer = null; } });
       drawer = panel;
       const used = preview?.used || preview?.refs || [];
       const groups = [['常驻原文', preview?.always], ['当轮选读', used.filter(part => part.topic !== 'automatic')]];
-      if (!draft.value.trim()) {
+      if (!text) {
         groups.push(['专题联想', used.filter(part => part.topic === 'automatic' && !part.story)]);
-        if (settings.autoStoryRecall || used.some(part => part.story)) groups.push(['跑团联想', used.filter(part => part.story)]);
       }
+      if (settings.autoStoryRecall || preview?.storyLookupStatus || used.some(part => part.story))
+        groups.push([text ? '跑团本机预查' : '跑团联想', text ? preview?.storyPreview : used.filter(part => part.story)]);
       for (const [label, parts] of groups) {
-        panel.body.append(el('h3', {}, label), el('p', { class: 'deeptalk-quote' }, parts?.length ? parts.map(part => part.characters?.length ? part.title + ' · 角色梗概：' + part.characters.join('、') : part.title).join('\n') : '无'));
+        panel.body.append(el('h3', {}, label), el('p', { class: 'deeptalk-quote' }, parts?.length ? parts.map(part =>
+          part.pinned ? part.title + ' · 直接命中' : part.characters?.length ? part.title + ' · 角色梗概：' + part.characters.join('、') : part.title).join('\n') : '无'));
       }
-      if (!draft.value.trim() && preview?.storyLookupStatus && preview.storyLookupStatus !== 'off') {
-        const labels = { sent: '已把上方跑团资料交给聊天模型', skipped: '本轮跳过了跑团检索或辅助选段',
-          ambiguous: '匹配到多个存档，等待确认', no_match: '未找到相关跑团候选', declined: '小助手未选中跑团资料',
-          timeout: '小助手超时', failed: '检索或小助手请求失败', invalid: '小助手返回的选段无法读取',
-          filtered: '候选已过滤或存档已更新' };
-        panel.body.append(el('p', { class: 'deeptalk-subtle' }, labels[preview.storyLookupStatus] || ''));
+      const lookupStatus = preview?.storyLookupStatus;
+      const details = preview?.storyLookupDetails;
+      if (lookupStatus) {
+        const labels = { sent: '已把上方跑团资料交给聊天模型', off: '跑团自动联想已关闭',
+          skipped: '本轮未触发跑团检索', manual: '本轮带了手选资料，已跳过自动联想', sensitive: '本轮触及敏感聊天主题，已跳过自动联想',
+          ambiguous: '匹配到多个存档，请在提问里写明故事名', no_match: '检索范围内没有找到相关资料',
+          empty_scope: '检索范围内没有故事', outside_scope: '有匹配的角色卡在本轮检索范围外',
+          partial: '部分存档内容读取失败，其余资料未找到匹配', declined: '小助手未选中跑团资料',
+          timeout: '小助手超时', failed: '本轮检索或小助手请求失败', invalid: '小助手返回的选段无法读取',
+          filtered: '候选被本轮的资料筛选规则排除', changed: '候选资料在发送前已更新，请重发',
+          no_helper: '有候选资料，但尚未配置辅助选段模型', candidates: '本机预查已完成，尚未调用模型' };
+        const notes = [labels[lookupStatus],
+          details && `${details.scope === 'all' ? '全部故事' : '仅所选故事'} · 范围内 ${details.searched}/${details.total} 个故事`,
+          details?.outsideCardCount && lookupStatus !== 'outside_scope' && `范围外也有 ${details.outsideCardCount} 个故事含同名或同别名角色卡`,
+          details?.partial && `有 ${details.partial} 个故事仅查了角色卡`,
+          preview.storyClarification?.join('、'), preview.storyMayExpand && '发送后，小助手可尝试用相关词补查。',
+          preview.appVersion && `${text ? '当前版本' : '该回复使用的版本'} ${preview.appVersion}`];
+        panel.body.append(...notes.filter(Boolean).map(note => el('p', { class: 'deeptalk-subtle' }, note)));
+        if (['off', 'outside_scope', 'empty_scope', 'no_helper'].includes(lookupStatus))
+          panel.foot.append(button('检索设置', () => showLibrary('settings')));
       }
-      if (draft.value.trim() && (settings.autoTopics || settings.autoStoryRecall))
-        panel.body.append(el('p', { class: 'deeptalk-subtle' }, '联想资料在发送时挑选，回复后可在这里查看出处。'));
       panel.foot.append(button('关闭', panel.close));
     } catch (error) { toast(error.message); }
   }

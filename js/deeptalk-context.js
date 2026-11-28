@@ -124,7 +124,7 @@ function memoryCandidates(entries, query, topics, activeSensitive, selected) {
   });
 }
 
-export function buildDeepTalkContext({ text, turns = [], materials = {}, memory = {}, manualKeys = [], automaticTopic = '', automaticStories = [], storyClarification = null }) {
+export function buildDeepTalkContext({ text, turns = [], materials = {}, memory = {}, manualKeys = [], automaticTopic = '', automaticStories = [], storyClarification = null, storyLookupStatus = '' }) {
   const previous = turns.at(-1);
   const topics = topicList(text);
   const activeSensitive = sensitiveTopics(text, previous);
@@ -173,6 +173,8 @@ export function buildDeepTalkContext({ text, turns = [], materials = {}, memory 
   if (storyClarification?.length) {
     sections.push('【跑团检索待确认】这轮查找的剧情无法定位到唯一存档。只需简短询问用户指哪个存档，不要猜剧情。存档名：' +
       JSON.stringify(storyClarification));
+  } else if (!storyParts.length && ['no_match', 'outside_scope', 'empty_scope', 'partial', 'declined', 'timeout', 'failed', 'invalid', 'changed', 'filtered', 'no_helper'].includes(storyLookupStatus)) {
+    sections.push('本轮没有跑团存档引文。按收到的资料回答，无依据时直说，不要推断应用的索引、设置或存档是否接通。');
   }
   if (references) {
     const topicNote = picked.some(part => part.topic) ? '专题只在确实贴切时自然运用。虚构故事可作为类比或创作参考。\n\n' : '';

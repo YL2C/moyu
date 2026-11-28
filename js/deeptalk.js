@@ -3,7 +3,7 @@ import { getConnections, canUseMemoryConnection } from './state.js';
 import { streamWithRetry, supportsReasoningEffort, guessFormat } from './api.js';
 import { cancelRelayJob } from './relay.js';
 import { normalizeUsage, computeCost, recordUsage, getRequestLog, CUR } from './cost.js';
-import { uid } from './util.js';
+import { uid, APP_VERSION } from './util.js';
 import { buildDeepTalkContext, isRecallFeedback, recallContextKey, sensitiveTopics } from './deeptalk-context.js';
 import { editMaterial, mergeMaterials } from './deeptalk-materials.js';
 import { TOPIC_RECALL_KIND, canSelectTopic, readStoryKeywordVariants, readTopicChoices, storyKeywordExpansionInput,
@@ -317,6 +317,22 @@ async function selectTopics(connection, { context, keys }, signal) {
   return { choices: choices || [], status: choices?.length ? 'selected' : choices ? 'declined' : 'invalid' };
 }
 
+function storyRecallSkip(text, previous, manualKeys) {
+  if (manualKeys.length) return 'manual';
+  if (!canSelectTopic(text) || isRecallFeedback(text)) return 'skipped';
+  if (sensitiveTopics(text, previous).length) return 'sensitive';
+  return '';
+}
+
+function emptyStoryLookupStatus(lookup) {
+  if (lookup.failed) return 'failed';
+  if (lookup.clarify || lookup.ambiguous) return 'ambiguous';
+  if (lookup.details?.outsideCardCount) return 'outside_scope';
+  if (lookup.details?.searched === 0) return 'empty_scope';
+  if (lookup.details?.partial) return 'partial';
+  return 'no_match';
+}
+
 export async function generateDeepTalk({ text, turnId = '', resume = false, deeper = false, manualKeys = [], signal,
   onSearching = () => {}, onStart = () => {}, onText = () => {}, onThinking = () => {} }) {
   return generationLock(async () => {
@@ -339,9 +355,10 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
     let automaticTopic = '';
     let automaticStories = [];
     let storyClarification;
-    let storyLookupStatus = settings.autoStoryRecall ? 'skipped' : 'off';
-    if (!pending && !manualKeys.length && canSelectTopic(prompt) &&
-        !isRecallFeedback(prompt) && !sensitiveTopics(prompt, previous).length) {
+    let storyLookupDetails;
+    const skipped = storyRecallSkip(prompt, previous, manualKeys);
+    let storyLookupStatus = settings.autoStoryRecall ? skipped || 'skipped' : 'off';
+    if (!pending && !skipped) {
       const recent = previous && !previous.excludeContext && !previous.sensitiveTopics?.length ? previous.text : '';
       if (settings.autoStoryRecall) onSearching();
       const lookup = variants => findChatStoryReferences({ text: prompt, recent, settings, signal, variants })
@@ -349,7 +366,7 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
       let storyLookup = settings.autoStoryRecall ? await lookup()
         : { rows: [] };
       let expansionStatus;
-      if (selector && storyLookup.expansionKeyword && !signal?.aborted) {
+      if (selector && storyLookup.expansionKeyword && !storyLookup.details?.outsideCardCount && !signal?.aborted) {
         const answer = await askTopicAssistant(selector, storyKeywordExpansionInput(storyLookup.expansionKeyword), signal)
           .catch(() => ({ status: 'failed' }));
         expansionStatus = answer.status;
@@ -360,8 +377,9 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
       const blocked = new Set((memory.mutedContexts || []).filter(item => item.context === recallContextKey(prompt)).flatMap(item => item.keys));
       const rows = storyLookup.rows.filter(row => !blocked.has(row.key));
       storyClarification = storyLookup.clarify;
-      if (settings.autoStoryRecall) storyLookupStatus = storyLookup.failed ? 'failed' : storyClarification || storyLookup.ambiguous
-        ? 'ambiguous' : rows.length ? 'skipped' : storyLookup.rows.length ? 'filtered' : expansionStatus || 'no_match';
+      storyLookupDetails = storyLookup.details;
+      if (settings.autoStoryRecall) storyLookupStatus = rows.length ? selector ? 'skipped' : 'no_helper'
+        : storyLookup.rows.length ? 'filtered' : expansionStatus || emptyStoryLookupStatus(storyLookup);
       const pinnedOnly = rows.length === 1 && rows[0].pinned;
       const selection = storyClarification || pinnedOnly || !selector ? null
         : topicSelectionInput({ text: prompt, materials: settings.autoTopics ? materials : {}, recent, storyRows: rows });
@@ -378,7 +396,10 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
       const fallback = rows.find(row => row.key === storyLookup.fallback);
       if (rows.some(row => row.pinned) || fallback || (storyChoices.length && choices[0] === storyChoices[0])) {
         const picks = storyChoices.length || !fallback ? storyChoices : [{ key: fallback.key, cards: [] }];
-        automaticStories = await chatStoryReferences(rows, picks, prompt, recent).catch(() => []);
+        try {
+          automaticStories = await chatStoryReferences(rows, picks, prompt, recent);
+          if (!automaticStories.length) storyLookupStatus = 'changed';
+        } catch { storyLookupStatus = 'failed'; }
       } else if (topicChoice) {
         automaticTopic = topicChoice.key;
         if (rows.length) storyLookupStatus = 'declined';
@@ -387,6 +408,7 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
     if (signal?.aborted) return null;
     const context = pending ? null : buildDeepTalkContext({
       text: prompt, turns: history, materials, memory, manualKeys, automaticTopic, automaticStories, storyClarification,
+      storyLookupStatus,
     });
     if (context?.used.some(ref => ref.story)) storyLookupStatus = 'sent';
     else if (storyLookupStatus === 'selected') storyLookupStatus = 'filtered';
@@ -395,7 +417,8 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
     const kind = !previousTurn ? CHAT_KIND : selectedReply(previousTurn)?.status === 'done' ? REWRITE_KIND : RETRY_KIND;
     const reply = pending || { id: uid(), kind, connectionId: conn.id, model: conn.model, format: guessFormat(conn), stream: conn.stream !== false,
       effort, status: 'running', text: '', at: Date.now(), inputChars: contextLength(context),
-      refs: context.used, always: context.always, contextKey: context.contextKey, storyLookupStatus };
+      refs: context.used, always: context.always, contextKey: context.contextKey, storyLookupStatus,
+      storyLookupDetails, appVersion: APP_VERSION };
     const draft = pending ? null : { id: turnId || uid(), at: Date.now(), text: prompt, sensitiveTopics: context.activeSensitive };
     let turn = pending ? await putReply(turnId, reply.id, { status: 'running', error: '' }) : await startTurn(draft, reply, !!turnId);
     onStart(turn);
@@ -449,8 +472,23 @@ export async function stopPendingDeepTalk(turn) {
 }
 
 export async function deepTalkRequestPreview(text, manualKeys = []) {
-  const [{ turns }, materials, memory] = await Promise.all([readDeepTalkThread(), deepTalkMaterials(), deepTalkMemory()]);
-  return buildDeepTalkContext({ text: text.trim(), turns, materials, memory, manualKeys });
+  const [{ turns }, materials, memory, settings] = await Promise.all([
+    readDeepTalkThread(), deepTalkMaterials(), deepTalkMemory(), deepTalkSettings(),
+  ]);
+  const prompt = text.trim();
+  const context = buildDeepTalkContext({ text: prompt, turns, materials, memory, manualKeys });
+  const previous = turns.at(-1);
+  const skipped = storyRecallSkip(prompt, previous, manualKeys);
+  if (!settings.autoStoryRecall || skipped) return { ...context, appVersion: APP_VERSION,
+    storyLookupStatus: settings.autoStoryRecall ? skipped : 'off' };
+  const recent = previous && !previous.excludeContext && !previous.sensitiveTopics?.length ? previous.text : '';
+  const lookup = await findChatStoryReferences({ text: prompt, recent, settings }).catch(() => ({ rows: [], failed: true }));
+  const blocked = new Set((memory.mutedContexts || []).filter(item => item.context === context.contextKey).flatMap(item => item.keys));
+  const rows = lookup.rows.filter(row => !blocked.has(row.key));
+  return { ...context, appVersion: APP_VERSION, storyLookupDetails: lookup.details,
+    storyLookupStatus: rows.length ? 'candidates' : lookup.rows.length ? 'filtered' : emptyStoryLookupStatus(lookup),
+    storyPreview: rows.slice(0, 3).map(row => ({ title: row.title, pinned: row.pinned })),
+    storyClarification: lookup.clarify, storyMayExpand: !!lookup.expansionKeyword && !lookup.details?.outsideCardCount };
 }
 
 export async function updateDeepTalkMemory(update) {

@@ -16,7 +16,7 @@ async function readPackage(file, options) {
   return parseMaterialPackage(await file.text(), options);
 }
 
-export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
+export function openDeepTalkLibrary({ onCarry, onOrganize, onClose, initialTab }) {
   const panel = sheet({ title: '资料与记忆', onClose });
   panel.panel.classList.add('deeptalk-sheet');
   const content = el('div', { class: 'deeptalk-sheet-content' });
@@ -207,13 +207,12 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
       el('label', { class: 'deeptalk-field' }, '跑团检索范围', scope), storyList,
       el('p', { class: 'deeptalk-subtle' }, '按上方范围检索故事标题、角色卡及别名、设定、剧情、番外与讨论，优先当前分支。跑团摘录和角色梗概共用 800 字预算。'));
     const updateStoryControls = () => {
-      storyRecall.disabled = !select.value;
-      storyControls.hidden = !storyRecall.checked || storyRecall.disabled;
+      storyControls.hidden = !storyRecall.checked;
       storyList.hidden = scope.value !== 'selected';
     };
     select.addEventListener('change', () => {
       automatic.disabled = topics.disabled = !select.value;
-      if (!select.value) automatic.checked = topics.checked = storyRecall.checked = false;
+      if (!select.value) automatic.checked = topics.checked = false;
       updateStoryControls();
     });
     scope.addEventListener('change', updateStoryControls);
@@ -221,7 +220,7 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
     updateStoryControls();
     const save = async () => saveDeepTalkSettings({ memoryConnectionId: select.value,
       autoMemory: !!select.value && automatic.checked, autoTopics: !!select.value && topics.checked,
-      autoStoryRecall: !!select.value && storyRecall.checked,
+      autoStoryRecall: storyRecall.checked,
       storyRecallScope: scope.value, storyRecallIds: stories.filter(story => selectedStories.has(story.id)).map(story => story.id) });
     content.replaceChildren(
       el('label', { class: 'deeptalk-field' }, '日常记忆整理 API', select),
@@ -231,7 +230,7 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
       el('label', { class: 'deeptalk-check' }, topics, '专题自动联想'),
       el('label', { class: 'deeptalk-check' }, storyRecall, '跑团自动联想'),
       storyControls,
-      el('p', { class: 'deeptalk-subtle' }, '跑团和专题共用辅助选段。明确查找的词无直接命中时，小助手会先补充近义检索词。相关请求记为「专题联想」。'),
+      el('p', { class: 'deeptalk-subtle' }, '明确命中的角色卡可直接读取。所选 API 用于辅助选段或补充近义检索词，调用记为「专题联想」。'),
       el('div', { class: 'deeptalk-panel-actions' },
         button('保存设置', async () => { try { await save(); toast('日常记忆设置已保存'); } catch (error) { toast(error.message); } }),
         button('整理记忆', async () => {
@@ -240,6 +239,6 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
         })));
   }
 
-  void draw();
+  void draw(initialTab);
   return panel;
 }

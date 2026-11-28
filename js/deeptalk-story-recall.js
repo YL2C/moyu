@@ -88,13 +88,66 @@ function pathOf(story, nodes) {
 const validText = row => typeof row?.text === 'string' && row.text.trim() && (!row.status || row.status === 'done') &&
   !row.error && !row.flagged && !row.relayJob;
 
-function indexStory(story, nodes, extras, discussions, shared) {
+const list = value => Array.isArray(value) ? value : [];
+const record = value => value && typeof value === 'object';
+const records = value => list(value).filter(record);
+const castOf = story => records(story.cards).filter(card => typeof card.name === 'string');
+
+function makeStoryIndex(story) {
   const title = String(story.title || '未命名故事').trim();
+  const entries = [];
+  const add = (id, kind, label, body, options = {}) => {
+    const passages = windows(body);
+    if (!passages.length) return;
+    const { chapter = 0, version = 0, person = '', name = '', triggers = [], historical = false } = options;
+    entries.push({ id, kind, label,
+      search: normalize([label, ...triggers].join(' ')), name: normalize(name),
+      chapter, version, person, passages, historical, entity: id.startsWith('world/'),
+      triggers: [...new Set(triggers.map(normalize).filter(term => term.length >= 2))] });
+  };
+  return { title, name: normalize(title), entries, cards: [], names: [], add };
+}
+
+function addCharacterCards(index, story, path = [], memory) {
+  const { add, cards } = index;
+  const protagonist = story.protagonist;
+  const addCard = (id, label, card, fields) => {
+    const details = fields.filter(([, value]) => typeof value === 'string' && value.trim());
+    const names = splitNames(card);
+    add(id, 'setting', label + ' · ' + (card.name || '未命名角色'),
+      [names.length > 1 ? '别名：' + names.slice(1).join('、') : '', ...details.map(([field, value]) => field + '：' + value)].filter(Boolean).join('\n\n'),
+      { person: normalize(card.name), name: card.name, triggers: names });
+    if (card.name && details.length) cards.push({ name: card.name, names: names.map(normalize).filter(name => name.length >= 2), details });
+  };
+  if (typeof protagonist?.name === 'string') {
+    const state = protagonistState({ ...protagonist, stateEntries: records(protagonist.stateEntries) }, path);
+    addCard('protagonist', '主角卡', protagonist, [['性别', protagonist.gender], ['设定', protagonist.note],
+      ...Object.entries(state).map(([field, entry]) => [PROTAGONIST_FIELDS[field], entry.value])]);
+    for (const [i, entry] of list(protagonist.stateEntries).entries()) {
+      if (!record(entry) || Object.values(state).includes(entry)) continue;
+      add('protagonist/history/' + i, 'setting', '主角卡 · 历史状态 · ' + (PROTAGONIST_FIELDS[entry.field] || '状态'),
+        entry.value, { historical: true });
+    }
+  }
+  for (const [position, base] of list(story.cards).entries()) {
+    if (typeof base?.name !== 'string') continue;
+    const card = applyCardState(base, memory);
+    addCard('card/' + (card.id || position), '角色卡', card, [
+      ['身份', card.initial], ['关系档案', card.relation], ['性格', card.base], ['当前状态', card.now], ['经历', card.arc],
+      ['原话', card.voice], ['禁止清单', card.forbid],
+    ]);
+  }
+
+  index.names = [...new Set([protagonist?.name, ...castOf(story).flatMap(splitNames)].map(normalize).filter(name => name.length >= 2))];
+}
+
+function indexStory(story, nodes, extras, discussions, shared) {
+  const index = makeStoryIndex(story);
+  const { add, title } = index;
   const path = pathOf(story, nodes);
   const current = new Set(path.map(node => node.id));
   const byId = new Map(nodes.map(node => [node.id, node]));
   const chapterNumbers = new Map();
-  const entries = [];
   function chapterOf(node) {
     const lineage = [];
     const seen = new Set();
@@ -105,21 +158,12 @@ function indexStory(story, nodes, extras, discussions, shared) {
     }
     let no = chapterNumbers.get(node?.id) || 0;
     for (const ancestor of lineage.reverse()) {
-      if (ancestor.role === 'assistant' && ancestor.kind !== 'ooc' && ancestor.text?.trim()) no++;
+      if (ancestor.role === 'assistant' && ancestor.kind !== 'ooc' && typeof ancestor.text === 'string' && ancestor.text.trim()) no++;
       chapterNumbers.set(ancestor.id, no);
     }
     return no;
   }
 
-  const add = (id, kind, label, body, options = {}) => {
-    const passages = windows(body);
-    if (!passages.length) return;
-    const { chapter = 0, version = 0, person = '', name = '', triggers = [], historical = false } = options;
-    entries.push({ id, kind, label,
-      search: normalize([label, ...triggers].join(' ')), name: normalize(name),
-      chapter, version, person, passages, historical, entity: id.startsWith('world/'),
-      triggers: [...new Set(triggers.map(normalize).filter(term => term.length >= 2))] });
-  };
   for (const node of nodes) {
     const historical = !current.has(node.id);
     const chapter = chapterOf(node);
@@ -146,11 +190,12 @@ function indexStory(story, nodes, extras, discussions, shared) {
   }
 
   const checkpoint = latestCheckpoint(path);
+  addCharacterCards(index, story, path, checkpoint?.mem);
   const addArchive = (node, currentArchive) => {
     const memory = node.checkpoint;
     const prefix = currentArchive ? '前情档案' : (current.has(node.id) ? '旧前情档案' : '旧分支前情档案') + ' · 第' + chapterOf(node) + '章';
     const archived = { historical: !currentArchive };
-    for (const part of memory.summaries || []) add('summary/' + node.id + '/' + part.from + '-' + part.to,
+    for (const part of records(memory.summaries)) add('summary/' + node.id + '/' + part.from + '-' + part.to,
       'summary', prefix + ' · 第' + part.from + '–' + part.to + '章', part.text, archived);
     add('summary/' + node.id + '/early', 'summary', prefix + ' · 早期概要', memory.early, archived);
     for (const [field, label] of archiveFields) {
@@ -161,7 +206,8 @@ function indexStory(story, nodes, extras, discussions, shared) {
   };
   for (const node of nodes) if (node.checkpoint) addArchive(node, checkpoint?.node.id === node.id);
 
-  add('story-title', 'overview', '故事简介', [title, story.world?.slice(0, 500) || story.opening?.slice(0, 500)].filter(Boolean).join('\n'));
+  const overview = [story.world, story.opening].find(value => typeof value === 'string' && value.trim());
+  add('story-title', 'overview', '故事简介', [title, overview?.slice(0, 500)].filter(Boolean).join('\n'));
   add('world', 'setting', '世界设定', story.world);
   add('opening', 'opening', '故事开场', story.opening);
   add('rules', 'module', '故事规则', story.rules);
@@ -170,45 +216,16 @@ function indexStory(story, nodes, extras, discussions, shared) {
       add('world/' + entry.id, 'setting', '按需设定 · ' + entry.name, entry.text,
         { name: entry.name, triggers: worldEntryTriggers(entry) });
   }
-  const packs = new Map([...shared.packs, ...(story.packs || [])].map(pack => [pack.id, pack]));
-  for (const module of [...(story.localModules || []), ...shared.modules]) {
+  const packs = new Map([...shared.packs, ...records(story.packs)].map(pack => [pack.id, pack]));
+  for (const module of [...records(story.localModules), ...shared.modules]) {
     if (!story.modules?.[module.id]) continue;
     const type = packs.get(module.pack)?.kind === 'worldbook' ? '世界书' : '规则模块';
     add('module/' + module.id, 'module', type + ' · ' + module.name, module.text,
       { name: module.name, triggers: worldEntryTriggers(module) });
   }
   add('globalMemo', 'module', '全局备忘', shared.memo);
-
-  const protagonist = story.protagonist;
-  const cards = [];
-  const addCard = (id, label, card, fields) => {
-    const details = fields.filter(([, value]) => typeof value === 'string' && value.trim());
-    const names = splitNames(card);
-    add(id, 'setting', label + ' · ' + (card.name || '未命名角色'),
-      [names.length > 1 ? '别名：' + names.slice(1).join('、') : '', ...details.map(([field, value]) => field + '：' + value)].filter(Boolean).join('\n\n'),
-      { person: normalize(card.name), name: card.name, triggers: names });
-    if (card.name && details.length) cards.push({ name: card.name, names: names.map(normalize).filter(name => name.length >= 2), details });
-  };
-  if (protagonist) {
-    const state = protagonistState(protagonist, path);
-    addCard('protagonist', '主角卡', protagonist, [['性别', protagonist.gender], ['设定', protagonist.note],
-      ...Object.entries(state).map(([field, entry]) => [PROTAGONIST_FIELDS[field], entry.value])]);
-    for (const [i, entry] of (protagonist.stateEntries || []).entries()) {
-      if (Object.values(state).includes(entry)) continue;
-      add('protagonist/history/' + i, 'setting', '主角卡 · 历史状态 · ' + (PROTAGONIST_FIELDS[entry.field] || '状态'),
-        entry.value, { historical: true });
-    }
-  }
-  for (const [index, base] of (story.cards || []).entries()) {
-    const card = applyCardState(base, checkpoint?.mem);
-    addCard('card/' + (card.id || index), '角色卡', card, [
-      ['身份', card.initial], ['关系档案', card.relation], ['性格', card.base], ['当前状态', card.now], ['经历', card.arc],
-      ['原话', card.voice], ['禁止清单', card.forbid],
-    ]);
-  }
-
   for (const extra of extras) {
-    const versions = extra.versions || [];
+    const versions = list(extra.versions);
     for (const [number, version] of versions.entries()) {
       if (!validText(version)) continue;
       const { title: name } = extraBlocks(version.text);
@@ -220,22 +237,21 @@ function indexStory(story, nodes, extras, discussions, shared) {
     }
   }
   for (const discussion of discussions) {
-    for (const [i, message] of (discussion.messages || []).entries()) {
-      if (!['user', 'assistant'].includes(message.role) || message.streaming || message.error) continue;
+    for (const [i, message] of list(discussion.messages).entries()) {
+      if (!['user', 'assistant'].includes(message?.role) || message.streaming || message.error) continue;
       const label = '关联讨论 · ' + (discussion.title || '未命名讨论');
-      add('disc/' + discussion.id + '/' + i, 'discussion', label, stripReasoning(message.content || ''),
+      add('disc/' + discussion.id + '/' + i, 'discussion', label, typeof message.content === 'string' ? stripReasoning(message.content) : '',
         { name: discussion.title, triggers: [discussion.title].filter(Boolean) });
-      for (const [a, attachment] of (message.attachments || []).entries()) {
-        for (const [j, part] of (attachment.sections || []).entries()) {
-          if (part.selected === false || attachment.include === false) continue;
+      for (const [a, attachment] of list(message.attachments).entries()) {
+        for (const [j, part] of list(attachment?.sections).entries()) {
+          if (!record(part) || part.selected === false || attachment.include === false) continue;
           add('disc/' + discussion.id + '/' + i + '/' + a + '/' + j, 'discussion', label + ' · 附件 · ' + part.name, part.text,
             { name: part.name, triggers: [part.name, attachment.name].filter(Boolean) });
         }
       }
     }
   }
-  const names = [protagonist?.name, ...(story.cards || []).flatMap(splitNames)].map(normalize);
-  return { title, name: normalize(title), names: [...new Set(names.filter(name => name.length >= 2))], entries, cards };
+  return index;
 }
 
 function chapterNumber(value) {
@@ -444,16 +460,27 @@ function matchStory(index, query, storyId, stamp) {
 export async function findChatStoryReferences({ text, recent, settings, signal, variants = [] }) {
   const query = makeQuery(text, recent, variants);
   if (query.current.length < 2) return { rows: [] };
-  const selected = settings.storyRecallScope === 'selected' ? new Set(settings.storyRecallIds || []) : null;
-  if (selected && !selected.size) return { rows: [] };
-  const [catalog, modules, packs, memo, discussionList] = await Promise.all([
-    db.storyLookupCatalog(), getModules(), getPacks(), getGlobalMemo(), db.kvGet('disc.index', []),
+  const selected = settings.storyRecallScope === 'selected' ? new Set(list(settings.storyRecallIds)) : null;
+  const catalog = await db.storyLookupCatalog();
+  const inScope = selected ? catalog.filter(({ story }) => selected.has(story.id)) : catalog;
+  const terms = new Set([query.focus, query.keyword].filter(term => term.length >= 2));
+  const details = { scope: selected ? 'selected' : 'all', total: catalog.length, searched: inScope.length,
+    partial: 0, outsideCardCount: 0 };
+  const result = value => ({ ...value, details });
+  if (selected && terms.size) {
+    details.outsideCardCount = catalog.filter(({ story }) => !selected.has(story.id) &&
+      (terms.has(normalize(story.protagonist?.name)) || castOf(story).some(card =>
+        splitNames(card).some(name => terms.has(normalize(name)))))).length;
+  }
+  if (!inScope.length) return result({ rows: [] });
+  const [modules, packs, memo, discussionList] = await Promise.all([
+    getModules().catch(() => []), getPacks().catch(() => []), getGlobalMemo().catch(() => ''), db.kvGet('disc.index', []).catch(() => []),
   ]);
-  const shared = { modules, packs, memo };
-  const sharedStamp = JSON.stringify([modules.map(({ id, name, pack, keywords, text }) => [id, name, pack, keywords, text]),
-    packs.map(({ id, kind }) => [id, kind]), memo]);
+  const shared = { modules: records(modules), packs: records(packs), memo: typeof memo === 'string' ? memo : '' };
+  const sharedStamp = JSON.stringify([shared.modules.map(({ id, name, pack, keywords, text }) => [id, name, pack, keywords, text]),
+    shared.packs.map(({ id, kind }) => [id, kind]), shared.memo]);
   const discussions = new Map();
-  for (const item of Array.isArray(discussionList) ? discussionList : []) {
+  for (const item of records(discussionList)) {
     if (!item.storyId || (selected && !selected.has(item.storyId))) continue;
     if (!discussions.has(item.storyId)) discussions.set(item.storyId, []);
     discussions.get(item.storyId).push(item);
@@ -461,18 +488,30 @@ export async function findChatStoryReferences({ text, recent, settings, signal, 
   const live = new Set(catalog.map(({ story }) => story.id));
   for (const id of cache.keys()) if (!live.has(id)) cache.delete(id);
   const matches = [];
-  for (const { story, stamp } of catalog) {
+  for (const { story, stamp } of inScope) {
     if (signal?.aborted) return { rows: [] };
-    if (selected && !selected.has(story.id)) continue;
     const metadata = discussions.get(story.id) || [];
     const discussionStamp = JSON.stringify(metadata);
     let saved = cache.get(story.id);
     if (saved?.stamp !== stamp || saved.sharedStamp !== sharedStamp || saved.discussionStamp !== discussionStamp) {
-      const [nodes, extras, linked] = await Promise.all([db.byStory(story.id), db.extrasOf(story.id),
+      const reads = await Promise.allSettled([db.byStory(story.id), db.extrasOf(story.id),
         Promise.all(metadata.map(item => db.kvGet('disc.' + item.id, null)))]);
-      saved = { stamp, sharedStamp, discussionStamp, index: indexStory(story, nodes, extras,
-        linked.filter(item => item?.storyId === story.id), shared) };
-      cache.set(story.id, saved);
+      const [nodeRead, extraRead, discussionRead] = reads;
+      const nodes = records(nodeRead.value);
+      try {
+        const failed = reads.find(read => read.status === 'rejected');
+        if (failed) throw failed.reason;
+        saved = { stamp, sharedStamp, discussionStamp, index: indexStory(story, nodes, records(extraRead.value),
+          discussionRead.value.filter(item => item?.storyId === story.id), shared) };
+        cache.set(story.id, saved);
+      } catch {
+        // A story with unreadable chapters or supplemental data can still supply its directly stored character cards.
+        details.partial++;
+        const index = makeStoryIndex(story);
+        const path = pathOf(story, nodes);
+        addCharacterCards(index, story, path, latestCheckpoint(path)?.mem);
+        saved = { index };
+      }
     }
     const match = matchStory(saved.index, query, story.id, stamp);
     if (match.candidates.length || match.titled || match.previouslyTitled) matches.push(match);
@@ -490,7 +529,7 @@ export async function findChatStoryReferences({ text, recent, settings, signal, 
   };
   if (named.length > 1 && /比较|对比|分别|有啥区别|有什么区别/u.test(text)) {
     const balanced = scoped.slice(0, 3).flatMap(match => match.candidates.slice(0, 3).map(row => attach(row, match)));
-    return { rows: balanced };
+    return result({ rows: balanced });
   }
   if (query.keyword && !query.wording && !query.historical && !query.source &&
       !scoped.some(match => match.pin || match.candidates.some(row => row.exactEntity))) {
@@ -503,12 +542,12 @@ export async function findChatStoryReferences({ text, recent, settings, signal, 
       if (rows.length >= MAX_CANDIDATES) break;
       rows.push(...group.rows.slice(1, 1 + MAX_CANDIDATES - rows.length).map(row => attach(row, group.match)));
     }
-    if (rows.length) return { rows, fallback: query.keywordExplicit ? rows.find(row => row.literal)?.key : undefined };
-    if (query.keywordExplicit && !named.length) return { rows: [], expansionKeyword: variants.length ? '' : query.keyword };
+    if (rows.length) return result({ rows, fallback: query.keywordExplicit ? rows.find(row => row.literal)?.key : undefined });
+    if (query.keywordExplicit && !named.length) return result({ rows: [], expansionKeyword: variants.length ? '' : query.keyword });
   }
   scoped.sort((a, b) => Number(!!b.pin) - Number(!!a.pin) || b.candidates[0].rank - a.candidates[0].rank);
   const best = scoped[0];
-  if (!best) return { rows: [] };
+  if (!best) return result({ rows: [] });
   const head = best.candidates[0];
   const ambiguous = scoped.slice(1).filter(match => {
     const other = match.candidates[0];
@@ -519,9 +558,9 @@ export async function findChatStoryReferences({ text, recent, settings, signal, 
   });
   if (ambiguous.length) {
     const titles = [...new Set([best, ...ambiguous].map(match => match.title.slice(0, MAX_STORY_TITLE)))].slice(0, 4);
-    return { rows: [], ...(query.explicit ? { clarify: titles } : { ambiguous: true }) };
+    return result({ rows: [], ...(query.explicit || best.pin ? { clarify: titles } : { ambiguous: true }) });
   }
-  return { rows: best.candidates.map(row => attach(row, best)) };
+  return result({ rows: best.candidates.map(row => attach(row, best)) });
 }
 
 const evidenceSize = part => JSON.stringify({ 出处: part.title, 原文: part.text,
