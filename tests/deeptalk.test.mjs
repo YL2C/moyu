@@ -9,7 +9,7 @@ import { parseMaterialPackage, parseTopicDocument, currentMaterial, MATERIAL_FOR
 import { buildDeepTalkContext } from '../js/deeptalk-context.js';
 import { deepTalkMaterials, deepTalkMemory, generateDeepTalk, readDeepTalkThread, rememberDeepTalkTurn,
   restoreMaterialEdition, reviseDeepTalkMemory, saveDeepTalkMaterials, saveDeepTalkSettings, saveMaterialEdit,
-  selectedReply, setTurnExcluded, deepTalkReplyTokens, getDeepTalkSpend } from '../js/deeptalk.js';
+  selectedReply, setTurnExcluded, deepTalkReplyTokens, getDeepTalkSpend, deepTalkSettings } from '../js/deeptalk.js';
 import { organizeDeepTalk } from '../js/deeptalk-memory.js';
 
 globalThis.indexedDB = new IDBFactory();
@@ -386,4 +386,82 @@ test('专题筛选只看短目录与普通发言，选一段并记账，失败�
   assert.equal(spend.byKind['专题联想'].count, 3);
   assert.equal(spend.byKind['专题联想'].total, 20);
   assert.ok(spend.requests.some(row => row.kind === '专题联想' && row.status === 503));
+});
+
+test('聊天和专题共用一个选段请求，跑团只引用有出处的当前分支原文', async t => {
+  const canon = { id: 'canon', title: '圣维安正史测试', headId: 'canon-head', cards: [{ name: '颜令' }, { name: '兰瓷' }] };
+  const au = { id: 'au', title: '星际AU测试', headId: 'au-head', cards: canon.cards };
+  const marker = '灯塔误报以后，颜令把兰瓷的银色通行证压在桌上。';
+  const longChapter = marker + '灯塔依然亮着，窗外海浪轻轻拍打石阶。'.repeat(36);
+  await db.putMany('stories', [canon, au]);
+  await db.putMany('nodes', [
+    { id: canon.headId, storyId: canon.id, role: 'assistant', status: 'done', text: '# 灯塔误报\n\n' + longChapter },
+    { id: 'side-branch', storyId: canon.id, role: 'assistant', status: 'done', text: '# 灯塔误报\n\n灯塔误报以后，颜令拿走兰瓷的银色通行证。分支专有内容。' },
+    { id: au.headId, storyId: au.id, role: 'assistant', status: 'done', text: '# 灯塔误报\n\n' + marker + '星际分支专有内容。' },
+  ]);
+  await db.kvSet('deeptalk.v1.thread', []);
+  const chat = '颜令在灯塔误报后当时说了什么？找银色通行证的章节原文。';
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    const directory = body.messages.at(-1).content;
+    const selecting = body.model === 'example-archivist';
+    const content = selecting ? directory.match(/^(\d+) 跑团／/m)?.[1] || '0' : '测试聊天回复';
+    return Response.json({ choices: [{ message: { content }, finish_reason: 'stop' }] });
+  });
+  const replyOf = async text => selectedReply(await generateDeepTalk({ text }));
+
+  await saveDeepTalkSettings({ autoStoryRecall: false, autoTopics: true, storyRecallScope: 'all' });
+  const disabled = await replyOf('圣维安正史测试 · ' + chat);
+  assert.ok(!disabled.refs.some(ref => ref.story));
+  assert.doesNotMatch(calls.at(-2).messages.at(-1).content, /跑团／/);
+
+  await saveDeepTalkSettings({ autoStoryRecall: true });
+  const beforeClarification = calls.length;
+  const ambiguous = await replyOf(chat);
+  assert.equal(calls.length - beforeClarification, 1);
+  assert.match(calls.at(-1).messages[0].content, /跑团检索待确认/);
+  assert.match(calls.at(-1).messages[0].content, /圣维安正史测试.*星际AU测试|星际AU测试.*圣维安正史测试/);
+  assert.ok(!ambiguous.refs.some(ref => ref.story));
+
+  await saveDeepTalkSettings({ storyRecallScope: 'selected', storyRecallIds: [canon.id] });
+  const beforeShared = calls.length;
+  const exact = await replyOf(chat);
+  assert.equal(calls.length - beforeShared, 2);
+  const directory = calls.at(-2).messages.at(-1).content;
+  assert.match(directory, /跑团／圣维安正史测试／第1章/);
+  assert.match(directory, /兰瓷×颜令／|健身与运动／/);
+  assert.doesNotMatch(directory, /星际AU测试|桌上|分支专有内容/);
+  const input = calls.at(-1).messages[0].content;
+  const excerpt = JSON.parse(input.split('【跑团存档引文】\n')[1].split('\n', 1)[0]);
+  assert.match(excerpt.出处, /圣维安正史测试.*第1章/);
+  assert.ok(excerpt.原文.includes(marker));
+  assert.ok(excerpt.原文.length > 460 && excerpt.原文.length <= 800);
+  assert.ok(longChapter.includes(excerpt.原文));
+  assert.deepEqual(exact.refs.filter(ref => ref.story).map(ref => ref.title), [excerpt.出处]);
+
+  await db.put('nodes', { id: canon.headId, storyId: canon.id, role: 'assistant', status: 'done',
+    text: '# 灯塔误报\n\n灯塔误报以后，颜令将兰瓷的银色通行证收进保险柜。更新后的原文。' });
+  await replyOf(chat);
+  assert.match(calls.at(-1).messages[0].content, /更新后的原文/);
+  assert.doesNotMatch(calls.at(-1).messages[0].content, /分支专有内容/);
+
+  await db.updateStory(canon.id, story => ({ ...story, headId: 'side-branch' }));
+  await replyOf(chat);
+  assert.match(calls.at(-1).messages[0].content, /分支专有内容/);
+  assert.doesNotMatch(calls.at(-1).messages[0].content, /更新后的原文|星际分支专有内容/);
+
+  await saveDeepTalkSettings({ storyRecallScope: 'all', autoTopics: false });
+  await replyOf('星际AU测试的第一章原文。');
+  assert.match(calls.at(-1).messages[0].content, /星际分支专有内容/);
+  assert.doesNotMatch(calls.at(-2).messages.at(-1).content, /兰瓷×颜令／|健身与运动／/);
+
+  await saveDeepTalkSettings({ storyRecallScope: 'selected', storyRecallIds: [] });
+  const beforeEmpty = calls.length;
+  await replyOf(chat);
+  assert.equal(calls.length - beforeEmpty, 1);
+  const state = await deepTalkSettings();
+  assert.equal(state.storyRecallScope, 'selected');
+  assert.ok(!(await deepTalkMemory()).entries.some(entry => entry.text.includes('分支专有内容')));
 });

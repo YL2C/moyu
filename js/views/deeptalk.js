@@ -300,11 +300,15 @@ export async function render(root) {
       drawer = panel;
       const used = preview?.used || preview?.refs || [];
       const groups = [['常驻原文', preview?.always], ['当轮选读', used.filter(part => part.topic !== 'automatic')]];
-      if (!draft.value.trim()) groups.push(['专题联想', used.filter(part => part.topic === 'automatic')]);
+      if (!draft.value.trim()) {
+        groups.push(['专题联想', used.filter(part => part.topic === 'automatic' && !part.story)]);
+        if (settings.autoStoryRecall || used.some(part => part.story)) groups.push(['跑团联想', used.filter(part => part.story)]);
+      }
       for (const [label, parts] of groups) {
         panel.body.append(el('h3', {}, label), el('p', { class: 'deeptalk-quote' }, parts?.length ? parts.map(part => part.title).join('\n') : '无'));
       }
-      if (draft.value.trim() && settings.autoTopics) panel.body.append(el('p', { class: 'deeptalk-subtle' }, '专题联想在发送时挑选，回复后可在这里查看。'));
+      if (draft.value.trim() && (settings.autoTopics || settings.autoStoryRecall))
+        panel.body.append(el('p', { class: 'deeptalk-subtle' }, '联想资料在发送时挑选，回复后可在这里查看出处。'));
       panel.foot.append(button('关闭', panel.close));
     } catch (error) { toast(error.message); }
   }
@@ -338,7 +342,7 @@ export async function render(root) {
     let completed = false;
     try {
       const result = await generateDeepTalk({ text, turnId, resume, deeper: oneShot, manualKeys: [...carry.keys()], signal: controller.signal,
-        onSearching: () => { running.message = '正在查找相关专题…'; sync(); },
+        onSearching: () => { running.message = '正在查找相关资料…'; sync(); },
         onStart: turn => {
           replaceTurn(turn); running.id = turn.id; running.text = selectedReply(turn).text;
           running.message = '正在连接…';

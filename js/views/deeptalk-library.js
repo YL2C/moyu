@@ -1,3 +1,4 @@
+import { db } from '../db.js';
 import { el, sheet, pickRawFile, toast, promptText } from '../util.js';
 import { connLabel, go } from '../state.js';
 import { MATERIAL_SLOTS, MATERIAL_LABELS, TOPIC_SLOTS, MATERIAL_MAX_BYTES, RECALL_LABELS,
@@ -38,8 +39,8 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
         const data = await deepTalkMemory();
         if (token === request) drawMemories(data);
       } else {
-        const [settings, connections] = await Promise.all([deepTalkSettings(), deepTalkConnections()]);
-        if (token === request) drawSettings(settings, connections);
+        const [settings, connections, stories] = await Promise.all([deepTalkSettings(), deepTalkConnections(), db.all('stories')]);
+        if (token === request) drawSettings(settings, connections, stories);
       }
     } catch (error) { if (token === request) content.replaceChildren(el('p', { class: 'deeptalk-subtle' }, error.message)); }
   }
@@ -181,25 +182,56 @@ export function openDeepTalkLibrary({ onCarry, onOrganize, onClose }) {
         button(entry.status === 'candidate' ? '忽略' : '删除', () => change({ status: 'deleted' }))));
   }
 
-  function drawSettings(settings, connections) {
+  function drawSettings(settings, connections, stories) {
     const select = el('select', { 'aria-label': '日常记忆整理 API' },
       el('option', { value: '' }, '暂不选择'), connections.map(conn => el('option', { value: conn.id }, `${connLabel(conn)} · ${conn.model}`)));
     select.value = connections.some(conn => conn.id === settings.memoryConnectionId) ? settings.memoryConnectionId : '';
     const automatic = el('input', { type: 'checkbox', checked: !!select.value && settings.autoMemory, disabled: !select.value });
     const topics = el('input', { type: 'checkbox', checked: !!select.value && settings.autoTopics, disabled: !select.value });
+    const storyRecall = el('input', { type: 'checkbox', checked: !!select.value && settings.autoStoryRecall });
+    const scope = el('select', { 'aria-label': '跑团检索范围' },
+      el('option', { value: 'all' }, '全部故事'), el('option', { value: 'selected' }, '仅所选故事'));
+    scope.value = settings.storyRecallScope === 'selected' ? 'selected' : 'all';
+    const selectedStories = new Set(settings.storyRecallIds || []);
+    const storyList = el('div');
+    for (const story of [...stories].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))) {
+      const check = el('input', { type: 'checkbox', checked: selectedStories.has(story.id) });
+      check.addEventListener('change', () => {
+        if (check.checked) selectedStories.add(story.id);
+        else selectedStories.delete(story.id);
+      });
+      storyList.append(el('label', { class: 'deeptalk-check' }, check, story.title || '未命名故事'));
+    }
+    if (!stories.length) storyList.append(el('p', { class: 'deeptalk-subtle' }, '本机暂无跑团故事。'));
+    const storyControls = el('div', {},
+      el('label', { class: 'deeptalk-field' }, '跑团检索范围', scope), storyList,
+      el('p', { class: 'deeptalk-subtle' }, '仅查询所选范围内各故事的当前分支。联想命中后，聊天模型最多收到一段 800 字的摘录。'));
+    const updateStoryControls = () => {
+      storyRecall.disabled = !select.value;
+      storyControls.hidden = !storyRecall.checked || storyRecall.disabled;
+      storyList.hidden = scope.value !== 'selected';
+    };
     select.addEventListener('change', () => {
       automatic.disabled = topics.disabled = !select.value;
-      if (!select.value) automatic.checked = topics.checked = false;
+      if (!select.value) automatic.checked = topics.checked = storyRecall.checked = false;
+      updateStoryControls();
     });
+    scope.addEventListener('change', updateStoryControls);
+    storyRecall.addEventListener('change', updateStoryControls);
+    updateStoryControls();
     const save = async () => saveDeepTalkSettings({ memoryConnectionId: select.value,
-      autoMemory: !!select.value && automatic.checked, autoTopics: !!select.value && topics.checked });
+      autoMemory: !!select.value && automatic.checked, autoTopics: !!select.value && topics.checked,
+      autoStoryRecall: !!select.value && storyRecall.checked,
+      storyRecallScope: scope.value, storyRecallIds: stories.filter(story => selectedStories.has(story.id)).map(story => story.id) });
     content.replaceChildren(
       el('label', { class: 'deeptalk-field' }, '日常记忆整理 API', select),
       el('p', { class: 'deeptalk-subtle' }, '可选用与跑团相同的 API。整理请求只带日常聊天里已稳定的普通发言。'),
       ...(!connections.length ? [button('前往 API 连接设置', () => { panel.close(); go('settings/connections'); })] : []),
       el('label', { class: 'deeptalk-check' }, automatic, '满约 20 轮自动整理'),
       el('label', { class: 'deeptalk-check' }, topics, '专题自动联想'),
-      el('p', { class: 'deeptalk-subtle' }, '整理连接根据本轮发言、最近一句普通发言和短目录选段。专题联想在花费里单独显示。'),
+      el('label', { class: 'deeptalk-check' }, storyRecall, '跑团自动联想'),
+      storyControls,
+      el('p', { class: 'deeptalk-subtle' }, '跑团和专题共用一次目录选段请求，在花费里记为「专题联想」。'),
       el('div', { class: 'deeptalk-panel-actions' },
         button('保存设置', async () => { try { await save(); toast('日常记忆设置已保存'); } catch (error) { toast(error.message); } }),
         button('整理记忆', async () => {

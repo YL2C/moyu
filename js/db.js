@@ -1,7 +1,7 @@
 // 墨游 · 本机存储（IndexedDB）
 // 和旧版不同：保存失败会直接提示，不会悄悄丢进度。
 
-import { toast } from './util.js';
+import { toast, uid } from './util.js';
 import { DB_NAME } from './personal.js';
 import { BACKUP_STORES, BACKUP_META, BACKUP_QUEUE, upgradeBackup, backupChanged, queueChange, trackBackup, CHAT_THREAD, CHAT_TURN, isChatBackupKey, queueChatChange, portableChatValue } from './backup-store.js';
 
@@ -67,16 +67,49 @@ function reportWriteError(e) {
   console.error('[墨游] 保存失败', e);
 }
 
+// Local revisions for the chat search cache. They are independent of backup settings.
+const STORY_LOOKUP_RESET = 'storyLookupReset';
+const storyLookupKey = id => ['storyLookup', id];
+function touchStoryLookup(tx, ids) {
+  const revision = uid();
+  for (const id of new Set(ids)) {
+    if (typeof id === 'string' && id) tx.objectStore(BACKUP_META).put(revision, storyLookupKey(id));
+  }
+}
+
+async function readStoryLookup(storyId) {
+  const database = await open();
+  return new Promise((resolve, reject) => {
+    const tx = database.transaction(['stories', BACKUP_META], 'readonly');
+    const stories = tx.objectStore('stories');
+    const meta = tx.objectStore(BACKUP_META);
+    const reset = meta.get(STORY_LOOKUP_RESET);
+    const entries = [];
+    const request = storyId === undefined ? stories.getAll() : stories.get(storyId);
+    request.onsuccess = () => {
+      const records = storyId === undefined ? request.result : [request.result].filter(Boolean);
+      for (const story of records) entries.push({ story, revision: meta.get(storyLookupKey(story.id)) });
+    };
+    tx.oncomplete = () => resolve(entries.map(({ story, revision }) => ({
+      story, stamp: (reset.result || '') + '/' + (revision.result || ''),
+    })));
+    tx.onabort = () => reject(tx.error || new Error('无法读取跑团存档'));
+  });
+}
+
 export const db = {
   get: (store, key) => run(store, 'readonly', (os) => os.get(key)),
   all: (store) => run(store, 'readonly', (os) => os.getAll()),
   byStory: (storyId) => run('nodes', 'readonly', (os) => os.index('storyId').getAll(storyId)),
+  storyLookupCatalog: () => readStoryLookup(),
+  storyLookupStamp: async id => (await readStoryLookup(id))[0]?.stamp,
   extrasOf: (storyId) => run('extras', 'readonly', (os) => os.index('storyId').getAll(storyId)),
   async put(store, value, key) {
     let r;
     try {
       r = await run(store, 'readwrite', (os, tx) => {
         const request = key === undefined ? os.put(value) : os.put(value, key);
+        if (store === 'stories' || store === 'nodes') touchStoryLookup(tx, [store === 'stories' ? value.id : value.storyId]);
         if (BACKUP_STORES.includes(store) && !(store === 'nodes' && value.status === 'streaming')) {
           trackBackup(tx, () => queueChange(tx, store, value.id, value));
         }
@@ -97,6 +130,7 @@ export const db = {
           try {
             saved = update(request.result);
             store.put(saved);
+            touchStoryLookup(tx, [id]);
             trackBackup(tx, () => queueChange(tx, 'stories', id, saved));
           } catch (error) {
             failure = error;
@@ -116,6 +150,8 @@ export const db = {
     try {
       return await run(store, 'readwrite', (os, tx) => {
         for (const v of values) os.put(v);
+        if (store === 'stories' || store === 'nodes')
+          touchStoryLookup(tx, values.map(value => store === 'stories' ? value.id : value.storyId));
         if (BACKUP_STORES.includes(store)) trackBackup(tx, () => {
           for (const v of new Map(values.map(value => [value.id, value])).values()) queueChange(tx, store, v.id, v);
         });
@@ -124,6 +160,11 @@ export const db = {
   },
   async del(store, key) {
     try { return await run(store, 'readwrite', (os, tx) => {
+      if (store === 'stories') touchStoryLookup(tx, [key]);
+      if (store === 'nodes') {
+        const node = os.get(key);
+        node.onsuccess = () => touchStoryLookup(tx, [node.result?.storyId]);
+      }
       if (BACKUP_STORES.includes(store)) trackBackup(tx, () => queueChange(tx, store, key));
       if (store === 'kv' && isChatBackupKey(key)) trackBackup(tx, () => queueChatChange(tx, key));
       return os.delete(key);
@@ -135,6 +176,7 @@ export const db = {
       await storyBackupTransaction((tx) => {
         // Whole-story deletion preserves its chapters and extras in the cloud recycle bin.
         tx.objectStore('stories').delete(storyId);
+        touchStoryLookup(tx, [storyId]);
         for (const name of ['nodes', 'extras']) {
           const request = tx.objectStore(name).index('storyId').openKeyCursor(storyId);
           request.onsuccess = () => {
@@ -211,6 +253,7 @@ export async function replaceMigrationDatabase(stores) {
     tx.oncomplete = () => { resolve(); backupChanged(); };
     tx.onabort = () => reject(enqueueError || tx.error || new Error('迁移写入失败'));
     try {
+      tx.objectStore(BACKUP_META).put(uid(), STORY_LOOKUP_RESET);
       for (const name of MIGRATION_STORES) {
         const store = tx.objectStore(name);
         if (BACKUP_STORES.includes(name)) {
@@ -309,6 +352,7 @@ export async function importData(data) {
     const incoming = new Set(nodes.filter(node => node.storyId === s.id).map(node => node.id));
     if (old.length) await run('nodes', 'readwrite', (os, tx) => {
       for (const n of old) os.delete(n.id);
+      touchStoryLookup(tx, [s.id]);
       trackBackup(tx, () => {
         for (const n of old) if (!incoming.has(n.id)) queueChange(tx, 'nodes', n.id);
       });
@@ -433,6 +477,7 @@ export const backupDatabase = {
         request.onsuccess = () => {
           if (request.result) { exists = true; tx.abort(); return; }
           const records = { stories: [story], nodes, extras };
+          touchStoryLookup(tx, [story.id]);
           for (const name of BACKUP_STORES) {
             const store = tx.objectStore(name);
             for (const value of records[name]) store.add(value);

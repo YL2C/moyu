@@ -6,7 +6,8 @@ import { normalizeUsage, computeCost, recordUsage, getRequestLog, CUR } from './
 import { uid } from './util.js';
 import { buildDeepTalkContext, isRecallFeedback, sensitiveTopics } from './deeptalk-context.js';
 import { editMaterial, mergeMaterials } from './deeptalk-materials.js';
-import { TOPIC_RECALL_KIND, readTopicChoice, topicSelectionInput } from './deeptalk-topics.js';
+import { TOPIC_RECALL_KIND, canSelectTopic, readTopicChoice, topicSelectionInput } from './deeptalk-topics.js';
+import { chatStoryReference, findChatStoryReferences } from './deeptalk-story-recall.js';
 
 const PREFIX = 'deeptalk.v1.';
 const SETTINGS_KEY = PREFIX + 'settings';
@@ -30,13 +31,15 @@ const REQUEST_LABELS = {
 };
 export const MAX_USER_CHARS = 24_000;
 const turnKey = id => PREFIX + 'turn.' + id;
-const defaultSettings = { connectionId: '', efforts: {}, memoryConnectionId: '', autoMemory: false, autoTopics: false };
+const defaultSettings = { connectionId: '', efforts: {}, memoryConnectionId: '', autoMemory: false, autoTopics: false,
+  autoStoryRecall: false, storyRecallScope: 'all', storyRecallIds: [] };
 
 export const deepTalkSettings = async () => ({ ...defaultSettings, ...await db.kvGet(SETTINGS_KEY, {}) });
 export const deepTalkMaterials = () => db.kvGet(MATERIALS_KEY, {});
 export const deepTalkMemory = () => db.kvGet(MEMORY_KEY, { entries: [], snapshot: [], processed: [], omitted: [], mutedContexts: [] });
 export const deepTalkConnections = async () => (await getConnections()).filter(canUseMemoryConnection);
 export const selectedReply = turn => turn?.replies.find(reply => reply.id === turn.selectedId);
+export const usedStoryRecall = turn => selectedReply(turn)?.refs?.some(ref => ref.story === true);
 
 export async function saveDeepTalkSettings(patch) {
   return db.kvUpdate([SETTINGS_KEY], stored => {
@@ -322,19 +325,34 @@ export async function generateDeepTalk({ text, turnId = '', resume = false, deep
     if (!prompt || prompt.length > MAX_USER_CHARS) throw new Error('请输入 1 至 24000 字');
     if (!turnId && isRecallFeedback(prompt)) await muteLastRecall(thread.turns.at(-1));
     const history = previousTurn ? thread.turns.slice(0, -1) : thread.turns;
-    const selector = settings.autoTopics && connections.find(conn => conn.id === settings.memoryConnectionId);
+    const selector = (settings.autoTopics || settings.autoStoryRecall) && connections.find(conn => conn.id === settings.memoryConnectionId);
     const previous = history.at(-1);
     let automaticTopic = '';
-    if (!pending && selector && !manualKeys.length && !isRecallFeedback(prompt) && !sensitiveTopics(prompt, previous).length) {
+    let automaticStory = null;
+    let storyClarification;
+    if (!pending && selector && !manualKeys.length && canSelectTopic(prompt) &&
+        !isRecallFeedback(prompt) && !sensitiveTopics(prompt, previous).length) {
       const recent = previous && !previous.excludeContext && !previous.sensitiveTopics?.length ? previous.text : '';
-      const selection = topicSelectionInput({ text: prompt, materials, recent });
+      if (settings.autoStoryRecall) onSearching();
+      const storyLookup = settings.autoStoryRecall
+        ? await findChatStoryReferences({ text: prompt, recent, settings, signal }).catch(() => ({ rows: [] }))
+        : { rows: [] };
+      if (signal?.aborted) return null;
+      storyClarification = storyLookup.clarify;
+      const selection = storyClarification ? null
+        : topicSelectionInput({ text: prompt, materials: settings.autoTopics ? materials : {}, recent, storyRows: storyLookup.rows });
       if (selection) {
-        onSearching();
-        automaticTopic = await selectTopic(selector, selection, signal);
+        if (!settings.autoStoryRecall) onSearching();
+        const choice = await selectTopic(selector, selection, signal).catch(() => '');
         if (signal?.aborted) return null;
+        if (choice.startsWith('story/')) automaticStory = await chatStoryReference(storyLookup.rows, choice).catch(() => null);
+        else automaticTopic = choice;
       }
     }
-    const context = pending ? null : buildDeepTalkContext({ text: prompt, turns: history, materials, memory, manualKeys, automaticTopic });
+    if (signal?.aborted) return null;
+    const context = pending ? null : buildDeepTalkContext({
+      text: prompt, turns: history, materials, memory, manualKeys, automaticTopic, automaticStory, storyClarification,
+    });
     const storedEffort = settings.efforts[conn.id];
     const effort = supportsReasoningEffort(conn) ? (deeper ? 'high' : Object.hasOwn(EFFORT_LABELS, storedEffort) ? storedEffort : 'medium') : null;
     const kind = !previousTurn ? CHAT_KIND : selectedReply(previousTurn)?.status === 'done' ? REWRITE_KIND : RETRY_KIND;
@@ -446,7 +464,7 @@ export async function saveOrganizedDeepTalk(batch, snapshot, candidates) {
     const memory = { entries: [], snapshot: [], processed: [], omitted: [], mutedContexts: [], ...stored[MEMORY_KEY] };
     const stable = new Set(batch.filter(turn => {
       const current = stored[turnKey(turn.id)];
-      return current?.selectedId === turn.selectedId && !current.excludeContext && !current.sensitiveTopics?.length &&
+      return current?.selectedId === turn.selectedId && !current.excludeContext && !current.sensitiveTopics?.length && !usedStoryRecall(current) &&
         selectedReply(current)?.status === 'done';
     }).map(turn => turn.id));
     const hasOmission = item => memory.omitted.some(rule => {

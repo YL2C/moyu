@@ -1,7 +1,7 @@
 import { streamWithRetry, supportsReasoningEffort } from './api.js';
 import { uid } from './util.js';
 import { deepTalkConnections, deepTalkMemory, deepTalkSettings, readDeepTalkThread, selectedReply,
-  recordDeepTalkUsage, saveOrganizedDeepTalk, MEMORY_KIND } from './deeptalk.js';
+  recordDeepTalkUsage, saveOrganizedDeepTalk, usedStoryRecall, MEMORY_KIND } from './deeptalk.js';
 
 const BATCH_SIZE = 20;
 const STABLE_SKIP = 2;
@@ -45,7 +45,7 @@ export async function organizeDeepTalk({ automatic = false, signal, onStart = ()
     const [{ turns }, memory] = await Promise.all([readDeepTalkThread({ count: 250 }), deepTalkMemory()]);
     const processed = new Set(memory.processed || []);
     const pending = turns.slice(0, -STABLE_SKIP).filter(turn => !processed.has(turn.id) && !turn.excludeContext &&
-      !turn.sensitiveTopics?.length && selectedReply(turn)?.status === 'done');
+      !turn.sensitiveTopics?.length && !usedStoryRecall(turn) && selectedReply(turn)?.status === 'done');
     if (!pending.length || (automatic && pending.length < BATCH_SIZE)) return null;
     const connections = await deepTalkConnections();
     const conn = connections.find(item => item.id === settings.memoryConnectionId);
